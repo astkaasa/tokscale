@@ -304,14 +304,25 @@ impl TryFrom<CachedUsageData> for UsageData {
 /// Result of loading the TUI cache — combines staleness check with data loading
 /// to avoid double file I/O (previously is_cache_stale + load_cached_data both parsed the file).
 pub enum CacheResult {
-    /// Cache exists, is fresh (within TTL), and clients match
+    /// Cache exists, is fresh (within TTL), and clients match exactly
     Fresh(UsageData),
-    /// Cache exists and clients match, but is older than the staleness threshold
+    /// Cache exists and clients match (exact or subset), but needs background refresh
     Stale(UsageData),
     /// Cache missing, unreadable, unparseable, or clients don't match
     Miss,
 }
 
+/// How the cached client set relates to the currently enabled client set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientMatch {
+    /// Cached clients are exactly the currently enabled clients
+    Exact,
+    /// Cached clients are a strict subset of the currently enabled clients.
+    /// The cached data is still valid — it just doesn't cover the new clients yet.
+    Subset,
+    /// No usable overlap (superset, disjoint, or synthetic flag mismatch)
+    Mismatch,
+}
 /// Load cached TUI data from disk with a single read/parse.
 /// Returns Fresh/Stale/Miss so the caller can decide whether to
 /// display cached data immediately and/or trigger a background refresh.
@@ -319,11 +330,9 @@ pub fn load_cache(enabled_clients: &HashSet<ClientId>, include_synthetic: bool) 
     let Some(cache_path) = cache_file() else {
         return CacheResult::Miss;
     };
-
     if !cache_path.exists() {
         return CacheResult::Miss;
     }
-
     let file = match File::open(&cache_path) {
         Ok(f) => f,
         Err(_) => return CacheResult::Miss,
@@ -334,28 +343,33 @@ pub fn load_cache(enabled_clients: &HashSet<ClientId>, include_synthetic: bool) 
         Err(_) => return CacheResult::Miss,
     };
 
-    // Check if clients match
-    if !clients_match(
+    // Check how cached clients relate to enabled clients
+    let client_match = check_client_match(
         enabled_clients,
         include_synthetic,
         &cached.enabled_clients,
         cached.include_synthetic,
-    ) {
+    );
+
+    if client_match == ClientMatch::Mismatch {
         return CacheResult::Miss;
     }
-
     // Convert cached data to UsageData
     let data = match cached.data.try_into() {
         Ok(d) => d,
         Err(_) => return CacheResult::Miss,
     };
 
-    // Check staleness
+    // Subset match → always Stale so background refresh fetches the full set
+    if client_match == ClientMatch::Subset {
+        return CacheResult::Stale(data);
+    }
+
+    // Exact match → check staleness by TTL
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-
     let cache_age = now.saturating_sub(cached.timestamp);
     if cache_age > CACHE_STALE_THRESHOLD_MS {
         CacheResult::Stale(data)
@@ -364,25 +378,43 @@ pub fn load_cache(enabled_clients: &HashSet<ClientId>, include_synthetic: bool) 
     }
 }
 
-/// Check if clients match between enabled and cached
-fn clients_match(
+/// Determine how the cached client set relates to the currently enabled set.
+///
+/// - `Exact`    — same clients, same synthetic flag
+/// - `Subset`   — cached clients ⊆ enabled clients (e.g. update added a new client)
+///                AND cached doesn't carry data the user doesn't want
+/// - `Mismatch` — anything else (superset, disjoint, unwanted synthetic data)
+fn check_client_match(
     enabled_clients: &HashSet<ClientId>,
     include_synthetic: bool,
     cached_clients: &[String],
     cached_include_synthetic: bool,
-) -> bool {
-    if include_synthetic != cached_include_synthetic {
-        return false;
+) -> ClientMatch {
+    // If cache has synthetic data but user doesn't want it → mismatch
+    // (showing unwanted data is worse than a cache miss)
+    if cached_include_synthetic && !include_synthetic {
+        return ClientMatch::Mismatch;
     }
-    if enabled_clients.len() != cached_clients.len() {
-        return false;
-    }
-    for client in enabled_clients {
-        if !cached_clients.contains(&client.as_str().to_string()) {
-            return false;
+
+    // Every cached client must exist in the enabled set
+    for cached_client_str in cached_clients {
+        let in_enabled = enabled_clients
+            .iter()
+            .any(|c| c.as_str() == cached_client_str);
+        if !in_enabled {
+            return ClientMatch::Mismatch;
         }
     }
-    true
+
+    // Exact match: same size + same synthetic flag + all cached ∈ enabled (checked above)
+    let same_size = enabled_clients.len() == cached_clients.len();
+    let same_synthetic = include_synthetic == cached_include_synthetic;
+
+    if same_size && same_synthetic {
+        ClientMatch::Exact
+    } else {
+        ClientMatch::Subset
+    }
 }
 
 /// Save TUI data to disk cache
@@ -434,5 +466,111 @@ pub fn save_cached_data(
         }
     } else {
         let _ = fs::remove_file(&temp_path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_clients(ids: &[ClientId]) -> HashSet<ClientId> {
+        ids.iter().copied().collect()
+    }
+
+    // ── check_client_match ──────────────────────────────────────────
+
+    #[test]
+    fn test_exact_match() {
+        let enabled = make_clients(&[ClientId::Claude, ClientId::OpenCode]);
+        let cached = vec!["claude".to_string(), "opencode".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, false, &cached, false),
+            ClientMatch::Exact,
+        );
+    }
+
+    #[test]
+    fn test_subset_new_client_added() {
+        // Simulates: update added Qwen, cache only has Claude + OpenCode
+        let enabled = make_clients(&[ClientId::Claude, ClientId::OpenCode, ClientId::Qwen]);
+        let cached = vec!["claude".to_string(), "opencode".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, false, &cached, false),
+            ClientMatch::Subset,
+        );
+    }
+
+    #[test]
+    fn test_subset_synthetic_added() {
+        // Cache was saved without synthetic, now user enables it
+        let enabled = make_clients(&[ClientId::Claude]);
+        let cached = vec!["claude".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, true, &cached, false),
+            ClientMatch::Subset,
+        );
+    }
+
+    #[test]
+    fn test_mismatch_superset() {
+        // Cache has more clients than enabled (user narrowed filter)
+        let enabled = make_clients(&[ClientId::Claude]);
+        let cached = vec!["claude".to_string(), "opencode".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, false, &cached, false),
+            ClientMatch::Mismatch,
+        );
+    }
+
+    #[test]
+    fn test_mismatch_disjoint() {
+        let enabled = make_clients(&[ClientId::Claude]);
+        let cached = vec!["opencode".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, false, &cached, false),
+            ClientMatch::Mismatch,
+        );
+    }
+
+    #[test]
+    fn test_mismatch_unwanted_synthetic() {
+        // Cache has synthetic data but user doesn't want it
+        let enabled = make_clients(&[ClientId::Claude]);
+        let cached = vec!["claude".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, false, &cached, true),
+            ClientMatch::Mismatch,
+        );
+    }
+
+    #[test]
+    fn test_exact_with_synthetic() {
+        let enabled = make_clients(&[ClientId::Claude]);
+        let cached = vec!["claude".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, true, &cached, true),
+            ClientMatch::Exact,
+        );
+    }
+
+    #[test]
+    fn test_subset_both_new_client_and_synthetic() {
+        // Update added new client AND user also enabled synthetic
+        let enabled = make_clients(&[ClientId::Claude, ClientId::Qwen]);
+        let cached = vec!["claude".to_string()];
+        assert_eq!(
+            check_client_match(&enabled, true, &cached, false),
+            ClientMatch::Subset,
+        );
+    }
+
+    #[test]
+    fn test_empty_cache_is_subset() {
+        let enabled = make_clients(&[ClientId::Claude]);
+        let cached: Vec<String> = vec![];
+        assert_eq!(
+            check_client_match(&enabled, false, &cached, false),
+            ClientMatch::Subset,
+        );
     }
 }
