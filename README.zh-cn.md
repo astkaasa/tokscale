@@ -130,7 +130,7 @@
   - 9 种颜色主题的 GitHub 风格贡献图
   - 实时筛选和排序
   - 零闪烁渲染（原生 Zig 引擎）
- **多平台支持** - 跟踪 OpenCode、Claude Code、Codex CLI、Cursor IDE、Gemini CLI、Amp、Droid、OpenClaw、Pi、Kimi CLI、Qwen CLI、Roo Code、Kilo、Mux 和 Synthetic 的使用情况
+- **多平台支持** - 跟踪 OpenCode、Claude Code、Codex CLI、Cursor IDE、Gemini CLI、Amp、Droid、OpenClaw、Pi、Kimi CLI、Qwen CLI、Roo Code、Kilo、Mux 和 Synthetic 的使用情况
 - **实时定价** - 从 LiteLLM 获取当前价格，带 1 小时磁盘缓存；OpenRouter 自动回退和新模型的 Cursor 定价支持
 - **详细分解** - 输入、输出、缓存读写和推理 Token 跟踪
 - **原生 Rust 核心** - 所有解析和聚合在 Rust 中完成，处理速度提升 10 倍
@@ -575,7 +575,7 @@ tokscale sources --json
 - **交互式提示**：悬停查看详细的每日分解
 - **每日分解面板**：点击查看每个来源和模型的详情
 - **年份筛选**：在年份之间导航
- **来源筛选**：按平台筛选（OpenCode、Claude、Codex、Cursor、Gemini、Amp、Droid、OpenClaw、Pi、Kimi、Qwen、Roo Code、Kilo、Mux、Synthetic）
+- **来源筛选**：按平台筛选（OpenCode、Claude、Codex、Cursor、Gemini、Amp、Droid、OpenClaw、Pi、Kimi、Qwen、Roo Code、Kilo、Mux、Synthetic）
 - **统计面板**：总成本、Token、活跃天数、连续记录
 - **FOUC 防护**：在 React 水合前应用主题（无闪烁）
 

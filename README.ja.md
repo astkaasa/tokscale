@@ -130,7 +130,7 @@ AI支援開発の時代において、**トークンは新しいエネルギー*
   - 9色テーマのGitHubスタイル貢献グラフ
   - リアルタイムフィルタリングとソート
   - ゼロフリッカーレンダリング（ネイティブZigエンジン）
- **マルチプラットフォームサポート** - OpenCode、Claude Code、Codex CLI、Cursor IDE、Gemini CLI、Amp、Droid、OpenClaw、Pi、Kimi CLI、Qwen CLI、Roo Code、Kilo、Mux、Synthetic全体の使用量追跡
+- **マルチプラットフォームサポート** - OpenCode、Claude Code、Codex CLI、Cursor IDE、Gemini CLI、Amp、Droid、OpenClaw、Pi、Kimi CLI、Qwen CLI、Roo Code、Kilo、Mux、Synthetic全体の使用量追跡
 - **リアルタイム価格** - 1時間ディスクキャッシュ付きでLiteLLMから現在の価格を取得；OpenRouter自動フォールバックと新規モデル向けCursor価格サポート
 - **詳細な内訳** - 入力、出力、キャッシュ読み書き、推論トークン追跡
 - **ネイティブRustコア** - 10倍高速な処理のため、すべての解析と集計をRustで実行
@@ -575,7 +575,7 @@ tokscale sources --json
 - **インタラクティブツールチップ**: ホバーで詳細な日別内訳を表示
 - **日別内訳パネル**: クリックでソース別、モデル別の詳細を確認
 - **年別フィルタリング**: 年間を移動
- **ソースフィルタリング**: プラットフォーム別フィルター（OpenCode、Claude、Codex、Cursor、Gemini、Amp、Droid、OpenClaw、Pi、Kimi、Qwen、Roo Code、Kilo、Mux、Synthetic）
+- **ソースフィルタリング**: プラットフォーム別フィルター（OpenCode、Claude、Codex、Cursor、Gemini、Amp、Droid、OpenClaw、Pi、Kimi、Qwen、Roo Code、Kilo、Mux、Synthetic）
 - **統計パネル**: 総コスト、トークン、活動日数、連続記録
 - **FOUC防止**: Reactハイドレーション前にテーマを適用（フラッシュなし）
 
