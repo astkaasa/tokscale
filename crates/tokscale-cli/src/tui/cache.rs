@@ -36,6 +36,7 @@ fn cache_file() -> Option<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CachedTUIData {
+    #[serde(default)]
     schema_version: u32,
     timestamp: u64,
     enabled_clients: Vec<String>,
@@ -383,9 +384,10 @@ pub fn load_cache(enabled_clients: &HashSet<ClientId>, include_synthetic: bool) 
         Ok(c) => c,
         Err(_) => return CacheResult::Miss,
     };
-    if cached.schema_version != CACHE_SCHEMA_VERSION {
+    if cached.schema_version > CACHE_SCHEMA_VERSION {
         return CacheResult::Miss;
     }
+    let schema_outdated = cached.schema_version < CACHE_SCHEMA_VERSION;
 
     // Check how cached clients relate to enabled clients
     let client_match = check_client_match(
@@ -404,12 +406,10 @@ pub fn load_cache(enabled_clients: &HashSet<ClientId>, include_synthetic: bool) 
         Err(_) => return CacheResult::Miss,
     };
 
-    // Subset match → always Stale so background refresh fetches the full set
-    if client_match == ClientMatch::Subset {
+    if schema_outdated || client_match == ClientMatch::Subset {
         return CacheResult::Stale(data);
     }
 
-    // Exact match → check staleness by TTL
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_load_cache_misses_legacy_schema_without_version() {
+    fn test_load_cache_returns_stale_for_legacy_schema_without_version() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
         unsafe {
@@ -653,7 +653,7 @@ mod tests {
         .unwrap();
 
         let clients = make_clients(&[ClientId::Claude]);
-        assert!(matches!(load_cache(&clients, false), CacheResult::Miss));
+        assert!(matches!(load_cache(&clients, false), CacheResult::Stale(_)));
 
         match previous_home {
             Some(home) => unsafe { env::set_var("HOME", home) },
