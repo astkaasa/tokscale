@@ -256,6 +256,27 @@ impl PricingLookup {
         None
     }
 
+    /// Prefer `choose_best_source_result` when it returns rows with declared rates; otherwise
+    /// fall back to bare LiteLLM exact match. Fixes provider-hinted lookups where LiteLLM uses
+    /// unprefixed keys (e.g. `claude-opus-4-6`) but OpenRouter matches a prefixed id with empty
+    /// placeholder pricing.
+    fn try_choose_best_or_exact_litellm(
+        &self,
+        model_id: &str,
+        provider_id: Option<&str>,
+    ) -> Option<LookupResult> {
+        if let Some(result) = choose_best_source_result(
+            self.exact_match_litellm_for_provider(model_id, provider_id),
+            self.exact_match_openrouter_for_provider(model_id, provider_id),
+            provider_id,
+        ) {
+            if pricing_has_any_declared_rate(&result.pricing) {
+                return Some(result);
+            }
+        }
+        self.exact_match_litellm(model_id)
+    }
+
     fn lookup_auto(&self, model_id: &str, provider_id: Option<&str>) -> Option<LookupResult> {
         if let Some(stripped) = strip_known_provider_prefix(model_id) {
             let prefix_matches_hint =
@@ -289,7 +310,9 @@ impl PricingLookup {
                     self.exact_match_openrouter_for_provider(stripped, provider_id),
                     provider_id,
                 ) {
-                    return Some(result);
+                    if pricing_has_any_declared_rate(&result.pricing) {
+                        return Some(result);
+                    }
                 }
                 if let Some(result) = self.exact_or_normalized_litellm(stripped, provider_id) {
                     return Some(result);
@@ -297,15 +320,7 @@ impl PricingLookup {
             }
         }
 
-        if let Some(result) = choose_best_source_result(
-            self.exact_match_litellm_for_provider(model_id, provider_id),
-            self.exact_match_openrouter_for_provider(model_id, provider_id),
-            provider_id,
-        ) {
-            return Some(result);
-        }
-
-        if let Some(result) = self.exact_match_litellm(model_id) {
+        if let Some(result) = self.try_choose_best_or_exact_litellm(model_id, provider_id) {
             return Some(result);
         }
         if let Some(result) = self.exact_match_openrouter(model_id) {
@@ -313,14 +328,9 @@ impl PricingLookup {
         }
 
         if let Some(version_normalized) = normalize_version_separator(model_id) {
-            if let Some(result) = choose_best_source_result(
-                self.exact_match_litellm_for_provider(&version_normalized, provider_id),
-                self.exact_match_openrouter_for_provider(&version_normalized, provider_id),
-                provider_id,
-            ) {
-                return Some(result);
-            }
-            if let Some(result) = self.exact_match_litellm(&version_normalized) {
+            if let Some(result) =
+                self.try_choose_best_or_exact_litellm(&version_normalized, provider_id)
+            {
                 return Some(result);
             }
             if let Some(result) = self.exact_match_openrouter(&version_normalized) {
@@ -329,14 +339,7 @@ impl PricingLookup {
         }
 
         if let Some(normalized) = normalize_model_name(model_id) {
-            if let Some(result) = choose_best_source_result(
-                self.exact_match_litellm_for_provider(&normalized, provider_id),
-                self.exact_match_openrouter_for_provider(&normalized, provider_id),
-                provider_id,
-            ) {
-                return Some(result);
-            }
-            if let Some(result) = self.exact_match_litellm(&normalized) {
+            if let Some(result) = self.try_choose_best_or_exact_litellm(&normalized, provider_id) {
                 return Some(result);
             }
             if let Some(result) = self.exact_match_openrouter(&normalized) {
@@ -956,6 +959,24 @@ fn strip_known_provider_prefix(model_id: &str) -> Option<&str> {
 
 fn is_valid_price_value(value: f64) -> bool {
     value.is_finite() && value >= 0.0
+}
+
+/// True if the dataset row sets any per-token rate field (including explicit `Some(0.0)`).
+/// Rows where every rate is `None` are treated as placeholders: they must not win over
+/// LiteLLM bare keys when `choose_best_source_result` picks OpenRouter under a provider hint.
+fn pricing_has_any_declared_rate(pricing: &ModelPricing) -> bool {
+    [
+        pricing.input_cost_per_token,
+        pricing.input_cost_per_token_above_200k_tokens,
+        pricing.output_cost_per_token,
+        pricing.output_cost_per_token_above_200k_tokens,
+        pricing.cache_read_input_token_cost,
+        pricing.cache_read_input_token_cost_above_200k_tokens,
+        pricing.cache_creation_input_token_cost,
+        pricing.cache_creation_input_token_cost_above_200k_tokens,
+    ]
+    .into_iter()
+    .any(|o| o.is_some())
 }
 
 fn has_any_valid_above_tier_value(pricing: &ModelPricing) -> bool {
@@ -2955,6 +2976,53 @@ mod tests {
         let cost = lookup.calculate_cost("anthropic/claude-opus-4-6", 200_001, 0, 0, 0, 0);
         let expected = 200_000.0 * 0.00001 + 0.00002;
         assert!((cost - expected).abs() < 1e-12);
+    }
+
+    /// Regression: session parsing passes provider `anthropic`; OpenRouter can match a prefixed id
+    /// with placeholder `None` rates while LiteLLM holds the real bare-key row.
+    #[test]
+    fn test_lookup_anthropic_hint_falls_back_to_litellm_when_openrouter_placeholder() {
+        let mut litellm = HashMap::new();
+        litellm.insert(
+            "claude-opus-4-6".into(),
+            ModelPricing {
+                input_cost_per_token: Some(0.000005),
+                output_cost_per_token: Some(0.000025),
+                cache_read_input_token_cost: Some(0.0000005),
+                cache_creation_input_token_cost: Some(0.00000625),
+                ..Default::default()
+            },
+        );
+
+        let mut openrouter = HashMap::new();
+        openrouter.insert(
+            "anthropic/claude-opus-4-6".into(),
+            ModelPricing::default(),
+        );
+
+        let lookup = PricingLookup::new(litellm, openrouter, HashMap::new());
+        let resolved = lookup
+            .lookup_with_provider("claude-opus-4-6", Some("anthropic"))
+            .unwrap();
+        assert_eq!(resolved.source, "LiteLLM");
+        assert_eq!(resolved.matched_key, "claude-opus-4-6");
+
+        let cost = lookup.calculate_cost_with_provider(
+            "claude-opus-4-6",
+            Some("anthropic"),
+            &TokenBreakdown {
+                input: 24_000,
+                output: 17_000,
+                cache_read: 2_000_000,
+                cache_write: 92_000,
+                reasoning: 0,
+            },
+        );
+        assert!(
+            cost > 1.0,
+            "expected billable cost > $1, got {}",
+            cost
+        );
     }
 
     #[test]
