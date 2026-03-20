@@ -162,6 +162,11 @@ pub fn inferred_provider_from_model(model: &str) -> Option<&'static str> {
         return Some("qwen");
     }
 
+    // Cursor Composer models (CSV export: "composer-1.5", "composer 1.5", etc.)
+    if lower.contains("composer") {
+        return Some("cursor");
+    }
+
     None
 }
 
@@ -255,6 +260,14 @@ mod tests {
         );
         assert_eq!(inferred_provider_from_model("llama-3"), Some("meta"));
         assert_eq!(inferred_provider_from_model("qwen3-coder"), Some("qwen"));
+        assert_eq!(
+            inferred_provider_from_model("composer-1.5"),
+            Some("cursor")
+        );
+        assert_eq!(
+            inferred_provider_from_model("composer 1.5"),
+            Some("cursor")
+        );
         assert_eq!(inferred_provider_from_model("unknown-model"), None);
     }
 

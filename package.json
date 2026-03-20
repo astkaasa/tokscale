@@ -8,9 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "cargo build --release -p tokscale-cli && bun run build:cli",
+    "build": ". \"$HOME/.cargo/env\" 2>/dev/null; CARGO_TARGET_DIR=$(pwd)/target cargo build --release -p tokscale-cli && bun run build:cli",
     "build:cli": "bun run --cwd packages/cli build",
-    "build:core": "cargo build --release -p tokscale-cli",
+    "build:core": ". \"$HOME/.cargo/env\" 2>/dev/null; CARGO_TARGET_DIR=$(pwd)/target cargo build --release -p tokscale-cli",
     "cli": "./scripts/cli.sh",
     "dev:frontend": "bun run --cwd packages/frontend dev",
     "dev:benchmarks": "bun run --cwd packages/benchmarks run"

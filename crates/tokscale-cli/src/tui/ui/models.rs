@@ -4,7 +4,8 @@ use ratatui::widgets::{
 };
 
 use super::widgets::{
-    format_cost, format_tokens, get_client_display_name, get_model_color, get_provider_display_name,
+    format_cost, format_tokens, get_client_display_name, get_model_color_with_provider,
+    get_provider_display_name,
 };
 use crate::tui::app::{App, SortDirection, SortField};
 
@@ -117,7 +118,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             let is_selected = idx == selected_index;
             let is_striped = idx % 2 == 1;
 
-            let model_color = get_model_color(&model.model);
+            let model_color =
+                get_model_color_with_provider(&model.model, Some(model.provider.as_str()));
 
             let cells: Vec<Cell> = if is_very_narrow {
                 vec![

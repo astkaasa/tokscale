@@ -4,7 +4,8 @@ use ratatui::widgets::{
 };
 
 use super::widgets::{
-    format_cost, format_tokens, get_client_color, get_client_display_name, get_model_color,
+    format_cost, format_tokens, get_client_color, get_client_display_name,
+    get_model_color_with_provider,
 };
 use crate::tui::app::{App, ClickAction};
 
@@ -262,19 +263,16 @@ fn render_stats_panel(frame: &mut Frame, app: &App, area: Rect) {
         })
         .unwrap_or(365);
 
-    let favorite_model = app
-        .data
-        .models
-        .iter()
-        .max_by(|a, b| {
-            a.cost
-                .partial_cmp(&b.cost)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|m| m.model.as_str())
-        .unwrap_or("N/A");
-
-    let model_color = get_model_color(favorite_model);
+    let favorite_entry = app.data.models.iter().max_by(|a, b| {
+        a.cost
+            .partial_cmp(&b.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let favorite_model = favorite_entry.map(|m| m.model.as_str()).unwrap_or("N/A");
+    let model_color = get_model_color_with_provider(
+        favorite_model,
+        favorite_entry.map(|m| m.provider.as_str()),
+    );
     let sessions: u32 = app.data.models.iter().map(|m| m.session_count).sum();
 
     let col1_width = if is_narrow { 36u16 } else { 60u16 };
@@ -543,7 +541,10 @@ fn render_breakdown_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             ]));
 
             for (model_name, model_info) in models {
-                let model_color = get_model_color(&model_name);
+                let model_color = get_model_color_with_provider(
+                    model_name.as_str(),
+                    Some(model_info.provider.as_str()),
+                );
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled("●", Style::default().fg(model_color)),

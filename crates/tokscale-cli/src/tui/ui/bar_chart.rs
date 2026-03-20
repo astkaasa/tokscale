@@ -121,7 +121,9 @@ pub fn render_stacked_bar_chart(frame: &mut Frame, app: &App, area: Rect, data: 
 
             for _ in 0..bar_width {
                 if x_pos < area.x + area.width {
-                    buf[(x_pos, y)].set_char(ch).set_fg(fg_color);
+                    buf[(x_pos, y)]
+                        .set_char(ch)
+                        .set_style(Style::default().fg(fg_color));
                     x_pos += 1;
                 }
             }

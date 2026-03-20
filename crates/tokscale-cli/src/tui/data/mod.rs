@@ -52,6 +52,8 @@ pub struct AgentUsage {
 #[derive(Debug, Clone)]
 pub struct DailyModelInfo {
     pub client: String,
+    /// Parsed `provider_id` from messages (comma-separated when multiple sources share this model/day).
+    pub provider: String,
     pub tokens: TokenBreakdown,
     pub cost: f64,
 }
@@ -329,9 +331,23 @@ impl DataLoader {
                     .entry(normalized_model.clone())
                     .or_insert_with(|| DailyModelInfo {
                         client: msg.client.clone(),
+                        provider: String::new(),
                         tokens: TokenBreakdown::default(),
                         cost: 0.0,
                     });
+
+                if !model_info
+                    .provider
+                    .split(", ")
+                    .any(|p| p == msg.provider_id)
+                {
+                    if model_info.provider.is_empty() {
+                        model_info.provider = msg.provider_id.clone();
+                    } else {
+                        model_info.provider =
+                            format!("{}, {}", model_info.provider, msg.provider_id);
+                    }
+                }
 
                 model_info.tokens.input = model_info
                     .tokens

@@ -4,11 +4,12 @@ use ratatui::widgets::{
 };
 
 use super::bar_chart::{render_stacked_bar_chart, ModelSegment, StackedBarData};
-use super::widgets::{format_tokens, get_model_color};
+use super::widgets::{format_tokens, get_model_color_with_provider};
 use crate::tui::app::App;
 
 struct ModelRowData {
     model: String,
+    provider: String,
     tokens_input: u64,
     tokens_output: u64,
     tokens_cache_read: u64,
@@ -59,7 +60,7 @@ fn render_chart(frame: &mut Frame, app: &App, area: Rect) {
                 .map(|(model_name, info)| ModelSegment {
                     model_id: model_name.clone(),
                     tokens: info.tokens.total(),
-                    color: get_model_color(model_name),
+                    color: get_model_color_with_provider(model_name, Some(info.provider.as_str())),
                 })
                 .collect();
 
@@ -83,7 +84,12 @@ fn render_legend(frame: &mut Frame, app: &App, area: Rect) {
         .get_sorted_models()
         .iter()
         .take(legend_limit)
-        .map(|m| (m.model.clone(), get_model_color(&m.model)))
+        .map(|m| {
+            (
+                m.model.clone(),
+                get_model_color_with_provider(&m.model, Some(m.provider.as_str())),
+            )
+        })
         .collect();
 
     if top_models.is_empty() {
@@ -129,6 +135,7 @@ fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_pag
         .iter()
         .map(|m| ModelRowData {
             model: m.model.clone(),
+            provider: m.provider.clone(),
             tokens_input: m.tokens.input,
             tokens_output: m.tokens.output,
             tokens_cache_read: m.tokens.cache_read,
@@ -209,7 +216,7 @@ fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_pag
             Style::default()
         };
 
-        let model_color = get_model_color(&model.model);
+        let model_color = get_model_color_with_provider(&model.model, Some(model.provider.as_str()));
         let name = truncate_string(&model.model, max_name_width);
         let percentage = if model.cost.is_finite() && total.is_finite() && total > 0.0 {
             (model.cost / total) * 100.0

@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::panic;
 
 use anyhow::Result;
+use crate::cursor;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -136,6 +137,12 @@ pub fn run(
         let bg_group_by = app.group_by.borrow().clone();
 
         thread::spawn(move || {
+            // TUI reads local CSV only; pull latest from Cursor API before load (like graph/submit).
+            if bg_clients.contains(&ClientId::Cursor) && cursor::is_cursor_logged_in() {
+                if let Ok(rt) = tokio::runtime::Runtime::new() {
+                    let _ = rt.block_on(cursor::sync_cursor_cache());
+                }
+            }
             let loader = DataLoader::with_filters(None, bg_since, bg_until, bg_year);
             let result = loader.load(&bg_clients, &bg_group_by, bg_include_synthetic);
 
@@ -246,6 +253,11 @@ fn run_loop_with_background(
             let group_by = app.group_by.borrow().clone();
 
             thread::spawn(move || {
+                if clients.contains(&ClientId::Cursor) && cursor::is_cursor_logged_in() {
+                    if let Ok(rt) = tokio::runtime::Runtime::new() {
+                        let _ = rt.block_on(cursor::sync_cursor_cache());
+                    }
+                }
                 let loader = DataLoader::with_filters(None, since, until, year);
                 let result = loader.load(&clients, &group_by, include_synthetic);
                 if let Ok(ref data) = result {
