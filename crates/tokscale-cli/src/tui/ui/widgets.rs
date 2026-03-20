@@ -233,3 +233,37 @@ fn capitalize_first(s: &str) -> String {
         Some(first) => first.to_uppercase().chain(chars).collect(),
     }
 }
+
+/// Maps list `scroll_offset` (max `content_len - viewport`) to Ratatui's scrollbar `position`,
+/// which reaches the end of the track only at `content_len - 1`.
+#[must_use]
+pub fn ratatui_scrollbar_position(scroll_offset: usize, content_len: usize, viewport: usize) -> usize {
+    let max_scroll = content_len.saturating_sub(viewport);
+    if max_scroll == 0 {
+        0
+    } else {
+        scroll_offset
+            .saturating_mul(content_len.saturating_sub(1))
+            / max_scroll
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_map_tests {
+    use super::ratatui_scrollbar_position;
+
+    #[test]
+    fn bottom_scroll_maps_to_last_position() {
+        assert_eq!(ratatui_scrollbar_position(15, 20, 5), 19);
+    }
+
+    #[test]
+    fn top_scroll_is_zero() {
+        assert_eq!(ratatui_scrollbar_position(0, 20, 5), 0);
+    }
+
+    #[test]
+    fn single_page_no_scroll() {
+        assert_eq!(ratatui_scrollbar_position(0, 5, 10), 0);
+    }
+}

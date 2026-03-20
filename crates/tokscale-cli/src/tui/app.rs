@@ -447,15 +447,14 @@ impl App {
     pub fn handle_resize(&mut self, width: u16, height: u16) {
         self.terminal_width = width;
         self.terminal_height = height;
-        // Ensure at least 1 visible item to prevent division/slice issues
-        self.max_visible_items = (height.saturating_sub(10) as usize).max(1);
-        self.clamp_selection();
+        // `max_visible_items` is set per-tab during layout (Overview uses only part
+        // of the main area for the list; a terminal-row heuristic would be wrong).
     }
 
-    /// Clamp selection and scroll offset to valid bounds after data/resize changes.
+    /// Clamp selection and scroll offset to valid bounds after data/layout changes.
     /// Stats breakdown is skipped here because `render_breakdown_panel` clamps
     /// with the actual panel height (not the full-terminal `max_visible_items`).
-    fn clamp_selection(&mut self) {
+    pub(crate) fn clamp_selection(&mut self) {
         if self.current_tab == Tab::Stats && self.selected_graph_cell.is_some() {
             return;
         }
@@ -1147,6 +1146,20 @@ mod tests {
         assert_eq!(app.scroll_offset, 0);
     }
 
+    /// Regression: list viewport (e.g. Overview) can show fewer rows than `height - 10`.
+    /// Clamping with a terminal-wide `max_visible_items` would force `scroll_offset = 0`
+    /// whenever `models.len() <= that heuristic`, so the list never scrolled.
+    #[test]
+    fn test_clamp_keeps_scroll_with_narrow_list_viewport() {
+        let mut app = make_app_with_models(15);
+        app.max_visible_items = 4;
+        app.scroll_offset = 5;
+        app.selected_index = 7;
+        app.clamp_selection();
+        assert_eq!(app.scroll_offset, 5);
+        assert_eq!(app.selected_index, 7);
+    }
+
     #[test]
     fn test_set_sort() {
         let config = TuiConfig {
@@ -1743,7 +1756,7 @@ mod tests {
         app.handle_resize(120, 40);
         assert_eq!(app.terminal_width, 120);
         assert_eq!(app.terminal_height, 40);
-        assert_eq!(app.max_visible_items, 30);
+        // Layout-specific tabs overwrite `max_visible_items` when rendering.
     }
 
     #[test]
@@ -1752,7 +1765,6 @@ mod tests {
         app.handle_resize(40, 12);
         assert_eq!(app.terminal_width, 40);
         assert_eq!(app.terminal_height, 12);
-        assert_eq!(app.max_visible_items, 2);
     }
 
     #[test]

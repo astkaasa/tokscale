@@ -54,6 +54,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.dialog_stack.is_active() {
         app.dialog_stack.render(frame, area);
     }
+
+    app.clamp_selection();
 }
 
 fn render_loading(frame: &mut Frame, app: &App, area: Rect) {

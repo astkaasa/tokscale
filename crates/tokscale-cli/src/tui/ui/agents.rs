@@ -4,7 +4,9 @@ use ratatui::widgets::{
 };
 use tokscale_core::ClientId;
 
-use super::widgets::{format_cost, format_tokens, get_client_display_name};
+use super::widgets::{
+    format_cost, format_tokens, get_client_display_name, ratatui_scrollbar_position,
+};
 use crate::tui::app::{App, SortDirection, SortField};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -175,7 +177,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
 
-        let mut scrollbar_state = ScrollbarState::new(agents_len).position(scroll_offset);
+        let mut scrollbar_state = ScrollbarState::new(agents_len)
+            .position(ratatui_scrollbar_position(
+                scroll_offset,
+                agents_len,
+                visible_height,
+            ))
+            .viewport_content_length(visible_height);
 
         frame.render_stateful_widget(
             scrollbar,

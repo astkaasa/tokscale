@@ -4,7 +4,7 @@ use ratatui::widgets::{
 };
 
 use super::bar_chart::{render_stacked_bar_chart, ModelSegment, StackedBarData};
-use super::widgets::{format_tokens, get_model_color_with_provider};
+use super::widgets::{format_tokens, get_model_color_with_provider, ratatui_scrollbar_position};
 use crate::tui::app::App;
 
 struct ModelRowData {
@@ -318,7 +318,13 @@ fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_pag
             .track_symbol(Some("│"))
             .thumb_symbol("█");
 
-        let mut scrollbar_state = ScrollbarState::new(models_len).position(scroll_offset);
+        let mut scrollbar_state = ScrollbarState::new(models_len)
+            .position(ratatui_scrollbar_position(
+                scroll_offset,
+                models_len,
+                items_per_page,
+            ))
+            .viewport_content_length(items_per_page);
 
         frame.render_stateful_widget(
             scrollbar,
