@@ -513,11 +513,11 @@ fn render_breakdown_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             String,
             Vec<(String, &crate::tui::data::DailyModelInfo)>,
         > = std::collections::BTreeMap::new();
-        for (model_name, model_info) in &daily.models {
+        for model_info in daily.models.values() {
             grouped
                 .entry(model_info.client.clone())
                 .or_default()
-                .push((model_name.clone(), model_info));
+                .push((model_info.display_name.clone(), model_info));
         }
         for (client, mut models) in grouped {
             models.sort_by(|a, b| b.1.tokens.total().cmp(&a.1.tokens.total()));
@@ -542,7 +542,7 @@ fn render_breakdown_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
             for (model_name, model_info) in models {
                 let model_color = get_model_color_with_provider(
-                    model_name.as_str(),
+                    model_info.color_key.as_str(),
                     Some(model_info.provider.as_str()),
                 );
                 lines.push(Line::from(vec![
