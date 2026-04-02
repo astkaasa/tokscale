@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use tokscale_core::ClientId;
 
-use super::data::{AgentUsage, DailyUsage, DataLoader, ModelUsage, UsageData};
+use super::data::{AgentUsage, DailyUsage, DataLoader, HourlyUsage, ModelUsage, UsageData};
 use super::settings::Settings;
 use super::themes::{Theme, ThemeName};
 use super::ui::dialog::{ClientPickerDialog, DialogStack};
@@ -30,6 +30,7 @@ pub enum Tab {
     Overview,
     Models,
     Daily,
+    Hourly,
     Stats,
     Agents,
 }
@@ -40,6 +41,7 @@ impl Tab {
             Tab::Overview,
             Tab::Models,
             Tab::Daily,
+            Tab::Hourly,
             Tab::Stats,
             Tab::Agents,
         ]
@@ -50,6 +52,7 @@ impl Tab {
             Tab::Overview => "Overview",
             Tab::Models => "Models",
             Tab::Daily => "Daily",
+            Tab::Hourly => "Hourly",
             Tab::Stats => "Stats",
             Tab::Agents => "Agents",
         }
@@ -60,6 +63,7 @@ impl Tab {
             Tab::Overview => "Ovw",
             Tab::Models => "Mod",
             Tab::Daily => "Day",
+            Tab::Hourly => "Hr",
             Tab::Stats => "Sta",
             Tab::Agents => "Agt",
         }
@@ -69,7 +73,8 @@ impl Tab {
         match self {
             Tab::Overview => Tab::Models,
             Tab::Models => Tab::Daily,
-            Tab::Daily => Tab::Stats,
+            Tab::Daily => Tab::Hourly,
+            Tab::Hourly => Tab::Stats,
             Tab::Stats => Tab::Agents,
             Tab::Agents => Tab::Overview,
         }
@@ -80,7 +85,8 @@ impl Tab {
             Tab::Overview => Tab::Agents,
             Tab::Models => Tab::Overview,
             Tab::Daily => Tab::Models,
-            Tab::Stats => Tab::Daily,
+            Tab::Hourly => Tab::Daily,
+            Tab::Stats => Tab::Hourly,
             Tab::Agents => Tab::Stats,
         }
     }
@@ -254,6 +260,7 @@ impl App {
     pub fn has_visible_data(&self) -> bool {
         !self.data.models.is_empty()
             || !self.data.daily.is_empty()
+            || !self.data.hourly.is_empty()
             || !self.data.agents.is_empty()
             || self.data.graph.is_some()
             || self.data.total_tokens > 0
@@ -596,6 +603,7 @@ impl App {
             Tab::Overview | Tab::Models => self.data.models.len(),
             Tab::Agents => self.data.agents.len(),
             Tab::Daily => self.data.daily.len(),
+            Tab::Hourly => self.data.hourly.len(),
             Tab::Stats => {
                 if self.selected_graph_cell.is_some() {
                     self.stats_breakdown_total_lines
@@ -624,35 +632,71 @@ impl App {
     }
 
     fn jump_to_today(&mut self) {
-        if self.current_tab != Tab::Daily {
-            return;
-        }
+        match self.current_tab {
+            Tab::Daily => {
+                let today = chrono::Local::now().date_naive();
+                let (today_index, total_len) = {
+                    let sorted_daily = self.get_sorted_daily();
+                    (
+                        sorted_daily.iter().position(|d| d.date == today),
+                        sorted_daily.len(),
+                    )
+                };
 
-        let today = chrono::Local::now().date_naive();
-        let (today_index, total_len) = {
-            let sorted_daily = self.get_sorted_daily();
-            (
-                sorted_daily.iter().position(|d| d.date == today),
-                sorted_daily.len(),
-            )
-        };
+                if let Some(index) = today_index {
+                    self.selected_index = index;
 
-        if let Some(index) = today_index {
-            self.selected_index = index;
+                    if self.max_visible_items > 0 {
+                        let max_scroll = total_len.saturating_sub(self.max_visible_items);
+                        self.scroll_offset = index
+                            .saturating_sub(self.max_visible_items / 2)
+                            .min(max_scroll);
+                    } else {
+                        self.scroll_offset = 0;
+                    }
 
-            if self.max_visible_items > 0 {
-                let max_scroll = total_len.saturating_sub(self.max_visible_items);
-                self.scroll_offset = index
-                    .saturating_sub(self.max_visible_items / 2)
-                    .min(max_scroll);
-            } else {
-                self.scroll_offset = 0;
+                    self.selected_graph_cell = None;
+                    self.set_status("Jumped to today's usage");
+                } else {
+                    self.set_status("No usage recorded for today");
+                }
             }
+            Tab::Hourly => {
+                use chrono::{Local, Timelike};
+                let now = Local::now().naive_local();
+                let current_hour = match now
+                    .with_minute(0)
+                    .and_then(|t| t.with_second(0))
+                    .and_then(|t| t.with_nanosecond(0))
+                {
+                    Some(h) => h,
+                    None => return,
+                };
+                let (hour_index, total_len) = {
+                    let sorted = self.get_sorted_hourly();
+                    (
+                        sorted.iter().position(|h| h.hour_start == current_hour),
+                        sorted.len(),
+                    )
+                };
 
-            self.selected_graph_cell = None;
-            self.set_status("Jumped to today's usage");
-        } else {
-            self.set_status("No usage recorded for today");
+                if let Some(index) = hour_index {
+                    self.selected_index = index;
+                    if self.max_visible_items > 0 {
+                        let max_scroll = total_len.saturating_sub(self.max_visible_items);
+                        self.scroll_offset = index
+                            .saturating_sub(self.max_visible_items / 2)
+                            .min(max_scroll);
+                    } else {
+                        self.scroll_offset = 0;
+                    }
+                    self.selected_graph_cell = None;
+                    self.set_status("Jumped to current hour");
+                } else {
+                    self.set_status("No usage recorded for this hour");
+                }
+            }
+            _ => {}
         }
     }
 
@@ -749,6 +793,17 @@ impl App {
                 .get_sorted_daily()
                 .get(self.selected_index)
                 .map(|d| format!("{}: {} tokens, ${:.4}", d.date, d.tokens.total(), d.cost)),
+            Tab::Hourly => self
+                .get_sorted_hourly()
+                .get(self.selected_index)
+                .map(|h| {
+                    format!(
+                        "{}: {} tokens, ${:.4}",
+                        h.hour_start.format("%Y-%m-%d %H:00"),
+                        h.tokens.total(),
+                        h.cost
+                    )
+                }),
             Tab::Stats => None,
         };
 
@@ -799,6 +854,17 @@ impl App {
                     "total": d.tokens.total()
                 },
                 "cost": d.cost
+            })).collect::<Vec<_>>(),
+            "hourly": self.data.hourly.iter().map(|h| serde_json::json!({
+                "hourStart": h.hour_start.format("%Y-%m-%dT%H:00:00").to_string(),
+                "tokens": {
+                    "input": h.tokens.input,
+                    "output": h.tokens.output,
+                    "cacheRead": h.tokens.cache_read,
+                    "cacheWrite": h.tokens.cache_write,
+                    "total": h.tokens.total()
+                },
+                "cost": h.cost
             })).collect::<Vec<_>>(),
             "totals": {
                 "tokens": self.data.total_tokens,
@@ -939,6 +1005,47 @@ impl App {
         daily
     }
 
+    pub fn get_sorted_hourly(&self) -> Vec<&HourlyUsage> {
+        let mut hourly: Vec<&HourlyUsage> = self.data.hourly.iter().collect();
+
+        match (self.sort_field, self.sort_direction) {
+            (SortField::Cost, SortDirection::Descending) => {
+                hourly.sort_by(|a, b| {
+                    b.cost
+                        .total_cmp(&a.cost)
+                        .then_with(|| b.hour_start.cmp(&a.hour_start))
+                })
+            }
+            (SortField::Cost, SortDirection::Ascending) => {
+                hourly.sort_by(|a, b| {
+                    a.cost
+                        .total_cmp(&b.cost)
+                        .then_with(|| b.hour_start.cmp(&a.hour_start))
+                })
+            }
+            (SortField::Tokens, SortDirection::Descending) => hourly.sort_by(|a, b| {
+                b.tokens
+                    .total()
+                    .cmp(&a.tokens.total())
+                    .then_with(|| b.hour_start.cmp(&a.hour_start))
+            }),
+            (SortField::Tokens, SortDirection::Ascending) => hourly.sort_by(|a, b| {
+                a.tokens
+                    .total()
+                    .cmp(&b.tokens.total())
+                    .then_with(|| b.hour_start.cmp(&a.hour_start))
+            }),
+            (SortField::Date, SortDirection::Descending) => {
+                hourly.sort_by(|a, b| b.hour_start.cmp(&a.hour_start))
+            }
+            (SortField::Date, SortDirection::Ascending) => {
+                hourly.sort_by(|a, b| a.hour_start.cmp(&b.hour_start))
+            }
+        }
+
+        hourly
+    }
+
     pub fn is_narrow(&self) -> bool {
         self.terminal_width < 80
     }
@@ -956,19 +1063,21 @@ mod tests {
     #[test]
     fn test_tab_all() {
         let tabs = Tab::all();
-        assert_eq!(tabs.len(), 5);
+        assert_eq!(tabs.len(), 6);
         assert_eq!(tabs[0], Tab::Overview);
         assert_eq!(tabs[1], Tab::Models);
         assert_eq!(tabs[2], Tab::Daily);
-        assert_eq!(tabs[3], Tab::Stats);
-        assert_eq!(tabs[4], Tab::Agents);
+        assert_eq!(tabs[3], Tab::Hourly);
+        assert_eq!(tabs[4], Tab::Stats);
+        assert_eq!(tabs[5], Tab::Agents);
     }
 
     #[test]
     fn test_tab_next() {
         assert_eq!(Tab::Overview.next(), Tab::Models);
         assert_eq!(Tab::Models.next(), Tab::Daily);
-        assert_eq!(Tab::Daily.next(), Tab::Stats);
+        assert_eq!(Tab::Daily.next(), Tab::Hourly);
+        assert_eq!(Tab::Hourly.next(), Tab::Stats);
         assert_eq!(Tab::Stats.next(), Tab::Agents);
         assert_eq!(Tab::Agents.next(), Tab::Overview);
     }
@@ -978,7 +1087,8 @@ mod tests {
         assert_eq!(Tab::Overview.prev(), Tab::Agents);
         assert_eq!(Tab::Models.prev(), Tab::Overview);
         assert_eq!(Tab::Daily.prev(), Tab::Models);
-        assert_eq!(Tab::Stats.prev(), Tab::Daily);
+        assert_eq!(Tab::Hourly.prev(), Tab::Daily);
+        assert_eq!(Tab::Stats.prev(), Tab::Hourly);
         assert_eq!(Tab::Agents.prev(), Tab::Stats);
     }
 
@@ -988,6 +1098,7 @@ mod tests {
         assert_eq!(Tab::Models.as_str(), "Models");
         assert_eq!(Tab::Agents.as_str(), "Agents");
         assert_eq!(Tab::Daily.as_str(), "Daily");
+        assert_eq!(Tab::Hourly.as_str(), "Hourly");
         assert_eq!(Tab::Stats.as_str(), "Stats");
     }
 
@@ -997,6 +1108,7 @@ mod tests {
         assert_eq!(Tab::Models.short_name(), "Mod");
         assert_eq!(Tab::Agents.short_name(), "Agt");
         assert_eq!(Tab::Daily.short_name(), "Day");
+        assert_eq!(Tab::Hourly.short_name(), "Hr");
         assert_eq!(Tab::Stats.short_name(), "Sta");
     }
 
@@ -1296,6 +1408,9 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Daily);
 
         app.handle_key_event(key(KeyCode::Tab));
+        assert_eq!(app.current_tab, Tab::Hourly);
+
+        app.handle_key_event(key(KeyCode::Tab));
         assert_eq!(app.current_tab, Tab::Stats);
 
         app.handle_key_event(key(KeyCode::Tab));
@@ -1315,6 +1430,9 @@ mod tests {
 
         app.handle_key_event(key(KeyCode::BackTab));
         assert_eq!(app.current_tab, Tab::Stats);
+
+        app.handle_key_event(key(KeyCode::BackTab));
+        assert_eq!(app.current_tab, Tab::Hourly);
 
         app.handle_key_event(key(KeyCode::BackTab));
         assert_eq!(app.current_tab, Tab::Daily);

@@ -395,6 +395,60 @@ fn render_stats_panel(frame: &mut Frame, app: &App, area: Rect) {
         Rect::new(inner.x, y, col1_width, 1),
     );
 
+    y += 1;
+    if y >= y_max {
+        return;
+    }
+
+    let peak_hour_label = if is_narrow {
+        "Peak hour:"
+    } else {
+        "Peak hour (local):"
+    };
+    let peak_hour = app.data.hourly.iter().max_by(|a, b| a.cost.total_cmp(&b.cost));
+    let peak_hour_txt = peak_hour
+        .map(|h| {
+            format!(
+                "{} {}",
+                h.hour_start.format("%Y-%m-%d %H:00"),
+                format_cost(h.cost),
+            )
+        })
+        .unwrap_or_else(|| "—".to_string());
+    let row_peak = Line::from(vec![
+        Span::styled(
+            peak_hour_label,
+            Style::default().fg(app.theme.muted),
+        ),
+        Span::raw(" "),
+        Span::styled(peak_hour_txt, Style::default().fg(Color::Green)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(row_peak),
+        Rect::new(inner.x, y, col1_width, 1),
+    );
+
+    let busy_hours_label = if is_narrow {
+        "Hours:"
+    } else {
+        "Hours w/ usage:"
+    };
+    let busy_hours_line = Line::from(vec![
+        Span::styled(
+            busy_hours_label,
+            Style::default().fg(app.theme.muted),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            app.data.hourly.len().to_string(),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(busy_hours_line),
+        Rect::new(col2_x, y, inner.width.saturating_sub(col1_width), 1),
+    );
+
     y += 2;
     if y >= y_max {
         return;

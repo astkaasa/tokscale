@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use tokio::runtime::{Handle, Runtime};
 
 use tokscale_core::sessions::UnifiedMessage;
@@ -70,6 +70,15 @@ pub struct DailyUsage {
     pub models: BTreeMap<String, DailyModelInfo>,
 }
 
+/// Usage aggregated by local clock hour (`hour_start` is truncated to minute 0).
+#[derive(Debug, Clone)]
+pub struct HourlyUsage {
+    pub hour_start: NaiveDateTime,
+    pub tokens: TokenBreakdown,
+    pub cost: f64,
+    pub models: BTreeMap<String, DailyModelInfo>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ContributionDay {
     pub date: NaiveDate,
@@ -88,6 +97,7 @@ pub struct UsageData {
     pub models: Vec<ModelUsage>,
     pub agents: Vec<AgentUsage>,
     pub daily: Vec<DailyUsage>,
+    pub hourly: Vec<HourlyUsage>,
     pub graph: Option<GraphData>,
     pub total_tokens: u64,
     pub total_cost: f64,
@@ -267,6 +277,7 @@ impl DataLoader {
         let mut agent_map: HashMap<String, AgentUsage> = HashMap::new();
         let mut agent_clients: HashMap<String, BTreeSet<String>> = HashMap::new();
         let mut daily_map: HashMap<NaiveDate, DailyUsage> = HashMap::new();
+        let mut hourly_map: HashMap<NaiveDateTime, HourlyUsage> = HashMap::new();
         let mut model_session_ids: HashMap<String, HashSet<String>> = HashMap::new();
 
         for msg in &messages {
@@ -493,6 +504,104 @@ impl DataLoader {
                 };
                 model_info.cost += model_msg_cost;
             }
+
+            if let Some(hour_start) = hour_bucket_local(msg.timestamp) {
+                let hourly_entry = hourly_map.entry(hour_start).or_insert_with(|| HourlyUsage {
+                    hour_start,
+                    tokens: TokenBreakdown::default(),
+                    cost: 0.0,
+                    models: BTreeMap::new(),
+                });
+
+                hourly_entry.tokens.input = hourly_entry
+                    .tokens
+                    .input
+                    .saturating_add(msg.tokens.input.max(0) as u64);
+                hourly_entry.tokens.output = hourly_entry
+                    .tokens
+                    .output
+                    .saturating_add(msg.tokens.output.max(0) as u64);
+                hourly_entry.tokens.cache_read = hourly_entry
+                    .tokens
+                    .cache_read
+                    .saturating_add(msg.tokens.cache_read.max(0) as u64);
+                hourly_entry.tokens.cache_write = hourly_entry
+                    .tokens
+                    .cache_write
+                    .saturating_add(msg.tokens.cache_write.max(0) as u64);
+                hourly_entry.tokens.reasoning = hourly_entry
+                    .tokens
+                    .reasoning
+                    .saturating_add(msg.tokens.reasoning.max(0) as u64);
+                let msg_cost = if msg.cost.is_finite() && msg.cost >= 0.0 {
+                    msg.cost
+                } else {
+                    0.0
+                };
+                hourly_entry.cost += msg_cost;
+
+                let hourly_model_key = if *group_by == GroupBy::WorkspaceModel {
+                    workspace_model_daily_key(&workspace_group_key, &normalized_model)
+                } else {
+                    normalized_model.clone()
+                };
+
+                let model_info = hourly_entry
+                    .models
+                    .entry(hourly_model_key)
+                    .or_insert_with(|| DailyModelInfo {
+                        client: msg.client.clone(),
+                        display_name: if *group_by == GroupBy::WorkspaceModel {
+                            workspace_model_display_label(&workspace_label, &normalized_model)
+                        } else {
+                            normalized_model.clone()
+                        },
+                        color_key: normalized_model.clone(),
+                        provider: String::new(),
+                        tokens: TokenBreakdown::default(),
+                        cost: 0.0,
+                    });
+
+                if !model_info
+                    .provider
+                    .split(", ")
+                    .any(|p| p == msg.provider_id)
+                {
+                    if model_info.provider.is_empty() {
+                        model_info.provider = msg.provider_id.clone();
+                    } else {
+                        model_info.provider =
+                            format!("{}, {}", model_info.provider, msg.provider_id);
+                    }
+                }
+
+                model_info.tokens.input = model_info
+                    .tokens
+                    .input
+                    .saturating_add(msg.tokens.input.max(0) as u64);
+                model_info.tokens.output = model_info
+                    .tokens
+                    .output
+                    .saturating_add(msg.tokens.output.max(0) as u64);
+                model_info.tokens.cache_read = model_info
+                    .tokens
+                    .cache_read
+                    .saturating_add(msg.tokens.cache_read.max(0) as u64);
+                model_info.tokens.cache_write = model_info
+                    .tokens
+                    .cache_write
+                    .saturating_add(msg.tokens.cache_write.max(0) as u64);
+                model_info.tokens.reasoning = model_info
+                    .tokens
+                    .reasoning
+                    .saturating_add(msg.tokens.reasoning.max(0) as u64);
+                let model_msg_cost = if msg.cost.is_finite() && msg.cost >= 0.0 {
+                    msg.cost
+                } else {
+                    0.0
+                };
+                model_info.cost += model_msg_cost;
+            }
         }
 
         let mut models: Vec<ModelUsage> = model_map.into_values().collect();
@@ -521,6 +630,9 @@ impl DataLoader {
         let mut daily: Vec<DailyUsage> = daily_map.into_values().collect();
         daily.sort_by(|a, b| b.date.cmp(&a.date));
 
+        let mut hourly: Vec<HourlyUsage> = hourly_map.into_values().collect();
+        hourly.sort_by(|a, b| b.hour_start.cmp(&a.hour_start));
+
         let total_tokens: u64 = models.iter().map(|m| m.tokens.total()).sum();
         let total_cost: f64 = models
             .iter()
@@ -534,6 +646,7 @@ impl DataLoader {
             models,
             agents,
             daily,
+            hourly,
             graph: Some(graph),
             total_tokens,
             total_cost,
@@ -547,6 +660,17 @@ impl DataLoader {
 
 fn parse_date(date_str: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()
+}
+
+fn hour_bucket_local(timestamp_ms: i64) -> Option<NaiveDateTime> {
+    let naive = match Local.timestamp_millis_opt(timestamp_ms) {
+        chrono::LocalResult::Single(dt) => dt.naive_local(),
+        chrono::LocalResult::None | chrono::LocalResult::Ambiguous(_, _) => return None,
+    };
+    naive
+        .with_minute(0)?
+        .with_second(0)?
+        .with_nanosecond(0)
 }
 
 fn build_contribution_graph(daily: &[DailyUsage]) -> GraphData {
@@ -1029,6 +1153,87 @@ mod tests {
         assert_eq!(parse_date("invalid"), None);
         assert_eq!(parse_date("2024-13-01"), None);
         assert_eq!(parse_date(""), None);
+    }
+
+    #[test]
+    fn test_aggregate_messages_hourly_merges_same_hour() {
+        let loader = DataLoader::new(None);
+        let base = 1_735_689_600_000_i64;
+        let tb = tokscale_core::TokenBreakdown {
+            input: 10,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            reasoning: 0,
+        };
+        let messages = vec![
+            UnifiedMessage::new(
+                "opencode",
+                "m1",
+                "anthropic",
+                "s1",
+                base,
+                tb.clone(),
+                1.0,
+            ),
+            UnifiedMessage::new(
+                "opencode",
+                "m1",
+                "anthropic",
+                "s2",
+                base + 120_000,
+                tb,
+                2.0,
+            ),
+        ];
+
+        let usage = loader
+            .aggregate_messages(messages, &GroupBy::Model)
+            .unwrap();
+        assert_eq!(usage.hourly.len(), 1);
+        assert!((usage.hourly[0].cost - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_aggregate_messages_hourly_splits_distant_hours() {
+        let loader = DataLoader::new(None);
+        let base = 1_700_000_000_000_i64;
+        let tb = tokscale_core::TokenBreakdown {
+            input: 10,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            reasoning: 0,
+        };
+        let messages = vec![
+            UnifiedMessage::new(
+                "opencode",
+                "m1",
+                "anthropic",
+                "s1",
+                base,
+                tb.clone(),
+                1.0,
+            ),
+            UnifiedMessage::new(
+                "opencode",
+                "m1",
+                "anthropic",
+                "s2",
+                base + 7_200_000,
+                tb,
+                2.0,
+            ),
+        ];
+
+        let usage = loader
+            .aggregate_messages(messages, &GroupBy::Model)
+            .unwrap();
+        assert!(
+            usage.hourly.len() >= 2,
+            "expected distinct hour buckets, got {}",
+            usage.hourly.len()
+        );
     }
 
     #[test]

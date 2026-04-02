@@ -4,6 +4,7 @@ mod daily;
 pub mod dialog;
 mod footer;
 mod header;
+mod hourly;
 mod models;
 mod overview;
 pub mod spinner;
@@ -45,6 +46,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Tab::Models => models::render(frame, app, chunks[1]),
             Tab::Agents => agents::render(frame, app, chunks[1]),
             Tab::Daily => daily::render(frame, app, chunks[1]),
+            Tab::Hourly => hourly::render(frame, app, chunks[1]),
             Tab::Stats => stats::render(frame, app, chunks[1]),
         }
     }

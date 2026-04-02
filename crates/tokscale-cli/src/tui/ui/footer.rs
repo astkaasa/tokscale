@@ -138,6 +138,7 @@ fn render_main_row(frame: &mut Frame, app: &mut App, area: Rect) {
     if !is_very_narrow {
         let count_label = match app.current_tab {
             Tab::Agents => format!(" ({} agents)", app.data.agents.len()),
+            Tab::Hourly => format!(" ({} hours)", app.data.hourly.len()),
             _ => format!(" ({} models)", app.data.models.len()),
         };
         right_spans.push(Span::styled(
@@ -172,7 +173,7 @@ fn render_help_row(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("·", Style::default().fg(app.theme.muted)),
             Span::styled("q", Style::default().fg(app.theme.muted)),
         ];
-        if app.current_tab == Tab::Daily {
+        if app.current_tab == Tab::Daily || app.current_tab == Tab::Hourly {
             spans.push(Span::styled("·", Style::default().fg(app.theme.muted)));
             spans.push(Span::styled("j", Style::default().fg(Color::Yellow)));
         }
@@ -189,6 +190,13 @@ fn render_help_row(frame: &mut Frame, app: &App, area: Rect) {
         if app.current_tab == Tab::Daily {
             spans.push(Span::styled(
                 "[j:today]",
+                Style::default().fg(Color::Yellow),
+            ));
+            spans.push(Span::styled(" • ", Style::default().fg(app.theme.muted)));
+        }
+        if app.current_tab == Tab::Hourly {
+            spans.push(Span::styled(
+                "[j:now]",
                 Style::default().fg(Color::Yellow),
             ));
             spans.push(Span::styled(" • ", Style::default().fg(app.theme.muted)));

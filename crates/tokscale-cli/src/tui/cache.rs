@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use tokscale_core::{ClientId, GroupBy};
 
 use super::data::{
-    AgentUsage, ContributionDay, DailyModelInfo, DailyUsage, GraphData, ModelUsage, TokenBreakdown,
-    UsageData,
+    AgentUsage, ContributionDay, DailyModelInfo, DailyUsage, GraphData, HourlyUsage, ModelUsage,
+    TokenBreakdown, UsageData,
 };
 
 /// Cache staleness threshold: 5 minutes (matches TS implementation)
@@ -55,6 +55,8 @@ struct CachedUsageData {
     #[serde(default)]
     agents: Vec<CachedAgentUsage>,
     daily: Vec<CachedDailyUsage>,
+    #[serde(default)]
+    hourly: Vec<CachedHourlyUsage>,
     graph: Option<CachedGraphData>,
     total_tokens: u64,
     total_cost: f64,
@@ -103,6 +105,7 @@ struct CachedDailyModelInfo {
     client: String,
     #[serde(default)]
     provider: String,
+    #[serde(default)]
     display_name: String,
     #[serde(default)]
     color_key: String,
@@ -117,6 +120,15 @@ struct CachedDailyUsage {
     tokens: CachedTokenBreakdown,
     cost: f64,
     models: Vec<(String, CachedDailyModelInfo)>, // HashMap as vec of tuples
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedHourlyUsage {
+    hour_start: String,
+    tokens: CachedTokenBreakdown,
+    cost: f64,
+    models: Vec<(String, CachedDailyModelInfo)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,6 +310,64 @@ impl TryFrom<CachedDailyUsage> for DailyUsage {
     }
 }
 
+impl From<&HourlyUsage> for CachedHourlyUsage {
+    fn from(h: &HourlyUsage) -> Self {
+        Self {
+            hour_start: h.hour_start.format("%Y-%m-%d %H:%M:%S").to_string(),
+            tokens: (&h.tokens).into(),
+            cost: h.cost,
+            models: h
+                .models
+                .iter()
+                .map(|(k, v)| (k.clone(), v.into()))
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<CachedHourlyUsage> for HourlyUsage {
+    type Error = chrono::ParseError;
+
+    fn try_from(h: CachedHourlyUsage) -> Result<Self, Self::Error> {
+        use chrono::NaiveDateTime;
+        Ok(Self {
+            hour_start: NaiveDateTime::parse_from_str(&h.hour_start, "%Y-%m-%d %H:%M:%S")?,
+            tokens: h.tokens.into(),
+            cost: h.cost,
+            models: h
+                .models
+                .into_iter()
+                .map(|(key, value)| {
+                    let display_name = if value.display_name.is_empty() {
+                        key.clone()
+                    } else {
+                        value.display_name.clone()
+                    };
+                    let color_key = if value.color_key.is_empty() {
+                        display_name
+                            .rsplit_once(" / ")
+                            .map(|(_, base_model)| base_model.to_string())
+                            .unwrap_or_else(|| display_name.clone())
+                    } else {
+                        value.color_key.clone()
+                    };
+                    (
+                        key,
+                        DailyModelInfo {
+                            client: value.client,
+                            display_name,
+                            color_key,
+                            provider: value.provider,
+                            tokens: value.tokens.into(),
+                            cost: value.cost,
+                        },
+                    )
+                })
+                .collect(),
+        })
+    }
+}
+
 impl From<&ContributionDay> for CachedContributionDay {
     fn from(c: &ContributionDay) -> Self {
         Self {
@@ -362,6 +432,7 @@ impl From<&UsageData> for CachedUsageData {
             models: u.models.iter().map(|m| m.into()).collect(),
             agents: u.agents.iter().map(|a| a.into()).collect(),
             daily: u.daily.iter().map(|d| d.into()).collect(),
+            hourly: u.hourly.iter().map(|h| h.into()).collect(),
             graph: u.graph.as_ref().map(|g| g.into()),
             total_tokens: u.total_tokens,
             total_cost: u.total_cost,
@@ -376,12 +447,15 @@ impl TryFrom<CachedUsageData> for UsageData {
 
     fn try_from(u: CachedUsageData) -> Result<Self, Self::Error> {
         let daily: Result<Vec<DailyUsage>, _> = u.daily.into_iter().map(|d| d.try_into()).collect();
+        let hourly: Result<Vec<HourlyUsage>, _> =
+            u.hourly.into_iter().map(|h| h.try_into()).collect();
         let graph: Option<Result<GraphData, _>> = u.graph.map(|g| g.try_into());
 
         Ok(Self {
             models: u.models.into_iter().map(|m| m.into()).collect(),
             agents: u.agents.into_iter().map(|a| a.into()).collect(),
             daily: daily?,
+            hourly: hourly?,
             graph: graph.transpose()?,
             total_tokens: u.total_tokens,
             total_cost: u.total_cost,
