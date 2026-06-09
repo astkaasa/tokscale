@@ -652,7 +652,7 @@ tokscale usage --json
 tokscale usage --light
 ```
 
-In the TUI, navigate to the **Usage** tab to see subscription data. Press `u` or `r` to refresh.
+In the TUI, navigate to the **Usage** tab to see subscription data. Use `[Refresh]` to refresh subscription quotas. The keyboard refresh shortcut `r` uses the same refresh path.
 
 > **Note**: Subscription quotas and balances are **vendor-reported** — tokscale calls each provider's own quota endpoint and surfaces the response verbatim. Numbers reflect what the provider reports (which is also what shows up in their official dashboards) and are not independently verified against tokscale's own usage tracking.
 
@@ -661,7 +661,7 @@ In the TUI, navigate to the **Usage** tab to see subscription data. Press `u` or
 | Provider | Auth Method | Metrics | Setup |
 |----------|-------------|---------|-------|
 | **Claude** | OAuth (credentials file or macOS Keychain) | Session (5hr), Weekly, Opus quotas | Run `claude` to log in |
-| **Codex** (OpenAI) | OAuth (`~/.config/codex/auth.json` or `~/.codex/auth.json`) | Session, Weekly quotas | Run `codex` to log in |
+| **Codex** (OpenAI) | OAuth (`~/.config/codex/auth.json`, `~/.codex/auth.json`, or saved Tokscale accounts) | Session, Weekly quotas | Use `[Add Codex]` in the TUI Usage tab, run `codex` to log in, or import an existing auth with `tokscale codex import --name work` |
 | **Z.ai** | API key (env var) | Token limits, Web Searches | Set `ZAI_API_KEY` or `GLM_API_KEY` |
 | **Amp** | API key (`~/.local/share/amp/secrets.json`) | Free tier balance, Credits | Run `amp` to log in |
 | **GitHub Copilot** | GitHub token (keychain or `~/.config/gh/hosts.yml`) | Premium interactions, Chat quotas | Run `gh auth login` |
@@ -669,6 +669,35 @@ In the TUI, navigate to the **Usage** tab to see subscription data. Press `u` or
 | **MiniMax** | API key (env var) | Prompt quotas per model | Set `MINIMAX_API_KEY` or `MINIMAX_API_TOKEN` |
 
 Providers are auto-detected — only those with valid credentials are shown. If a provider is missing, ensure you've logged in or set the required environment variable.
+
+#### Codex Multi-Account Usage
+
+Tokscale can save multiple Codex OAuth accounts for subscription usage display. The TUI Usage tab groups saved accounts under one **Codex** section. The active account is marked with `*`; inactive accounts can be selected with `[Use]`; account removal uses `[Remove]` followed by `[Confirm]`.
+
+To add an account without leaving the TUI, click `[Add Codex]` in the Usage tab. Tokscale starts `codex login` with a temporary `CODEX_HOME`, displays the login output in the Usage tab, imports the resulting auth into Tokscale's saved account store, and then refreshes usage. This keeps the login isolated and does not switch the current Codex auth; click `[Use]` on a saved account when you want Tokscale to write that account into the real Codex auth file.
+
+The CLI commands are still available for scripted or manual account management:
+
+```bash
+# Save the current Codex auth as a named Tokscale account
+tokscale codex import --name work
+
+# List saved Codex accounts
+tokscale codex accounts
+tokscale codex accounts --json
+
+# Switch the active Codex account and write Codex auth.json
+tokscale codex switch work
+
+# Remove a saved Codex account
+tokscale codex remove personal
+
+# Check subscription usage for the active or a named account
+tokscale codex status
+tokscale codex status --name personal --json
+```
+
+When saved Codex accounts exist, `tokscale usage --json` includes structured account metadata for each Codex entry and the TUI displays those entries under one Codex group. Without saved accounts, Tokscale falls back to the current Codex auth discovery path (`CODEX_HOME/auth.json`, `~/.config/codex/auth.json`, `~/.codex/auth.json`, then macOS Keychain).
 
 #### Example Output
 
