@@ -1,9 +1,12 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table,
 };
 
-use super::widgets::{format_cost, format_tokens, get_client_display_name};
+use super::widgets::{
+    format_cost, format_tokens, get_client_display_name, scrollbar_state,
+    truncate_ascii as truncate,
+};
 use crate::tui::app::{App, SortDirection, SortField};
 use crate::ClientFilter;
 
@@ -176,7 +179,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
 
-        let mut scrollbar_state = ScrollbarState::new(agents_len).position(scroll_offset);
+        let mut scrollbar_state = scrollbar_state(agents_len, scroll_offset, visible_height);
 
         frame.render_stateful_widget(
             scrollbar,
@@ -211,21 +214,6 @@ fn client_labels(clients: &str) -> String {
         .map(get_client_display_name)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn truncate(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        s.to_string()
-    } else if max_chars <= 3 {
-        s.chars().take(max_chars).collect()
-    } else {
-        let head: String = s.chars().take(max_chars - 3).collect();
-        format!("{}...", head)
-    }
 }
 
 #[cfg(test)]

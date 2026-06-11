@@ -1,9 +1,10 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{
-    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation};
 
-use super::widgets::{format_cost, format_tokens, get_client_color, get_client_display_name};
+use super::widgets::{
+    format_cost, format_tokens, get_client_color, get_client_display_name, scrollbar_state,
+    truncate_ellipsis as truncate_model_name,
+};
 use crate::tui::app::{App, ClickAction};
 
 const CELL_WIDTH: u16 = 2;
@@ -641,8 +642,11 @@ fn render_breakdown_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
 
-        let mut scrollbar_state =
-            ScrollbarState::new(app.stats_breakdown_total_lines).position(app.scroll_offset);
+        let mut scrollbar_state = scrollbar_state(
+            app.stats_breakdown_total_lines,
+            app.scroll_offset,
+            visible_height,
+        );
 
         frame.render_stateful_widget(
             scrollbar,
@@ -652,20 +656,5 @@ fn render_breakdown_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }),
             &mut scrollbar_state,
         );
-    }
-}
-
-fn truncate_model_name(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        s.to_string()
-    } else if max_chars == 1 {
-        "…".to_string()
-    } else {
-        let head: String = s.chars().take(max_chars - 1).collect();
-        format!("{}…", head)
     }
 }

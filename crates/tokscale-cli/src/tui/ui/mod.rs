@@ -2,11 +2,13 @@ mod agents;
 mod bar_chart;
 mod daily;
 pub mod dialog;
+mod drilldown;
 mod footer;
 mod header;
 mod hourly;
 mod hourly_profile;
 mod minutely;
+mod mix;
 mod models;
 mod overview;
 pub mod spinner;
@@ -33,7 +35,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(5),
+            Constraint::Length(3),
         ])
         .split(area);
 
@@ -43,6 +45,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_loading(frame, app, chunks[1]);
     } else if let Some(ref error) = app.data.error {
         render_error(frame, app, chunks[1], error);
+    } else if app.is_drilldown_active() {
+        drilldown::render(frame, app, chunks[1]);
     } else {
         match app.current_tab {
             Tab::Overview => overview::render(frame, app, chunks[1]),

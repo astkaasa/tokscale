@@ -1,10 +1,10 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use chrono::NaiveDate;
+use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use tokscale_core::ClientId;
@@ -19,8 +19,8 @@ use super::data::{
 };
 use super::settings::Settings;
 use super::themes::{Theme, ThemeName};
-use super::ui::dialog::{ClientPickerDialog, DialogStack};
-use super::ui::widgets::{get_model_color, get_provider_from_model, get_provider_shade};
+use super::ui::dialog::{ClientPickerDialog, ConfirmDialog, DialogStack};
+use super::ui::widgets::{get_model_color, get_provider_shade};
 
 /// Configuration for TUI initialization
 pub struct TuiConfig {
@@ -34,6 +34,7 @@ pub struct TuiConfig {
     pub initial_tab: Option<Tab>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
     Overview,
@@ -47,17 +48,8 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub fn all() -> &'static [Tab] {
-        &[
-            Tab::Overview,
-            Tab::Usage,
-            Tab::Models,
-            Tab::Daily,
-            Tab::Hourly,
-            Tab::Minutely,
-            Tab::Stats,
-            Tab::Agents,
-        ]
+    pub fn workspaces() -> &'static [Tab] {
+        &[Tab::Overview, Tab::Models, Tab::Daily, Tab::Usage]
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -86,29 +78,17 @@ impl Tab {
         }
     }
 
-    pub fn next(self) -> Tab {
+    pub fn workspace_label(&self) -> &'static str {
         match self {
-            Tab::Overview => Tab::Usage,
-            Tab::Usage => Tab::Models,
-            Tab::Models => Tab::Daily,
-            Tab::Daily => Tab::Hourly,
-            Tab::Hourly => Tab::Minutely,
-            Tab::Minutely => Tab::Stats,
-            Tab::Stats => Tab::Agents,
-            Tab::Agents => Tab::Overview,
+            Tab::Daily => "Timeline",
+            _ => self.as_str(),
         }
     }
 
-    pub fn prev(self) -> Tab {
+    pub fn workspace_short_name(&self) -> &'static str {
         match self {
-            Tab::Overview => Tab::Agents,
-            Tab::Usage => Tab::Overview,
-            Tab::Models => Tab::Usage,
-            Tab::Daily => Tab::Models,
-            Tab::Hourly => Tab::Daily,
-            Tab::Minutely => Tab::Hourly,
-            Tab::Stats => Tab::Minutely,
-            Tab::Agents => Tab::Stats,
+            Tab::Daily => "Time",
+            _ => self.short_name(),
         }
     }
 }
@@ -117,7 +97,56 @@ impl Tab {
 pub enum ChartGranularity {
     #[default]
     Daily,
-    Hourly,
+    Weekly,
+    Monthly,
+}
+
+impl ChartGranularity {
+    pub fn short_label(self) -> &'static str {
+        match self {
+            ChartGranularity::Daily => "D",
+            ChartGranularity::Weekly => "W",
+            ChartGranularity::Monthly => "M",
+        }
+    }
+
+    fn title_label(self) -> &'static str {
+        match self {
+            ChartGranularity::Daily => "Daily",
+            ChartGranularity::Weekly => "Weekly",
+            ChartGranularity::Monthly => "Monthly",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimelineGranularity {
+    #[default]
+    Day,
+    Hour,
+}
+
+impl TimelineGranularity {
+    pub fn short_label(self) -> &'static str {
+        match self {
+            TimelineGranularity::Day => "D",
+            TimelineGranularity::Hour => "H",
+        }
+    }
+
+    pub fn title_label(self) -> &'static str {
+        match self {
+            TimelineGranularity::Day => "Day",
+            TimelineGranularity::Hour => "Hour",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverviewMode {
+    #[default]
+    All,
+    Today,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,11 +185,161 @@ pub struct DailyDetailRow<'a> {
     pub messages: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelDetailKey {
+    pub provider: String,
+    pub model: String,
+    pub color_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodGranularity {
+    Day,
+    Week,
+    Month,
+}
+
+impl PeriodGranularity {
+    pub fn label(self) -> &'static str {
+        match self {
+            PeriodGranularity::Day => "Day",
+            PeriodGranularity::Week => "Week",
+            PeriodGranularity::Month => "Month",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeriodDetailKey {
+    pub granularity: PeriodGranularity,
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    pub label: String,
+}
+
+impl PeriodDetailKey {
+    pub fn day(date: NaiveDate) -> Self {
+        Self {
+            granularity: PeriodGranularity::Day,
+            start: date,
+            end: date,
+            label: date.to_string(),
+        }
+    }
+
+    pub fn week_containing(date: NaiveDate) -> Self {
+        let start = date
+            .checked_sub_signed(ChronoDuration::days(
+                date.weekday().num_days_from_monday() as i64
+            ))
+            .unwrap_or(date);
+        let end = start
+            .checked_add_signed(ChronoDuration::days(6))
+            .unwrap_or(start);
+        let week = date.iso_week();
+        Self {
+            granularity: PeriodGranularity::Week,
+            start,
+            end,
+            label: format!("{} W{:02}", week.year(), week.week()),
+        }
+    }
+
+    pub fn month(year: i32, month: u32) -> Option<Self> {
+        let start = NaiveDate::from_ymd_opt(year, month, 1)?;
+        let next_month = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)?
+        } else {
+            NaiveDate::from_ymd_opt(year, month + 1, 1)?
+        };
+        let end = next_month.checked_sub_signed(ChronoDuration::days(1))?;
+        Some(Self {
+            granularity: PeriodGranularity::Month,
+            start,
+            end,
+            label: start.format("%b '%y").to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrilldownView {
+    Model(ModelDetailKey),
+    Period(PeriodDetailKey),
+}
+
+#[derive(Debug, Clone)]
+pub struct DrilldownState {
+    pub view: DrilldownView,
+    pub parent_tab: Tab,
+    parent_selected_index: usize,
+    parent_scroll_offset: usize,
+    parent_sort_field: SortField,
+    parent_sort_direction: SortDirection,
+    sort_field: SortField,
+    sort_direction: SortDirection,
+    selected_index: usize,
+    scroll_offset: usize,
+    parent: Option<Box<DrilldownState>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelDetailPeriodRow {
+    pub date: NaiveDate,
+    pub source: String,
+    pub model: String,
+    pub tokens: TokenBreakdown,
+    pub cost: f64,
+    pub messages: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PeriodDetailModelRow {
+    pub source: String,
+    pub provider: String,
+    pub model: String,
+    pub color_key: String,
+    pub tokens: TokenBreakdown,
+    pub cost: f64,
+    pub messages: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum ClickAction {
     Tab(Tab),
     Sort(SortField),
+    OverviewChartGranularity(ChartGranularity),
+    TimelineGranularity(TimelineGranularity),
     GraphCell { week: usize, day: usize },
+    OpenModelDetail(ModelDetailKey),
+    OpenPeriodDetail(PeriodDetailKey),
+    UsageRefresh,
+    CodexStartLogin,
+    CodexDismissLogin,
+    UsageSelect { index: usize },
+    UsageToggleEmailPrivacy,
+    CodexUseAccount { account_id: String },
+    CodexRemoveAccount { account_id: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum CodexLoginOutcome {
+    Imported(crate::commands::usage::codex::CodexAccountInfo),
+    Failed(String),
+}
+
+#[cfg(test)]
+type UsageFetcher = fn() -> Vec<crate::commands::usage::UsageOutput>;
+
+#[cfg(test)]
+fn test_usage_fetcher() -> Vec<crate::commands::usage::UsageOutput> {
+    Vec::new()
+}
+
+#[derive(Debug)]
+enum CodexLoginEvent {
+    Output(String),
+    Finished(CodexLoginOutcome),
 }
 
 struct MinutelySortCache {
@@ -191,6 +370,8 @@ pub struct App {
     pub sort_direction: SortDirection,
     tab_sort_state: HashMap<Tab, (SortField, SortDirection)>,
     pub chart_granularity: ChartGranularity,
+    pub timeline_granularity: TimelineGranularity,
+    pub overview_mode: OverviewMode,
 
     pub scroll_offset: usize,
     pub selected_index: usize,
@@ -198,6 +379,7 @@ pub struct App {
     pub selected_daily_detail_date: Option<NaiveDate>,
     daily_list_selected_index: usize,
     daily_list_scroll_offset: usize,
+    pub drilldown: Option<DrilldownState>,
 
     pub selected_graph_cell: Option<(usize, usize)>,
     pub stats_breakdown_total_lines: usize,
@@ -230,8 +412,17 @@ pub struct App {
 
     pub subscription_usage: Vec<crate::commands::usage::UsageOutput>,
 
+    pub codex_login_lines: Vec<String>,
+    pub codex_login_outcome: Option<CodexLoginOutcome>,
+    confirmed_codex_use_account_id: Rc<RefCell<Option<String>>>,
+    confirmed_codex_remove_account_id: Rc<RefCell<Option<String>>>,
+    pub hide_usage_emails: bool,
+
     pub usage_fetch_attempted: bool,
     usage_rx: Option<std::sync::mpsc::Receiver<Vec<crate::commands::usage::UsageOutput>>>,
+    #[cfg(test)]
+    usage_fetcher: UsageFetcher,
+    codex_login_rx: Option<std::sync::mpsc::Receiver<CodexLoginEvent>>,
 
     data_version: u64,
     minutely_sort_cache: RefCell<Option<MinutelySortCache>>,
@@ -274,6 +465,8 @@ impl App {
 
         let auto_refresh = config.refresh > 0 || settings.auto_refresh_enabled;
 
+        let overview_mode = Self::initial_overview_mode(&config.since, &config.until, &config.year);
+
         let data_loader = DataLoader::with_filters(
             config.sessions_path.map(std::path::PathBuf::from),
             config.since,
@@ -286,6 +479,8 @@ impl App {
         let has_data = !data.models.is_empty();
         let dialog_stack = DialogStack::new(theme.clone());
         let dialog_needs_reload = Rc::new(RefCell::new(false));
+        let confirmed_codex_use_account_id = Rc::new(RefCell::new(None));
+        let confirmed_codex_remove_account_id = Rc::new(RefCell::new(None));
         let requested_tab = config.initial_tab.unwrap_or(Tab::Overview);
         let current_tab = if Self::tab_visible(&settings, requested_tab) {
             requested_tab
@@ -307,12 +502,15 @@ impl App {
             sort_direction,
             tab_sort_state: HashMap::new(),
             chart_granularity: ChartGranularity::default(),
+            timeline_granularity: TimelineGranularity::default(),
+            overview_mode,
             scroll_offset: 0,
             selected_index: 0,
             max_visible_items: 20,
             selected_daily_detail_date: None,
             daily_list_selected_index: 0,
             daily_list_scroll_offset: 0,
+            drilldown: None,
             selected_graph_cell: None,
             stats_breakdown_total_lines: 0,
             auto_refresh,
@@ -344,12 +542,21 @@ impl App {
                     Vec::new()
                 }
             },
+            codex_login_lines: Vec::new(),
+            codex_login_outcome: None,
+            confirmed_codex_use_account_id,
+            confirmed_codex_remove_account_id,
+            hide_usage_emails: true,
             usage_fetch_attempted: false,
             usage_rx: None,
+            #[cfg(test)]
+            usage_fetcher: test_usage_fetcher,
+            codex_login_rx: None,
             data_version: 0,
             minutely_sort_cache: RefCell::new(None),
         };
         app.build_model_shade_map();
+        app.maybe_fetch_usage_on_entry();
         Ok(app)
     }
 
@@ -365,14 +572,14 @@ impl App {
         self.build_model_shade_map();
         self.minutely_sort_cache.borrow_mut().take();
 
-        // Exit Daily-detail mode if the refresh dropped the day we were
-        // viewing; otherwise `get_sorted_daily_detail_rows()` would return
-        // empty while the user is still nominally in detail mode.
-        if let Some(date) = self.selected_daily_detail_date {
-            if !self.data.daily.iter().any(|day| day.date == date) {
-                self.selected_daily_detail_date = None;
-                self.selected_index = self.daily_list_selected_index;
-                self.scroll_offset = self.daily_list_scroll_offset;
+        if let Some(DrilldownView::Period(key)) = self.drilldown_view().cloned() {
+            if !self
+                .data
+                .daily
+                .iter()
+                .any(|day| day.date >= key.start && day.date <= key.end)
+            {
+                self.close_drilldown();
             }
         }
 
@@ -384,23 +591,19 @@ impl App {
     }
 
     pub fn model_color_for(&self, provider: &str, model: &str) -> Color {
-        let provider = if provider.is_empty() || provider.contains(", ") {
-            get_provider_from_model(model)
-        } else {
-            provider
-        };
-        let lookup_key = super::colors::model_shade_key(provider, model);
+        let provider = super::colors::provider_color_key(provider, model);
+        let lookup_key = super::colors::model_shade_key(&provider, model);
         let color = self
             .model_shade_map
             .get(&lookup_key)
             .copied()
-            .unwrap_or_else(|| get_provider_shade(provider, 0));
+            .unwrap_or_else(|| get_provider_shade(&provider, 0));
         self.theme.color(color)
     }
 
     pub fn model_color(&self, model: &str) -> Color {
-        let provider = get_provider_from_model(model);
-        let lookup_key = super::colors::model_shade_key(provider, model);
+        let provider = super::colors::provider_color_key("", model);
+        let lookup_key = super::colors::model_shade_key(&provider, model);
         let color = self
             .model_shade_map
             .get(&lookup_key)
@@ -450,6 +653,7 @@ impl App {
                 Ok(results) => {
                     self.usage_rx = None;
                     self.subscription_usage = results;
+                    self.clamp_selection();
                     if !self.subscription_usage.is_empty() {
                         crate::commands::usage::save_cache(&self.subscription_usage);
                         self.status_message = Some("Usage data loaded".into());
@@ -467,6 +671,73 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+
+        self.poll_codex_login();
+    }
+
+    fn poll_codex_login(&mut self) {
+        let mut events = Vec::new();
+        let mut disconnected = false;
+
+        if let Some(rx) = &self.codex_login_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut finished = false;
+        for event in events {
+            match event {
+                CodexLoginEvent::Output(line) => {
+                    self.codex_login_lines.push(line);
+                    const MAX_LOGIN_LINES: usize = 12;
+                    if self.codex_login_lines.len() > MAX_LOGIN_LINES {
+                        let drain_count = self.codex_login_lines.len() - MAX_LOGIN_LINES;
+                        self.codex_login_lines.drain(0..drain_count);
+                    }
+                }
+                CodexLoginEvent::Finished(outcome) => {
+                    finished = true;
+                    match &outcome {
+                        CodexLoginOutcome::Imported(info) => {
+                            let display = info.label.as_deref().unwrap_or(&info.id);
+                            self.set_status(&format!("Imported Codex account: {display}"));
+                        }
+                        CodexLoginOutcome::Failed(error) => {
+                            self.set_status(&format!("Codex login failed: {error}"));
+                        }
+                    }
+                    self.codex_login_outcome = Some(outcome);
+                }
+            }
+        }
+
+        if disconnected && !finished && self.codex_login_outcome.is_none() {
+            self.codex_login_outcome = Some(CodexLoginOutcome::Failed(
+                "login worker stopped".to_string(),
+            ));
+            self.set_status("Codex login failed: login worker stopped");
+            finished = true;
+        }
+
+        if finished {
+            self.codex_login_rx = None;
+            if matches!(
+                self.codex_login_outcome,
+                Some(CodexLoginOutcome::Imported(_))
+            ) {
+                self.codex_login_lines.clear();
+                self.codex_login_outcome = None;
+                self.refresh_usage();
+            }
+        }
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> bool {
@@ -477,6 +748,7 @@ impl App {
 
         if self.dialog_stack.is_active() {
             self.dialog_stack.handle_key(key.code);
+            self.consume_confirmed_codex_account_action();
             return false;
         }
 
@@ -526,10 +798,22 @@ impl App {
             KeyCode::Char('c') => {
                 self.set_sort(SortField::Cost);
             }
+            KeyCode::Char('t') if self.current_tab == Tab::Overview => {
+                self.toggle_overview_mode();
+            }
+            KeyCode::Char('T') if self.current_tab == Tab::Overview => {
+                self.set_sort(SortField::Tokens);
+            }
             KeyCode::Char('t') => {
                 self.set_sort(SortField::Tokens);
             }
-            KeyCode::Char('d') => {
+            KeyCode::Char('d')
+                if matches!(self.drilldown_view(), Some(DrilldownView::Model(_))) =>
+            {
+                self.set_sort(SortField::Date);
+            }
+            KeyCode::Char('d') if self.is_drilldown_active() => {}
+            KeyCode::Char('d') if self.current_tab != Tab::Daily => {
                 self.set_sort(SortField::Date);
             }
             KeyCode::Char('j') => {
@@ -543,7 +827,6 @@ impl App {
                     self.set_status("Refresh already in progress");
                 } else {
                     self.needs_reload = true;
-                    self.fetch_subscription_usage();
                 }
             }
             KeyCode::Char('R') if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -564,11 +847,20 @@ impl App {
             KeyCode::Char('s') => {
                 self.open_client_picker();
             }
-            KeyCode::Char('h') if self.current_tab == Tab::Overview => {
-                self.chart_granularity = match self.chart_granularity {
-                    ChartGranularity::Daily => ChartGranularity::Hourly,
-                    ChartGranularity::Hourly => ChartGranularity::Daily,
-                };
+            KeyCode::Char('D') if self.current_tab == Tab::Overview => {
+                self.set_chart_granularity(ChartGranularity::Daily);
+            }
+            KeyCode::Char('W') if self.current_tab == Tab::Overview => {
+                self.set_chart_granularity(ChartGranularity::Weekly);
+            }
+            KeyCode::Char('M') if self.current_tab == Tab::Overview => {
+                self.set_chart_granularity(ChartGranularity::Monthly);
+            }
+            KeyCode::Char('d') if self.current_tab == Tab::Daily => {
+                self.set_timeline_granularity(TimelineGranularity::Day);
+            }
+            KeyCode::Char('h') if self.current_tab == Tab::Daily => {
+                self.set_timeline_granularity(TimelineGranularity::Hour);
             }
             KeyCode::Char('v') if self.current_tab == Tab::Hourly => {
                 self.hourly_view_mode = match self.hourly_view_mode {
@@ -581,18 +873,31 @@ impl App {
                 self.open_group_by_picker();
             }
             KeyCode::Char('u') if self.current_tab == Tab::Usage => {
-                self.fetch_subscription_usage();
+                self.refresh_usage();
             }
-            KeyCode::Enter if self.current_tab == Tab::Daily => {
-                self.open_selected_daily_detail();
+            KeyCode::Char('a') if self.current_tab == Tab::Usage => {
+                self.start_codex_login();
+            }
+            KeyCode::Char('m') if self.current_tab == Tab::Usage => {
+                self.toggle_usage_email_privacy();
+            }
+            KeyCode::Enter if self.is_drilldown_active() => {
+                self.open_selected_drilldown_child();
+            }
+            KeyCode::Enter if matches!(self.current_tab, Tab::Overview | Tab::Models) => {
+                self.open_selected_model_detail();
+            }
+            KeyCode::Enter
+                if self.current_tab == Tab::Daily
+                    && self.timeline_granularity == TimelineGranularity::Day =>
+            {
+                self.open_selected_period_detail();
             }
             KeyCode::Enter if self.current_tab == Tab::Stats => {
                 self.handle_graph_selection();
             }
-            KeyCode::Esc | KeyCode::Backspace
-                if self.current_tab == Tab::Daily && self.is_daily_detail_active() =>
-            {
-                self.close_daily_detail();
+            KeyCode::Esc | KeyCode::Backspace if self.is_drilldown_active() => {
+                self.close_drilldown();
             }
             KeyCode::Esc if self.selected_graph_cell.is_some() => {
                 self.selected_graph_cell = None;
@@ -614,7 +919,12 @@ impl App {
         self.status_message_time = Some(std::time::Instant::now());
         let (tx, rx) = std::sync::mpsc::channel();
         self.usage_rx = Some(rx);
+        #[cfg(test)]
+        let usage_fetcher = self.usage_fetcher;
         std::thread::spawn(move || {
+            #[cfg(test)]
+            let results = usage_fetcher();
+            #[cfg(not(test))]
             let results = crate::commands::usage::fetch_all();
             let _ = tx.send(results);
         });
@@ -624,9 +934,195 @@ impl App {
         self.usage_rx.is_some()
     }
 
+    pub fn refresh_usage(&mut self) {
+        if self.usage_rx.is_some() {
+            self.set_status("Refresh already in progress");
+        } else {
+            self.fetch_subscription_usage();
+        }
+    }
+
+    fn maybe_fetch_usage_on_entry(&mut self) {
+        if self.current_tab == Tab::Usage && !self.usage_fetch_attempted && self.usage_rx.is_none()
+        {
+            self.fetch_subscription_usage();
+        }
+    }
+
+    pub fn is_codex_login_running(&self) -> bool {
+        self.codex_login_rx.is_some()
+    }
+
+    pub fn should_show_codex_login_panel(&self) -> bool {
+        self.is_codex_login_running()
+            || self.codex_login_outcome.is_some()
+            || !self.codex_login_lines.is_empty()
+    }
+
+    pub fn start_codex_login(&mut self) {
+        if self.codex_login_rx.is_some() {
+            self.set_status("Codex login already in progress");
+            return;
+        }
+
+        self.codex_login_lines.clear();
+        self.codex_login_outcome = None;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.codex_login_rx = Some(rx);
+        self.set_status("Starting Codex login...");
+        std::thread::spawn(move || run_codex_login_worker(tx));
+    }
+
+    pub fn dismiss_codex_login(&mut self) {
+        if self.codex_login_rx.is_none() {
+            self.codex_login_lines.clear();
+            self.codex_login_outcome = None;
+            self.set_status("Codex login panel dismissed");
+        }
+    }
+
+    pub fn confirm_codex_account_switch(&mut self, account_id: &str) {
+        if self.subscription_usage.iter().any(|usage| {
+            usage
+                .account
+                .as_ref()
+                .is_some_and(|account| account.id == account_id && account.is_active)
+        }) {
+            self.set_status("Codex account already active");
+            return;
+        }
+
+        let account_label = self.codex_account_label(account_id);
+        let dialog = ConfirmDialog::codex_switch(
+            account_id.to_string(),
+            account_label,
+            self.confirmed_codex_use_account_id.clone(),
+        );
+        self.dialog_stack.show(Box::new(dialog));
+        self.set_status("Confirm Codex account switch");
+    }
+
+    pub fn confirm_codex_account_removal(&mut self, account_id: &str) {
+        let account_label = self.codex_account_label(account_id);
+        let dialog = ConfirmDialog::codex_remove(
+            account_id.to_string(),
+            account_label,
+            self.confirmed_codex_remove_account_id.clone(),
+        );
+        self.dialog_stack.show(Box::new(dialog));
+        self.set_status("Confirm Codex account removal");
+    }
+
+    fn consume_confirmed_codex_account_action(&mut self) {
+        let account_id = self.confirmed_codex_use_account_id.borrow_mut().take();
+        if let Some(account_id) = account_id {
+            self.use_codex_account(&account_id);
+            return;
+        }
+
+        let account_id = self.confirmed_codex_remove_account_id.borrow_mut().take();
+        if let Some(account_id) = account_id {
+            self.remove_codex_account(&account_id);
+        }
+    }
+
+    fn codex_account_label(&self, account_id: &str) -> String {
+        self.subscription_usage
+            .iter()
+            .find_map(|usage| {
+                let account = usage.account.as_ref()?;
+                if account.id != account_id {
+                    return None;
+                }
+
+                let label = usage
+                    .account_display_name()
+                    .unwrap_or_else(|| account.display_name());
+                if self.hide_usage_emails && looks_like_email(&label) {
+                    Some(format!("Account {}", account.short_id()))
+                } else {
+                    Some(label)
+                }
+            })
+            .unwrap_or_else(|| short_account_id(account_id))
+    }
+
+    pub fn use_codex_account(&mut self, account_id: &str) {
+        match crate::commands::usage::codex::switch_active_account(account_id) {
+            Ok(info) => {
+                self.mark_active_codex_account(&info.id);
+                if let Some(index) = self.subscription_usage.iter().position(|usage| {
+                    usage
+                        .account
+                        .as_ref()
+                        .is_some_and(|account| account.id == info.id)
+                }) {
+                    self.selected_index = index;
+                    if self.selected_index < self.scroll_offset {
+                        self.scroll_offset = self.selected_index;
+                    } else if self.selected_index >= self.scroll_offset + self.max_visible_items {
+                        self.scroll_offset = self
+                            .selected_index
+                            .saturating_sub(self.max_visible_items.saturating_sub(1));
+                    }
+                }
+                self.persist_subscription_usage_cache();
+                let display = info.label.as_deref().unwrap_or(&info.id);
+                self.set_status(&format!("Active Codex account: {display}"));
+            }
+            Err(e) => {
+                self.set_status(&format!("Codex account switch failed: {e}"));
+            }
+        }
+    }
+
+    pub fn remove_codex_account(&mut self, account_id: &str) {
+        match crate::commands::usage::codex::remove_account(account_id) {
+            Ok(info) => {
+                self.subscription_usage.retain(|usage| {
+                    usage.account.as_ref().map(|account| account.id.as_str())
+                        != Some(info.id.as_str())
+                });
+                self.clamp_selection();
+                if let Some(active) = crate::commands::usage::codex::list_accounts()
+                    .into_iter()
+                    .find(|account| account.is_active)
+                {
+                    self.mark_active_codex_account(&active.id);
+                }
+                self.persist_subscription_usage_cache();
+                let display = info.label.as_deref().unwrap_or(&info.id);
+                self.set_status(&format!("Removed Codex account: {display}"));
+            }
+            Err(e) => {
+                self.set_status(&format!("Codex account removal failed: {e}"));
+            }
+        }
+    }
+
+    fn persist_subscription_usage_cache(&self) {
+        if self.subscription_usage.is_empty() {
+            crate::commands::usage::clear_cache();
+        } else {
+            crate::commands::usage::save_cache(&self.subscription_usage);
+        }
+    }
+
+    fn mark_active_codex_account(&mut self, active_account_id: &str) {
+        for usage in &mut self.subscription_usage {
+            if usage.provider == "Codex" {
+                if let Some(account) = &mut usage.account {
+                    account.is_active = account.id == active_account_id;
+                }
+            }
+        }
+    }
+
     pub fn handle_mouse_event(&mut self, event: MouseEvent) {
         if self.dialog_stack.is_active() {
             self.dialog_stack.handle_mouse(event);
+            self.consume_confirmed_codex_account_action();
             return;
         }
 
@@ -635,28 +1131,66 @@ impl App {
                 let x = event.column;
                 let y = event.row;
 
-                for area in &self.click_areas {
-                    if x >= area.rect.x
-                        && x < area.rect.x + area.rect.width
-                        && y >= area.rect.y
-                        && y < area.rect.y + area.rect.height
-                    {
-                        match &area.action {
-                            ClickAction::Tab(tab) => {
-                                self.switch_tab(*tab);
-                                self.reset_selection();
-                            }
-                            ClickAction::Sort(field) => {
-                                self.set_sort(*field);
-                            }
-                            ClickAction::GraphCell { week, day } => {
-                                self.selected_graph_cell = Some((*week, *day));
-                                self.stats_breakdown_total_lines = 0;
-                                self.selected_index = 0;
-                                self.scroll_offset = 0;
-                            }
+                let action = self
+                    .click_areas
+                    .iter()
+                    .rev()
+                    .find(|area| {
+                        x >= area.rect.x
+                            && x < area.rect.x + area.rect.width
+                            && y >= area.rect.y
+                            && y < area.rect.y + area.rect.height
+                    })
+                    .map(|area| area.action.clone());
+
+                if let Some(action) = action {
+                    match action {
+                        ClickAction::Tab(tab) => {
+                            self.switch_tab(tab);
+                            self.reset_selection();
                         }
-                        break;
+                        ClickAction::Sort(field) => {
+                            self.set_sort(field);
+                        }
+                        ClickAction::OverviewChartGranularity(granularity) => {
+                            self.set_chart_granularity(granularity);
+                        }
+                        ClickAction::TimelineGranularity(granularity) => {
+                            self.set_timeline_granularity(granularity);
+                        }
+                        ClickAction::GraphCell { week, day } => {
+                            self.selected_graph_cell = Some((week, day));
+                            self.stats_breakdown_total_lines = 0;
+                            self.selected_index = 0;
+                            self.scroll_offset = 0;
+                        }
+                        ClickAction::OpenModelDetail(key) => {
+                            self.open_model_detail(key);
+                        }
+                        ClickAction::OpenPeriodDetail(key) => {
+                            self.open_period_detail(key);
+                        }
+                        ClickAction::UsageRefresh => {
+                            self.refresh_usage();
+                        }
+                        ClickAction::CodexStartLogin => {
+                            self.start_codex_login();
+                        }
+                        ClickAction::CodexDismissLogin => {
+                            self.dismiss_codex_login();
+                        }
+                        ClickAction::UsageToggleEmailPrivacy => {
+                            self.toggle_usage_email_privacy();
+                        }
+                        ClickAction::UsageSelect { index } => {
+                            self.selected_index = index;
+                        }
+                        ClickAction::CodexUseAccount { account_id } => {
+                            self.confirm_codex_account_switch(&account_id);
+                        }
+                        ClickAction::CodexRemoveAccount { account_id } => {
+                            self.confirm_codex_account_removal(&account_id);
+                        }
                     }
                 }
             }
@@ -667,6 +1201,15 @@ impl App {
                 self.move_selection_down();
             }
             _ => {}
+        }
+    }
+
+    pub fn toggle_usage_email_privacy(&mut self) {
+        self.hide_usage_emails = !self.hide_usage_emails;
+        if self.hide_usage_emails {
+            self.set_status("Usage emails hidden");
+        } else {
+            self.set_status("Usage emails visible");
         }
     }
 
@@ -718,6 +1261,7 @@ impl App {
         self.selected_daily_detail_date = None;
         self.daily_list_selected_index = 0;
         self.daily_list_scroll_offset = 0;
+        self.drilldown = None;
         self.selected_graph_cell = None;
         self.stats_breakdown_total_lines = 0;
     }
@@ -726,6 +1270,7 @@ impl App {
         self.persist_current_sort();
 
         self.current_tab = target;
+        self.drilldown = None;
         if target != Tab::Daily {
             self.selected_daily_detail_date = None;
         }
@@ -737,10 +1282,12 @@ impl App {
             .unwrap_or_else(|| Self::default_sort_for_tab(target));
         self.sort_field = field;
         self.sort_direction = dir;
+
+        self.maybe_fetch_usage_on_entry();
     }
 
     fn default_sort_for_tab(tab: Tab) -> (SortField, SortDirection) {
-        if matches!(tab, Tab::Hourly | Tab::Minutely) {
+        if matches!(tab, Tab::Daily | Tab::Hourly | Tab::Minutely) {
             (SortField::Date, SortDirection::Descending)
         } else {
             (SortField::Cost, SortDirection::Descending)
@@ -758,20 +1305,38 @@ impl App {
         Self::tab_visible(&self.settings, tab)
     }
 
+    pub(crate) fn visible_workspaces(&self) -> Vec<Tab> {
+        Tab::workspaces()
+            .iter()
+            .copied()
+            .filter(|t| self.is_tab_visible(*t))
+            .collect()
+    }
+
     fn next_visible_tab(&self) -> Tab {
-        let mut candidate = self.current_tab.next();
-        while !self.is_tab_visible(candidate) && candidate != self.current_tab {
-            candidate = candidate.next();
+        let tabs = self.visible_workspaces();
+        if tabs.is_empty() {
+            return self.current_tab;
         }
-        candidate
+        let next_index = tabs
+            .iter()
+            .position(|tab| *tab == self.current_tab)
+            .map(|index| (index + 1) % tabs.len())
+            .unwrap_or(0);
+        tabs[next_index]
     }
 
     fn prev_visible_tab(&self) -> Tab {
-        let mut candidate = self.current_tab.prev();
-        while !self.is_tab_visible(candidate) && candidate != self.current_tab {
-            candidate = candidate.prev();
+        let tabs = self.visible_workspaces();
+        if tabs.is_empty() {
+            return self.current_tab;
         }
-        candidate
+        let prev_index = tabs
+            .iter()
+            .position(|tab| *tab == self.current_tab)
+            .map(|index| index.checked_sub(1).unwrap_or(tabs.len() - 1))
+            .unwrap_or(tabs.len() - 1);
+        tabs[prev_index]
     }
 
     fn persist_current_sort(&mut self) {
@@ -887,13 +1452,21 @@ impl App {
     }
 
     fn get_current_list_len(&self) -> usize {
+        if self.is_drilldown_active() {
+            return self.drilldown_list_len();
+        }
+
         match self.current_tab {
-            Tab::Overview | Tab::Models => self.data.models.len(),
+            Tab::Overview => self.overview_model_len(),
+            Tab::Models => self.data.models.len(),
             Tab::Agents => self.data.agents.len(),
             Tab::Daily if self.is_daily_detail_active() => {
                 self.get_sorted_daily_detail_rows().len()
             }
-            Tab::Daily => self.data.daily.len(),
+            Tab::Daily => match self.timeline_granularity {
+                TimelineGranularity::Day => self.data.daily.len(),
+                TimelineGranularity::Hour => self.data.hourly.len(),
+            },
             Tab::Hourly => self.data.hourly.len(),
             Tab::Minutely => self.data.minutely.len(),
             Tab::Stats => {
@@ -903,26 +1476,32 @@ impl App {
                     0
                 }
             }
-            Tab::Usage => self
-                .subscription_usage
-                .iter()
-                .map(|u| u.metrics.len())
-                .sum(),
+            Tab::Usage => self.subscription_usage.len(),
         }
     }
 
     fn set_sort(&mut self, field: SortField) {
-        if self.sort_field == field {
-            self.sort_direction = match self.sort_direction {
+        let (current_field, current_direction) = self.active_sort_state();
+        let next_direction = if current_field == field {
+            match current_direction {
                 SortDirection::Ascending => SortDirection::Descending,
                 SortDirection::Descending => SortDirection::Ascending,
-            };
+            }
         } else {
-            self.sort_field = field;
-            self.sort_direction = SortDirection::Descending;
+            SortDirection::Descending
+        };
+
+        self.sort_field = field;
+        self.sort_direction = next_direction;
+        if let Some(drilldown) = self.drilldown.as_mut() {
+            drilldown.sort_field = field;
+            drilldown.sort_direction = next_direction;
+        } else {
+            self.persist_current_sort();
         }
-        self.persist_current_sort();
-        if self.current_tab == Tab::Daily && self.is_daily_detail_active() {
+        if self.is_drilldown_active()
+            || (self.current_tab == Tab::Daily && self.is_daily_detail_active())
+        {
             self.selected_index = 0;
             self.scroll_offset = 0;
         } else {
@@ -934,11 +1513,61 @@ impl App {
         ));
     }
 
+    fn active_sort_state(&self) -> (SortField, SortDirection) {
+        self.drilldown
+            .as_ref()
+            .map(|state| (state.sort_field, state.sort_direction))
+            .unwrap_or((self.sort_field, self.sort_direction))
+    }
+
+    fn toggle_overview_mode(&mut self) {
+        if self.current_tab != Tab::Overview {
+            return;
+        }
+
+        self.overview_mode = match self.overview_mode {
+            OverviewMode::All => OverviewMode::Today,
+            OverviewMode::Today => OverviewMode::All,
+        };
+        self.reset_selection();
+        self.clamp_selection();
+
+        match self.overview_mode {
+            OverviewMode::All => self.set_status("Overview: all time"),
+            OverviewMode::Today => self.set_status("Overview: today"),
+        }
+    }
+
+    pub(crate) fn set_chart_granularity(&mut self, granularity: ChartGranularity) {
+        if self.current_tab != Tab::Overview {
+            return;
+        }
+        self.chart_granularity = granularity;
+        self.set_status(&format!(
+            "Overview chart: {}",
+            granularity.title_label().to_lowercase()
+        ));
+    }
+
+    pub(crate) fn set_timeline_granularity(&mut self, granularity: TimelineGranularity) {
+        if self.current_tab != Tab::Daily {
+            return;
+        }
+        self.timeline_granularity = granularity;
+        self.selected_daily_detail_date = None;
+        self.drilldown = None;
+        self.sort_field = SortField::Date;
+        self.sort_direction = SortDirection::Descending;
+        self.reset_selection();
+        self.set_status(&format!("Timeline: {}", granularity.title_label()));
+    }
+
     fn jump_to_today(&mut self) {
         if self.current_tab != Tab::Daily {
             return;
         }
         self.selected_daily_detail_date = None;
+        self.drilldown = None;
 
         let today = chrono::Local::now().date_naive();
         let (today_index, total_len) = {
@@ -1026,55 +1655,277 @@ impl App {
         self.dialog_stack.show(Box::new(dialog));
     }
 
-    fn open_selected_daily_detail(&mut self) {
-        if self.is_daily_detail_active() {
-            return;
-        }
+    pub fn is_drilldown_active(&self) -> bool {
+        self.drilldown.is_some()
+    }
 
+    pub fn drilldown_view(&self) -> Option<&DrilldownView> {
+        self.drilldown.as_ref().map(|state| &state.view)
+    }
+
+    pub fn open_selected_model_detail(&mut self) {
+        let Some(key) = self.selected_model_detail_key() else {
+            self.set_status("No model selected");
+            return;
+        };
+        self.open_model_detail(key);
+    }
+
+    pub fn open_model_detail(&mut self, key: ModelDetailKey) {
+        self.open_drilldown(DrilldownView::Model(key));
+    }
+
+    pub fn open_selected_period_detail(&mut self) {
         let selected_date = {
             let daily = self.get_sorted_daily();
             daily.get(self.selected_index).map(|day| day.date)
         };
 
         if let Some(date) = selected_date {
-            self.daily_list_selected_index = self.selected_index;
-            self.daily_list_scroll_offset = self.scroll_offset;
-            self.selected_daily_detail_date = Some(date);
-            self.selected_index = 0;
-            self.scroll_offset = 0;
-            self.set_status(&format!("Viewing daily details for {}", date));
-            self.clamp_selection();
+            self.open_period_detail(PeriodDetailKey::day(date));
+        } else {
+            self.set_status("No period selected");
         }
     }
 
-    fn close_daily_detail(&mut self) {
-        let Some(detail_date) = self.selected_daily_detail_date else {
+    pub fn open_period_detail(&mut self, key: PeriodDetailKey) {
+        self.open_drilldown(DrilldownView::Period(key));
+    }
+
+    fn open_drilldown(&mut self, view: DrilldownView) {
+        let parent = self.drilldown.take().map(|mut active| {
+            active.selected_index = self.selected_index;
+            active.scroll_offset = self.scroll_offset;
+            active.sort_field = self.sort_field;
+            active.sort_direction = self.sort_direction;
+            Box::new(active)
+        });
+        let (
+            parent_tab,
+            parent_selected_index,
+            parent_scroll_offset,
+            parent_sort_field,
+            parent_sort_direction,
+        ) = if let Some(active) = parent.as_ref() {
+            (
+                active.parent_tab,
+                active.parent_selected_index,
+                active.parent_scroll_offset,
+                active.parent_sort_field,
+                active.parent_sort_direction,
+            )
+        } else {
+            (
+                self.current_tab,
+                self.selected_index,
+                self.scroll_offset,
+                self.sort_field,
+                self.sort_direction,
+            )
+        };
+        let (sort_field, sort_direction) = Self::default_sort_for_drilldown(&view);
+
+        self.drilldown = Some(DrilldownState {
+            view,
+            parent_tab,
+            parent_selected_index,
+            parent_scroll_offset,
+            parent_sort_field,
+            parent_sort_direction,
+            sort_field,
+            sort_direction,
+            selected_index: 0,
+            scroll_offset: 0,
+            parent,
+        });
+        self.sort_field = sort_field;
+        self.sort_direction = sort_direction;
+        self.selected_daily_detail_date = None;
+        self.selected_graph_cell = None;
+        self.stats_breakdown_total_lines = 0;
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+        self.clear_status();
+        self.clamp_selection();
+    }
+
+    fn default_sort_for_drilldown(_view: &DrilldownView) -> (SortField, SortDirection) {
+        (SortField::Cost, SortDirection::Descending)
+    }
+
+    pub fn close_drilldown(&mut self) {
+        let Some(state) = self.drilldown.take() else {
             return;
         };
 
-        self.selected_daily_detail_date = None;
+        if let Some(parent) = state.parent {
+            let parent = *parent;
+            self.selected_index = parent.selected_index;
+            self.scroll_offset = parent.scroll_offset;
+            self.sort_field = parent.sort_field;
+            self.sort_direction = parent.sort_direction;
+            self.drilldown = Some(parent);
+            self.clear_status();
+            self.clamp_selection();
+            return;
+        }
 
-        // Re-anchor by date so a sort change inside detail mode still
-        // restores the same day rather than the stale list index.
-        let restored_index = self
-            .get_sorted_daily()
-            .iter()
-            .position(|day| day.date == detail_date)
-            .unwrap_or(self.daily_list_selected_index);
+        self.current_tab = state.parent_tab;
+        self.sort_field = state.parent_sort_field;
+        self.sort_direction = state.parent_sort_direction;
+        let restored_index = match &state.view {
+            DrilldownView::Period(key)
+                if state.parent_tab == Tab::Daily && key.granularity == PeriodGranularity::Day =>
+            {
+                self.get_sorted_daily()
+                    .iter()
+                    .position(|day| day.date == key.start)
+                    .unwrap_or(state.parent_selected_index)
+            }
+            _ => state.parent_selected_index,
+        };
 
         self.selected_index = restored_index;
-
         let max_visible = self.max_visible_items.max(1);
-        let viewport_still_holds = restored_index >= self.daily_list_scroll_offset
-            && restored_index < self.daily_list_scroll_offset + max_visible;
+        let viewport_still_holds = restored_index >= state.parent_scroll_offset
+            && restored_index < state.parent_scroll_offset + max_visible;
         self.scroll_offset = if viewport_still_holds {
-            self.daily_list_scroll_offset
+            state.parent_scroll_offset
         } else {
             restored_index.saturating_sub(max_visible / 2)
         };
-
-        self.set_status("Returned to daily usage");
+        self.clear_status();
         self.clamp_selection();
+    }
+
+    fn selected_model_detail_key(&self) -> Option<ModelDetailKey> {
+        match self.current_tab {
+            Tab::Overview => self
+                .overview_model_detail_keys()
+                .get(self.selected_index)
+                .cloned(),
+            Tab::Models => self
+                .get_sorted_models()
+                .get(self.selected_index)
+                .map(|model| self.model_detail_key_for_usage(model)),
+            _ => None,
+        }
+    }
+
+    pub fn model_detail_key_for_usage(&self, model: &ModelUsage) -> ModelDetailKey {
+        let group_by = self.group_by.borrow().clone();
+        let label = if group_by == tokscale_core::GroupBy::WorkspaceModel {
+            match &model.workspace_label {
+                Some(workspace) => format!("{workspace} / {}", model.model),
+                None => model.model.clone(),
+            }
+        } else {
+            model.model.clone()
+        };
+
+        ModelDetailKey {
+            provider: super::colors::provider_color_key(&model.provider, &model.model),
+            model: label,
+            color_key: model.model.clone(),
+        }
+    }
+
+    pub fn overview_model_detail_keys(&self) -> Vec<ModelDetailKey> {
+        if self.overview_mode == OverviewMode::All {
+            return self
+                .get_sorted_models()
+                .into_iter()
+                .map(|model| self.model_detail_key_for_usage(model))
+                .collect();
+        }
+
+        let Some(day) = self.today_usage() else {
+            return Vec::new();
+        };
+
+        let mut candidates: BTreeMap<
+            (String, String, String),
+            (ModelDetailKey, TokenBreakdown, f64),
+        > = BTreeMap::new();
+        for source_info in day.source_breakdown.values() {
+            for info in source_info.models.values() {
+                let provider = super::colors::provider_color_key(&info.provider, &info.color_key);
+                let key = ModelDetailKey {
+                    provider: provider.clone(),
+                    model: info.display_name.clone(),
+                    color_key: info.color_key.clone(),
+                };
+                let entry = candidates
+                    .entry((provider, info.display_name.clone(), info.color_key.clone()))
+                    .or_insert_with(|| (key, TokenBreakdown::default(), 0.0));
+                add_tokens(&mut entry.1, &info.tokens);
+                if info.cost.is_finite() {
+                    entry.2 += info.cost;
+                }
+            }
+        }
+
+        let mut candidates = candidates.into_values().collect::<Vec<_>>();
+        match (self.sort_field, self.sort_direction) {
+            (SortField::Cost, SortDirection::Descending) => candidates
+                .sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.model.cmp(&b.0.model))),
+            (SortField::Cost, SortDirection::Ascending) => candidates
+                .sort_by(|a, b| a.2.total_cmp(&b.2).then_with(|| a.0.model.cmp(&b.0.model))),
+            (SortField::Tokens, SortDirection::Descending) => candidates.sort_by(|a, b| {
+                b.1.total()
+                    .cmp(&a.1.total())
+                    .then_with(|| a.0.model.cmp(&b.0.model))
+            }),
+            (SortField::Tokens, SortDirection::Ascending) => candidates.sort_by(|a, b| {
+                a.1.total()
+                    .cmp(&b.1.total())
+                    .then_with(|| a.0.model.cmp(&b.0.model))
+            }),
+            (SortField::Date, _) => candidates.sort_by(|a, b| a.0.model.cmp(&b.0.model)),
+        }
+
+        candidates
+            .into_iter()
+            .map(|candidate| candidate.0)
+            .collect()
+    }
+
+    pub fn drilldown_list_len(&self) -> usize {
+        match self.drilldown_view() {
+            Some(DrilldownView::Model(_)) => self.get_sorted_model_detail_rows().len(),
+            Some(DrilldownView::Period(_)) => self.get_sorted_period_detail_rows().len(),
+            None => 0,
+        }
+    }
+
+    pub fn open_selected_drilldown_child(&mut self) {
+        match self.drilldown_view().cloned() {
+            Some(DrilldownView::Model(_)) => {
+                let Some(row) = self
+                    .get_sorted_model_detail_rows()
+                    .get(self.selected_index)
+                    .cloned()
+                else {
+                    return;
+                };
+                self.open_period_detail(PeriodDetailKey::day(row.date));
+            }
+            Some(DrilldownView::Period(_)) => {
+                let Some(row) = self
+                    .get_sorted_period_detail_rows()
+                    .get(self.selected_index)
+                    .cloned()
+                else {
+                    return;
+                };
+                self.open_model_detail(ModelDetailKey {
+                    provider: row.provider,
+                    model: row.model,
+                    color_key: row.color_key,
+                });
+            }
+            None => {}
+        }
     }
 
     fn toggle_auto_refresh(&mut self) {
@@ -1146,10 +1997,22 @@ impl App {
                         row.cost
                     )
                 }),
-            Tab::Daily => self
-                .get_sorted_daily()
-                .get(self.selected_index)
-                .map(|d| format!("{}: {} tokens, ${:.4}", d.date, d.tokens.total(), d.cost)),
+            Tab::Daily => match self.timeline_granularity {
+                TimelineGranularity::Day => self
+                    .get_sorted_daily()
+                    .get(self.selected_index)
+                    .map(|d| format!("{}: {} tokens, ${:.4}", d.date, d.tokens.total(), d.cost)),
+                TimelineGranularity::Hour => {
+                    self.get_sorted_hourly().get(self.selected_index).map(|h| {
+                        format!(
+                            "{}: {} tokens, ${:.4}",
+                            h.datetime.format("%Y-%m-%d %H:%M"),
+                            h.tokens.total(),
+                            h.cost
+                        )
+                    })
+                }
+            },
             Tab::Hourly => self.get_sorted_hourly().get(self.selected_index).map(|h| {
                 format!(
                     "{}: {} tokens, ${:.4}",
@@ -1204,6 +2067,85 @@ impl App {
     pub fn set_status(&mut self, message: &str) {
         self.status_message = Some(message.to_string());
         self.status_message_time = Some(Instant::now());
+    }
+
+    fn clear_status(&mut self) {
+        self.status_message = None;
+        self.status_message_time = None;
+    }
+
+    fn initial_overview_mode(
+        since: &Option<String>,
+        until: &Option<String>,
+        year: &Option<String>,
+    ) -> OverviewMode {
+        if year.is_some() {
+            return OverviewMode::All;
+        }
+
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        if since.as_deref() == Some(today.as_str()) && until.as_deref() == Some(today.as_str()) {
+            OverviewMode::Today
+        } else {
+            OverviewMode::All
+        }
+    }
+
+    pub fn overview_date(&self) -> NaiveDate {
+        chrono::Local::now().date_naive()
+    }
+
+    pub fn overview_title(&self) -> String {
+        match self.overview_mode {
+            OverviewMode::All => "Overview".to_string(),
+            OverviewMode::Today => format!("Today · {}", self.overview_date().format("%b %-d")),
+        }
+    }
+
+    pub fn today_usage(&self) -> Option<&DailyUsage> {
+        let today = self.overview_date();
+        self.data.daily.iter().find(|day| day.date == today)
+    }
+
+    pub fn overview_totals(&self) -> (u64, f64, usize) {
+        match self.overview_mode {
+            OverviewMode::All => (
+                self.data.total_tokens,
+                self.data.total_cost,
+                self.data.models.len(),
+            ),
+            OverviewMode::Today => {
+                let tokens = self
+                    .today_usage()
+                    .map(|day| day.tokens.total())
+                    .unwrap_or(0);
+                let cost = self.today_usage().map(|day| day.cost).unwrap_or(0.0);
+                (tokens, cost, self.overview_model_len())
+            }
+        }
+    }
+
+    pub fn overview_model_len(&self) -> usize {
+        match self.overview_mode {
+            OverviewMode::All => self.data.models.len(),
+            OverviewMode::Today => {
+                let Some(day) = self.today_usage() else {
+                    return 0;
+                };
+                let mut models = BTreeSet::new();
+                for source_info in day.source_breakdown.values() {
+                    for info in source_info.models.values() {
+                        let provider =
+                            super::colors::provider_color_key(&info.provider, &info.color_key);
+                        models.insert((provider, info.display_name.clone()));
+                    }
+                }
+                models.len()
+            }
+        }
     }
 
     pub fn get_sorted_models(&self) -> Vec<&ModelUsage> {
@@ -1313,15 +2255,23 @@ impl App {
     }
 
     pub fn is_daily_detail_active(&self) -> bool {
-        self.selected_daily_detail_date.is_some()
+        matches!(
+            self.drilldown_view(),
+            Some(DrilldownView::Period(key)) if key.granularity == PeriodGranularity::Day
+        )
     }
 
     pub fn daily_detail_date(&self) -> Option<NaiveDate> {
-        self.selected_daily_detail_date
+        match self.drilldown_view() {
+            Some(DrilldownView::Period(key)) if key.granularity == PeriodGranularity::Day => {
+                Some(key.start)
+            }
+            _ => None,
+        }
     }
 
     pub fn get_sorted_daily_detail_rows(&self) -> Vec<DailyDetailRow<'_>> {
-        let Some(date) = self.selected_daily_detail_date else {
+        let Some(date) = self.daily_detail_date() else {
             return Vec::new();
         };
         let Some(day) = self.data.daily.iter().find(|day| day.date == date) else {
@@ -1377,6 +2327,89 @@ impl App {
         }
 
         rows
+    }
+
+    pub fn get_sorted_model_detail_rows(&self) -> Vec<ModelDetailPeriodRow> {
+        let Some(DrilldownView::Model(key)) = self.drilldown_view() else {
+            return Vec::new();
+        };
+
+        let mut rows = Vec::new();
+        for day in &self.data.daily {
+            for (source, source_info) in &day.source_breakdown {
+                for info in source_info.models.values() {
+                    if !model_detail_matches(
+                        key,
+                        &info.provider,
+                        &info.display_name,
+                        &info.color_key,
+                    ) {
+                        continue;
+                    }
+                    rows.push(ModelDetailPeriodRow {
+                        date: day.date,
+                        source: source.clone(),
+                        model: info.display_name.clone(),
+                        tokens: info.tokens.clone(),
+                        cost: info.cost,
+                        messages: info.messages,
+                    });
+                }
+            }
+        }
+
+        sort_model_detail_rows(&mut rows, self.sort_field, self.sort_direction);
+        rows
+    }
+
+    pub fn get_sorted_period_detail_rows(&self) -> Vec<PeriodDetailModelRow> {
+        let Some(DrilldownView::Period(key)) = self.drilldown_view() else {
+            return Vec::new();
+        };
+
+        let mut rows_by_key: BTreeMap<(String, String, String, String), PeriodDetailModelRow> =
+            BTreeMap::new();
+        for day in self.period_days(key) {
+            for (source, source_info) in &day.source_breakdown {
+                for info in source_info.models.values() {
+                    let provider =
+                        super::colors::provider_color_key(&info.provider, &info.color_key);
+                    let entry = rows_by_key
+                        .entry((
+                            source.clone(),
+                            provider.clone(),
+                            info.display_name.clone(),
+                            info.color_key.clone(),
+                        ))
+                        .or_insert_with(|| PeriodDetailModelRow {
+                            source: source.clone(),
+                            provider,
+                            model: info.display_name.clone(),
+                            color_key: info.color_key.clone(),
+                            tokens: TokenBreakdown::default(),
+                            cost: 0.0,
+                            messages: 0,
+                        });
+                    add_tokens(&mut entry.tokens, &info.tokens);
+                    if info.cost.is_finite() {
+                        entry.cost += info.cost;
+                    }
+                    entry.messages = entry.messages.saturating_add(info.messages);
+                }
+            }
+        }
+
+        let mut rows = rows_by_key.into_values().collect::<Vec<_>>();
+        sort_period_detail_rows(&mut rows, self.sort_field, self.sort_direction);
+        rows
+    }
+
+    pub fn period_days(&self, key: &PeriodDetailKey) -> Vec<&DailyUsage> {
+        self.data
+            .daily
+            .iter()
+            .filter(|day| day.date >= key.start && day.date <= key.end)
+            .collect()
     }
 
     pub fn get_sorted_hourly(&self) -> Vec<&HourlyUsage> {
@@ -1502,50 +2535,307 @@ impl App {
     }
 }
 
+fn run_codex_login_worker(tx: std::sync::mpsc::Sender<CodexLoginEvent>) {
+    let result = run_codex_login_worker_inner(tx.clone());
+    let outcome = match result {
+        Ok(info) => CodexLoginOutcome::Imported(info),
+        Err(e) => CodexLoginOutcome::Failed(e.to_string()),
+    };
+    let _ = tx.send(CodexLoginEvent::Finished(outcome));
+}
+
+fn run_codex_login_worker_inner(
+    tx: std::sync::mpsc::Sender<CodexLoginEvent>,
+) -> Result<crate::commands::usage::codex::CodexAccountInfo> {
+    let codex_home =
+        std::env::temp_dir().join(format!("tokscale-codex-login-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&codex_home)
+        .map_err(|e| anyhow::anyhow!("failed to create temporary Codex home: {e}"))?;
+
+    let result = run_codex_login_in_home(&codex_home, tx);
+    let _ = std::fs::remove_dir_all(&codex_home);
+    result
+}
+
+fn run_codex_login_in_home(
+    codex_home: &std::path::Path,
+    tx: std::sync::mpsc::Sender<CodexLoginEvent>,
+) -> Result<crate::commands::usage::codex::CodexAccountInfo> {
+    let _ = tx.send(CodexLoginEvent::Output(
+        "Starting Codex browser login".to_string(),
+    ));
+
+    let mut child = std::process::Command::new("codex")
+        .arg("login")
+        .env("CODEX_HOME", codex_home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to start codex login: {e}"))?;
+
+    let output_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        readers.push(spawn_codex_login_output_reader(
+            stdout,
+            tx.clone(),
+            std::sync::Arc::clone(&output_lines),
+        ));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(spawn_codex_login_output_reader(
+            stderr,
+            tx.clone(),
+            std::sync::Arc::clone(&output_lines),
+        ));
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("failed to wait for codex login: {e}"))?;
+    for reader in readers {
+        let _ = reader.join();
+    }
+
+    if !status.success() {
+        let output_lines = output_lines
+            .lock()
+            .map(|lines| lines.clone())
+            .unwrap_or_default();
+        anyhow::bail!("{}", codex_login_failure_message(&status, &output_lines));
+    }
+
+    let auth_path = codex_home.join("auth.json");
+    let _ = crate::commands::usage::codex::save_current_account_as_active(None);
+    crate::commands::usage::codex::import_auth_file_without_activating(&auth_path, None)
+}
+
+fn spawn_codex_login_output_reader<R>(
+    reader: R,
+    tx: std::sync::mpsc::Sender<CodexLoginEvent>,
+    output_lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> std::thread::JoinHandle<()>
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(reader);
+        for line in std::io::BufRead::lines(reader).map_while(std::result::Result::ok) {
+            let line = sanitize_codex_login_line(&line);
+            if !line.trim().is_empty() {
+                if let Ok(mut output_lines) = output_lines.lock() {
+                    output_lines.push(line.clone());
+                }
+                let _ = tx.send(CodexLoginEvent::Output(line));
+            }
+        }
+    })
+}
+
+fn codex_login_failure_message(
+    status: &std::process::ExitStatus,
+    output_lines: &[String],
+) -> String {
+    codex_login_failure_message_from_output(&status.to_string(), output_lines)
+}
+
+fn codex_login_failure_message_from_output(status: &str, output_lines: &[String]) -> String {
+    let output = output_lines.join("\n").to_lowercase();
+
+    if output.contains("429") || output.contains("too many requests") {
+        return "OpenAI login is rate-limited (429 Too Many Requests). Wait before trying Add Codex again.".to_string();
+    }
+
+    if output.contains("expired") {
+        return "Codex device code expired. Start Add Codex again to get a new code.".to_string();
+    }
+
+    if output.contains("device auth failed") {
+        return "Codex device login failed. Try Add Codex again later.".to_string();
+    }
+
+    format!("codex login exited with {status}")
+}
+
+fn sanitize_codex_login_line(line: &str) -> String {
+    let mut sanitized = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            match chars.next() {
+                Some('[') => {
+                    for ch in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&ch) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(ch) = chars.next() {
+                        if ch == '\x07' {
+                            break;
+                        }
+                        if ch == '\x1b' && chars.peek() == Some(&'\\') {
+                            let _ = chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) | None => {}
+            }
+            continue;
+        }
+
+        if !ch.is_control() || ch == '\t' {
+            sanitized.push(ch);
+        }
+    }
+
+    sanitized
+}
+
+fn looks_like_email(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.contains('@') && trimmed.split('@').count() == 2
+}
+
+fn short_account_id(account_id: &str) -> String {
+    let id = account_id.trim();
+    if id.is_empty() {
+        return "Account unknown".to_string();
+    }
+
+    let char_count = id.chars().count();
+    if char_count <= 12 {
+        return format!("Account {id}");
+    }
+
+    let head: String = id.chars().take(6).collect();
+    let tail: String = id
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("Account {head}...{tail}")
+}
+
+fn add_tokens(target: &mut TokenBreakdown, source: &TokenBreakdown) {
+    target.input = target.input.saturating_add(source.input);
+    target.output = target.output.saturating_add(source.output);
+    target.cache_read = target.cache_read.saturating_add(source.cache_read);
+    target.cache_write = target.cache_write.saturating_add(source.cache_write);
+    target.reasoning = target.reasoning.saturating_add(source.reasoning);
+}
+
+fn model_detail_matches(
+    key: &ModelDetailKey,
+    provider: &str,
+    display_name: &str,
+    color_key: &str,
+) -> bool {
+    let provider = super::colors::provider_color_key(provider, color_key);
+    provider == key.provider
+        && (color_key == key.color_key
+            || display_name == key.model
+            || display_name.ends_with(&key.model))
+}
+
+fn sort_model_detail_rows(
+    rows: &mut [ModelDetailPeriodRow],
+    sort_field: SortField,
+    sort_direction: SortDirection,
+) {
+    let tie_breaker = |a: &ModelDetailPeriodRow, b: &ModelDetailPeriodRow| {
+        b.date
+            .cmp(&a.date)
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.model.cmp(&b.model))
+    };
+
+    match (sort_field, sort_direction) {
+        (SortField::Date, SortDirection::Ascending) => rows.sort_by(|a, b| {
+            a.date
+                .cmp(&b.date)
+                .then_with(|| a.source.cmp(&b.source))
+                .then_with(|| a.model.cmp(&b.model))
+        }),
+        (SortField::Date, SortDirection::Descending) => rows.sort_by(tie_breaker),
+        (SortField::Cost, SortDirection::Ascending) => {
+            rows.sort_by(|a, b| a.cost.total_cmp(&b.cost).then_with(|| tie_breaker(a, b)))
+        }
+        (SortField::Cost, SortDirection::Descending) => {
+            rows.sort_by(|a, b| b.cost.total_cmp(&a.cost).then_with(|| tie_breaker(a, b)))
+        }
+        (SortField::Tokens, SortDirection::Ascending) => rows.sort_by(|a, b| {
+            a.tokens
+                .total()
+                .cmp(&b.tokens.total())
+                .then_with(|| tie_breaker(a, b))
+        }),
+        (SortField::Tokens, SortDirection::Descending) => rows.sort_by(|a, b| {
+            b.tokens
+                .total()
+                .cmp(&a.tokens.total())
+                .then_with(|| tie_breaker(a, b))
+        }),
+    }
+}
+
+fn sort_period_detail_rows(
+    rows: &mut [PeriodDetailModelRow],
+    sort_field: SortField,
+    sort_direction: SortDirection,
+) {
+    let tie_breaker = |a: &PeriodDetailModelRow, b: &PeriodDetailModelRow| {
+        a.model
+            .cmp(&b.model)
+            .then_with(|| a.provider.cmp(&b.provider))
+            .then_with(|| a.source.cmp(&b.source))
+    };
+
+    match (sort_field, sort_direction) {
+        (SortField::Cost, SortDirection::Ascending) => {
+            rows.sort_by(|a, b| a.cost.total_cmp(&b.cost).then_with(|| tie_breaker(a, b)))
+        }
+        (SortField::Cost, SortDirection::Descending) => {
+            rows.sort_by(|a, b| b.cost.total_cmp(&a.cost).then_with(|| tie_breaker(a, b)))
+        }
+        (SortField::Tokens, SortDirection::Ascending) => rows.sort_by(|a, b| {
+            a.tokens
+                .total()
+                .cmp(&b.tokens.total())
+                .then_with(|| tie_breaker(a, b))
+        }),
+        (SortField::Tokens, SortDirection::Descending) => rows.sort_by(|a, b| {
+            b.tokens
+                .total()
+                .cmp(&a.tokens.total())
+                .then_with(|| tie_breaker(a, b))
+        }),
+        (SortField::Date, _) => rows.sort_by(tie_breaker),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::ui::widgets::get_provider_shade;
     use super::*;
+    use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput};
     use crate::tui::data::{DailyModelInfo, DailySourceInfo, ModelUsage, TokenBreakdown};
     use chrono::{NaiveDate, NaiveDateTime};
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
-    fn test_tab_all() {
-        let tabs = Tab::all();
-        assert_eq!(tabs.len(), 8);
-        assert_eq!(tabs[0], Tab::Overview);
-        assert_eq!(tabs[1], Tab::Usage);
-        assert_eq!(tabs[2], Tab::Models);
-        assert_eq!(tabs[3], Tab::Daily);
-        assert_eq!(tabs[4], Tab::Hourly);
-        assert_eq!(tabs[5], Tab::Minutely);
-        assert_eq!(tabs[6], Tab::Stats);
-        assert_eq!(tabs[7], Tab::Agents);
-    }
-
-    #[test]
-    fn test_tab_next() {
-        assert_eq!(Tab::Overview.next(), Tab::Usage);
-        assert_eq!(Tab::Usage.next(), Tab::Models);
-        assert_eq!(Tab::Models.next(), Tab::Daily);
-        assert_eq!(Tab::Daily.next(), Tab::Hourly);
-        assert_eq!(Tab::Hourly.next(), Tab::Minutely);
-        assert_eq!(Tab::Minutely.next(), Tab::Stats);
-        assert_eq!(Tab::Stats.next(), Tab::Agents);
-        assert_eq!(Tab::Agents.next(), Tab::Overview);
-    }
-
-    #[test]
-    fn test_tab_prev() {
-        assert_eq!(Tab::Overview.prev(), Tab::Agents);
-        assert_eq!(Tab::Usage.prev(), Tab::Overview);
-        assert_eq!(Tab::Models.prev(), Tab::Usage);
-        assert_eq!(Tab::Daily.prev(), Tab::Models);
-        assert_eq!(Tab::Hourly.prev(), Tab::Daily);
-        assert_eq!(Tab::Minutely.prev(), Tab::Hourly);
-        assert_eq!(Tab::Stats.prev(), Tab::Minutely);
-        assert_eq!(Tab::Agents.prev(), Tab::Stats);
+    fn test_tab_workspaces() {
+        assert_eq!(
+            Tab::workspaces(),
+            &[Tab::Overview, Tab::Models, Tab::Daily, Tab::Usage]
+        );
     }
 
     #[test]
@@ -1839,6 +3129,30 @@ mod tests {
         app
     }
 
+    fn sample_subscription_usage() -> Vec<UsageOutput> {
+        vec![UsageOutput {
+            provider: "Codex".to_string(),
+            account: Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+            plan: Some("Plus".to_string()),
+            email: Some("work@example.com".to_string()),
+            metrics: vec![UsageMetric {
+                label: "Session".to_string(),
+                used_percent: 40.0,
+                remaining_percent: 60.0,
+                remaining_label: Some("60% left".to_string()),
+                resets_at: None,
+            }],
+        }]
+    }
+
+    fn sample_usage_fetcher() -> Vec<UsageOutput> {
+        sample_subscription_usage()
+    }
+
     fn daily_usage(date: &str, cost: f64, models: Vec<(&str, &str, f64)>) -> DailyUsage {
         let mut model_breakdown = BTreeMap::new();
         let mut total_tokens = TokenBreakdown::default();
@@ -2040,22 +3354,13 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Overview);
 
         app.handle_key_event(key(KeyCode::Tab));
-        assert_eq!(app.current_tab, Tab::Usage);
-
-        app.handle_key_event(key(KeyCode::Tab));
         assert_eq!(app.current_tab, Tab::Models);
 
         app.handle_key_event(key(KeyCode::Tab));
         assert_eq!(app.current_tab, Tab::Daily);
 
         app.handle_key_event(key(KeyCode::Tab));
-        assert_eq!(app.current_tab, Tab::Hourly);
-
-        app.handle_key_event(key(KeyCode::Tab));
-        assert_eq!(app.current_tab, Tab::Stats);
-
-        app.handle_key_event(key(KeyCode::Tab));
-        assert_eq!(app.current_tab, Tab::Agents);
+        assert_eq!(app.current_tab, Tab::Usage);
 
         app.handle_key_event(key(KeyCode::Tab));
         assert_eq!(app.current_tab, Tab::Overview);
@@ -2067,13 +3372,7 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Overview);
 
         app.handle_key_event(key(KeyCode::BackTab));
-        assert_eq!(app.current_tab, Tab::Agents);
-
-        app.handle_key_event(key(KeyCode::BackTab));
-        assert_eq!(app.current_tab, Tab::Stats);
-
-        app.handle_key_event(key(KeyCode::BackTab));
-        assert_eq!(app.current_tab, Tab::Hourly);
+        assert_eq!(app.current_tab, Tab::Usage);
 
         app.handle_key_event(key(KeyCode::BackTab));
         assert_eq!(app.current_tab, Tab::Daily);
@@ -2082,28 +3381,16 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Models);
 
         app.handle_key_event(key(KeyCode::BackTab));
-        assert_eq!(app.current_tab, Tab::Usage);
-
-        app.handle_key_event(key(KeyCode::BackTab));
         assert_eq!(app.current_tab, Tab::Overview);
     }
 
     #[test]
-    fn test_handle_key_tab_switch_with_minutely_enabled_includes_minutely() {
+    fn test_handle_key_tab_switch_keeps_top_level_workspaces_when_minutely_enabled() {
         let mut app = make_app();
         app.settings.minutely_tab_enabled = true;
         assert_eq!(app.current_tab, Tab::Overview);
 
-        for expected in [
-            Tab::Usage,
-            Tab::Models,
-            Tab::Daily,
-            Tab::Hourly,
-            Tab::Minutely,
-            Tab::Stats,
-            Tab::Agents,
-            Tab::Overview,
-        ] {
+        for expected in [Tab::Models, Tab::Daily, Tab::Usage, Tab::Overview] {
             app.handle_key_event(key(KeyCode::Tab));
             assert_eq!(app.current_tab, expected);
         }
@@ -2205,13 +3492,13 @@ mod tests {
     fn test_handle_key_left_right_switch() {
         let mut app = make_app();
         app.handle_key_event(key(KeyCode::Right));
-        assert_eq!(app.current_tab, Tab::Usage);
-
-        app.handle_key_event(key(KeyCode::Right));
         assert_eq!(app.current_tab, Tab::Models);
 
+        app.handle_key_event(key(KeyCode::Right));
+        assert_eq!(app.current_tab, Tab::Daily);
+
         app.handle_key_event(key(KeyCode::Left));
-        assert_eq!(app.current_tab, Tab::Usage);
+        assert_eq!(app.current_tab, Tab::Models);
     }
 
     #[test]
@@ -2248,6 +3535,192 @@ mod tests {
         app.handle_key_event(key(KeyCode::Enter));
 
         assert_eq!(app.get_current_list_len(), 2);
+    }
+
+    #[test]
+    fn test_enter_on_models_opens_model_detail_rows() {
+        let mut app = make_app();
+        app.current_tab = Tab::Models;
+        app.data.models = vec![model_usage("target-model", 10.0, None)];
+        app.data.daily = vec![
+            daily_usage("2026-05-10", 1.0, vec![("other-model", "openai", 1.0)]),
+            daily_usage("2026-05-11", 7.0, vec![("target-model", "anthropic", 7.0)]),
+        ];
+
+        app.handle_key_event(key(KeyCode::Enter));
+
+        assert!(matches!(
+            app.drilldown_view(),
+            Some(DrilldownView::Model(key)) if key.model == "target-model"
+        ));
+        let rows = app.get_sorted_model_detail_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].date, NaiveDate::from_ymd_opt(2026, 5, 11).unwrap());
+        assert_eq!(rows[0].cost, 7.0);
+    }
+
+    #[test]
+    fn test_period_detail_aggregates_week_range() {
+        let mut app = make_app();
+        app.data.daily = vec![
+            daily_usage("2026-05-11", 1.0, vec![("target-model", "openai", 1.0)]),
+            daily_usage("2026-05-12", 2.0, vec![("target-model", "openai", 2.0)]),
+            daily_usage("2026-05-20", 5.0, vec![("target-model", "openai", 5.0)]),
+        ];
+
+        app.open_period_detail(PeriodDetailKey::week_containing(
+            NaiveDate::from_ymd_opt(2026, 5, 12).unwrap(),
+        ));
+
+        let rows = app.get_sorted_period_detail_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].model, "target-model");
+        assert_eq!(rows[0].cost, 3.0);
+        assert_eq!(rows[0].messages, 2);
+    }
+
+    #[test]
+    fn period_detail_uses_local_sort_and_restores_parent_sort() {
+        let mut app = make_app();
+        app.current_tab = Tab::Daily;
+        app.sort_field = SortField::Date;
+        app.sort_direction = SortDirection::Descending;
+        app.data.daily = vec![daily_usage(
+            "2026-05-11",
+            0.0,
+            vec![
+                ("cheap-model", "openai", 1.0),
+                ("expensive-model", "openai", 9.0),
+            ],
+        )];
+
+        app.open_period_detail(PeriodDetailKey::day(
+            NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
+        ));
+
+        let rows = app.get_sorted_period_detail_rows();
+        assert_eq!(rows[0].model, "expensive-model");
+        assert_eq!(rows[1].model, "cheap-model");
+        assert_eq!(app.sort_field, SortField::Cost);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
+
+        app.handle_key_event(key(KeyCode::Char('t')));
+        assert_eq!(app.sort_field, SortField::Tokens);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
+
+        app.handle_key_event(key(KeyCode::Esc));
+        assert_eq!(app.current_tab, Tab::Daily);
+        assert_eq!(app.sort_field, SortField::Date);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
+    }
+
+    #[test]
+    fn test_enter_on_period_detail_opens_model_detail() {
+        let mut app = make_app();
+        app.current_tab = Tab::Daily;
+        app.data.daily = vec![daily_usage(
+            "2026-05-11",
+            2.0,
+            vec![("target-model", "openai", 2.0)],
+        )];
+
+        app.open_period_detail(PeriodDetailKey::day(
+            NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
+        ));
+        app.handle_key_event(key(KeyCode::Enter));
+
+        assert!(matches!(
+            app.drilldown_view(),
+            Some(DrilldownView::Model(key)) if key.model == "target-model"
+        ));
+        assert_eq!(app.get_sorted_model_detail_rows().len(), 1);
+    }
+
+    #[test]
+    fn test_esc_from_nested_drilldown_returns_to_parent_detail() {
+        let mut app = make_app();
+        app.current_tab = Tab::Daily;
+        app.data.daily = vec![daily_usage(
+            "2026-05-11",
+            2.0,
+            vec![("target-model", "openai", 2.0)],
+        )];
+
+        app.open_period_detail(PeriodDetailKey::day(
+            NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
+        ));
+        app.selected_index = 0;
+        app.handle_key_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.drilldown_view(),
+            Some(DrilldownView::Model(key)) if key.model == "target-model"
+        ));
+
+        app.handle_key_event(key(KeyCode::Esc));
+
+        assert!(matches!(
+            app.drilldown_view(),
+            Some(DrilldownView::Period(key)) if key.label == "2026-05-11"
+        ));
+        assert_eq!(app.current_tab, Tab::Daily);
+        assert_eq!(app.selected_index, 0);
+
+        app.handle_key_event(key(KeyCode::Esc));
+
+        assert!(app.drilldown_view().is_none());
+        assert_eq!(app.current_tab, Tab::Daily);
+    }
+
+    #[test]
+    fn nested_drilldown_restores_each_level_sort_state() {
+        let mut app = make_app();
+        app.current_tab = Tab::Daily;
+        app.sort_field = SortField::Date;
+        app.sort_direction = SortDirection::Descending;
+        app.data.daily = vec![
+            daily_usage(
+                "2026-05-11",
+                0.0,
+                vec![
+                    ("small-model", "openai", 1.0),
+                    ("large-model", "openai", 9.0),
+                ],
+            ),
+            daily_usage("2026-05-12", 0.0, vec![("large-model", "openai", 2.0)]),
+        ];
+
+        app.open_period_detail(PeriodDetailKey::day(
+            NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
+        ));
+        assert_eq!(app.sort_field, SortField::Cost);
+
+        app.handle_key_event(key(KeyCode::Char('t')));
+        assert_eq!(app.sort_field, SortField::Tokens);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
+
+        app.handle_key_event(key(KeyCode::Enter));
+        assert!(matches!(
+            app.drilldown_view(),
+            Some(DrilldownView::Model(key)) if key.model == "large-model"
+        ));
+        assert_eq!(app.sort_field, SortField::Cost);
+
+        app.handle_key_event(key(KeyCode::Char('d')));
+        assert_eq!(app.sort_field, SortField::Date);
+
+        app.handle_key_event(key(KeyCode::Esc));
+        assert!(matches!(
+            app.drilldown_view(),
+            Some(DrilldownView::Period(key)) if key.label == "2026-05-11"
+        ));
+        assert_eq!(app.sort_field, SortField::Tokens);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
+
+        app.handle_key_event(key(KeyCode::Esc));
+        assert!(app.drilldown_view().is_none());
+        assert_eq!(app.current_tab, Tab::Daily);
+        assert_eq!(app.sort_field, SortField::Date);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
     }
 
     #[test]
@@ -2405,6 +3878,7 @@ mod tests {
     #[test]
     fn test_handle_key_sort_tokens() {
         let mut app = make_app();
+        app.switch_tab(Tab::Models);
         app.handle_key_event(key(KeyCode::Char('t')));
         assert_eq!(app.sort_field, SortField::Tokens);
         assert_eq!(app.sort_direction, SortDirection::Descending);
@@ -2419,8 +3893,57 @@ mod tests {
     }
 
     #[test]
+    fn test_timeline_day_hour_keys_do_not_enable_minute_granularity() {
+        let mut app = make_app();
+        app.switch_tab(Tab::Daily);
+
+        app.handle_key_event(key(KeyCode::Char('h')));
+        assert_eq!(app.timeline_granularity, TimelineGranularity::Hour);
+        assert_eq!(app.sort_field, SortField::Date);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
+
+        app.handle_key_event(key(KeyCode::Char('d')));
+        assert_eq!(app.timeline_granularity, TimelineGranularity::Day);
+    }
+
+    #[test]
+    fn model_drilldown_date_sort_takes_precedence_over_timeline_day_key() {
+        let mut app = make_app();
+        app.switch_tab(Tab::Daily);
+        app.timeline_granularity = TimelineGranularity::Hour;
+        app.sort_field = SortField::Cost;
+        app.open_model_detail(ModelDetailKey {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            color_key: "gpt-5".to_string(),
+        });
+
+        app.handle_key_event(key(KeyCode::Char('d')));
+
+        assert_eq!(app.sort_field, SortField::Date);
+        assert_eq!(app.timeline_granularity, TimelineGranularity::Hour);
+    }
+
+    #[test]
+    fn period_drilldown_date_key_does_not_mutate_underlying_timeline() {
+        let mut app = make_app();
+        app.switch_tab(Tab::Daily);
+        app.timeline_granularity = TimelineGranularity::Hour;
+        app.sort_field = SortField::Cost;
+        app.open_period_detail(PeriodDetailKey::day(
+            NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
+        ));
+
+        app.handle_key_event(key(KeyCode::Char('d')));
+
+        assert_eq!(app.sort_field, SortField::Cost);
+        assert_eq!(app.timeline_granularity, TimelineGranularity::Hour);
+    }
+
+    #[test]
     fn test_handle_key_sort_toggle_direction() {
         let mut app = make_app();
+        app.switch_tab(Tab::Models);
         app.handle_key_event(key(KeyCode::Char('t')));
         assert_eq!(app.sort_direction, SortDirection::Descending);
 
@@ -2429,6 +3952,44 @@ mod tests {
 
         app.handle_key_event(key(KeyCode::Char('t')));
         assert_eq!(app.sort_direction, SortDirection::Descending);
+    }
+
+    #[test]
+    fn test_handle_key_t_toggles_overview_mode() {
+        let mut app = make_app();
+        assert_eq!(app.current_tab, Tab::Overview);
+        assert_eq!(app.overview_mode, OverviewMode::All);
+
+        app.handle_key_event(key(KeyCode::Char('t')));
+        assert_eq!(app.overview_mode, OverviewMode::Today);
+        assert_eq!(app.sort_field, SortField::Cost);
+
+        app.handle_key_event(key(KeyCode::Char('t')));
+        assert_eq!(app.overview_mode, OverviewMode::All);
+    }
+
+    #[test]
+    fn test_handle_key_shift_t_sorts_tokens_on_overview() {
+        let mut app = make_app();
+
+        app.handle_key_event(key(KeyCode::Char('T')));
+        assert_eq!(app.overview_mode, OverviewMode::All);
+        assert_eq!(app.sort_field, SortField::Tokens);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
+    }
+
+    #[test]
+    fn test_overview_chart_granularity_keys_switch_day_week_month() {
+        let mut app = make_app();
+
+        app.handle_key_event(key(KeyCode::Char('W')));
+        assert_eq!(app.chart_granularity, ChartGranularity::Weekly);
+
+        app.handle_key_event(key(KeyCode::Char('M')));
+        assert_eq!(app.chart_granularity, ChartGranularity::Monthly);
+
+        app.handle_key_event(key(KeyCode::Char('D')));
+        assert_eq!(app.chart_granularity, ChartGranularity::Daily);
     }
 
     #[test]
@@ -2466,6 +4027,29 @@ mod tests {
     }
 
     #[test]
+    fn test_today_filter_initializes_overview_today_mode() {
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let config = TuiConfig {
+            theme: "blue".to_string(),
+            refresh: 0,
+            sessions_path: None,
+            clients: None,
+            since: Some(today.clone()),
+            until: Some(today),
+            year: None,
+            initial_tab: None,
+        };
+
+        let app = App::new_with_cached_data(config, None).unwrap();
+
+        assert_eq!(app.current_tab, Tab::Overview);
+        assert_eq!(app.overview_mode, OverviewMode::Today);
+    }
+
+    #[test]
     fn test_switch_tab_preserves_user_sort() {
         let mut app = make_app();
         app.switch_tab(Tab::Models);
@@ -2475,7 +4059,8 @@ mod tests {
         assert_eq!(app.sort_direction, SortDirection::Descending);
 
         app.switch_tab(Tab::Daily);
-        assert_eq!(app.sort_field, SortField::Cost);
+        assert_eq!(app.sort_field, SortField::Date);
+        assert_eq!(app.sort_direction, SortDirection::Descending);
 
         app.switch_tab(Tab::Models);
         assert_eq!(app.sort_field, SortField::Tokens);
@@ -2487,7 +4072,6 @@ mod tests {
         let mut app = make_app();
 
         app.switch_tab(Tab::Daily);
-        app.set_sort(SortField::Date);
         assert_eq!(app.sort_field, SortField::Date);
         assert_eq!(app.sort_direction, SortDirection::Descending);
 
@@ -2669,6 +4253,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_handle_key_r_does_not_refresh_subscription_usage() {
+        let mut app = make_app();
+        app.usage_fetcher = sample_usage_fetcher;
+
+        app.handle_key_event(key(KeyCode::Char('r')));
+
+        assert!(app.needs_reload);
+        assert!(!app.is_fetching_usage());
+        assert!(app.subscription_usage.is_empty());
+    }
+
+    #[test]
+    fn test_switching_to_usage_starts_initial_usage_fetch() {
+        let mut app = make_app();
+        app.usage_fetcher = sample_usage_fetcher;
+
+        app.switch_tab(Tab::Usage);
+
+        assert!(app.usage_fetch_attempted);
+        assert!(app.is_fetching_usage());
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Fetching usage data...")
+        );
+    }
+
+    #[test]
+    fn test_handle_key_u_on_usage_refreshes_subscription_usage() {
+        let mut app = make_app();
+        app.usage_fetcher = sample_usage_fetcher;
+        app.current_tab = Tab::Usage;
+
+        app.handle_key_event(key(KeyCode::Char('u')));
+
+        assert!(!app.needs_reload);
+        assert!(app.is_fetching_usage());
+        for _ in 0..20 {
+            app.on_tick();
+            if !app.is_fetching_usage() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(app.subscription_usage.len(), 1);
+        assert_eq!(app.subscription_usage[0].provider, "Codex");
+        assert_eq!(app.status_message.as_deref(), Some("Usage data loaded"));
+    }
+
     // ── handle_key_event: misc keys ─────────────────────────────────
 
     #[test]
@@ -2717,6 +4351,21 @@ mod tests {
         let after_increase = app.auto_refresh_interval;
         app.handle_key_event(key(KeyCode::Char('-')));
         assert!(app.auto_refresh_interval < after_increase);
+    }
+
+    #[test]
+    fn test_handle_key_m_on_usage_toggles_email_privacy() {
+        let mut app = make_app();
+        app.current_tab = Tab::Usage;
+        assert!(app.hide_usage_emails);
+
+        app.handle_key_event(key(KeyCode::Char('m')));
+        assert!(!app.hide_usage_emails);
+        assert_eq!(app.status_message.as_deref(), Some("Usage emails visible"));
+
+        app.handle_key_event(key(KeyCode::Char('m')));
+        assert!(app.hide_usage_emails);
+        assert_eq!(app.status_message.as_deref(), Some("Usage emails hidden"));
     }
 
     // ── handle_mouse_event ──────────────────────────────────────────
@@ -2770,6 +4419,30 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_mouse_click_opens_drilldown_detail() {
+        let mut app = make_app();
+        app.add_click_area(
+            Rect::new(0, 0, 10, 1),
+            ClickAction::OpenPeriodDetail(PeriodDetailKey::day(
+                NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
+            )),
+        );
+
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse_event(event);
+
+        assert!(matches!(
+            app.drilldown_view(),
+            Some(DrilldownView::Period(key)) if key.label == "2026-05-11"
+        ));
+    }
+
+    #[test]
     fn test_handle_mouse_click_outside_areas() {
         let mut app = make_app();
         app.add_click_area(Rect::new(0, 0, 5, 5), ClickAction::Tab(Tab::Stats));
@@ -2782,6 +4455,101 @@ mod tests {
         };
         app.handle_mouse_event(event);
         assert_eq!(app.current_tab, Tab::Overview);
+    }
+
+    #[test]
+    fn test_handle_mouse_click_prefers_last_registered_overlapping_area() {
+        let mut app = make_app();
+        app.current_tab = Tab::Usage;
+        app.add_click_area(
+            Rect::new(0, 0, 20, 1),
+            ClickAction::UsageSelect { index: 3 },
+        );
+        app.add_click_area(Rect::new(5, 0, 10, 1), ClickAction::UsageToggleEmailPrivacy);
+        assert!(app.hide_usage_emails);
+
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 6,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse_event(event);
+
+        assert!(!app.hide_usage_emails);
+        assert_eq!(app.selected_index, 0);
+    }
+
+    #[test]
+    fn test_handle_mouse_click_codex_use_opens_confirmation_dialog() {
+        let mut app = make_app();
+        app.current_tab = Tab::Usage;
+        app.add_click_area(
+            Rect::new(0, 0, 10, 1),
+            ClickAction::CodexUseAccount {
+                account_id: "acct_personal".to_string(),
+            },
+        );
+
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse_event(event);
+
+        assert!(app.dialog_stack.is_active());
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Confirm Codex account switch")
+        );
+    }
+
+    #[test]
+    fn test_handle_mouse_click_usage_refresh_uses_subscription_refresh() {
+        let mut app = make_app();
+        app.usage_fetcher = sample_usage_fetcher;
+        app.add_click_area(Rect::new(0, 0, 10, 2), ClickAction::UsageRefresh);
+
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse_event(event);
+
+        assert!(app.is_fetching_usage());
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Fetching usage data...")
+        );
+    }
+
+    #[test]
+    fn test_handle_mouse_click_codex_remove_opens_confirmation_dialog() {
+        let mut app = make_app();
+        app.add_click_area(
+            Rect::new(0, 0, 10, 2),
+            ClickAction::CodexRemoveAccount {
+                account_id: "acct_work".to_string(),
+            },
+        );
+
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse_event(event);
+
+        assert!(app.dialog_stack.is_active());
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Confirm Codex account removal")
+        );
     }
 
     #[test]

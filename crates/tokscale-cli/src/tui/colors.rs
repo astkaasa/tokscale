@@ -18,7 +18,7 @@ pub fn model_shade_key(provider: &str, model: &str) -> String {
 /// the rank count. Ties on cost are resolved by model name so shade assignment
 /// stays deterministic across refreshes.
 pub fn build_model_shade_map(models: &[ModelUsage]) -> HashMap<String, Color> {
-    let mut by_provider: HashMap<&str, HashMap<&str, f64>> = HashMap::new();
+    let mut by_provider: HashMap<String, HashMap<&str, f64>> = HashMap::new();
     for m in models {
         let provider = provider_color_key(&m.provider, &m.model);
         let cost = if m.cost.is_finite() { m.cost } else { 0.0 };
@@ -35,18 +35,92 @@ pub fn build_model_shade_map(models: &[ModelUsage]) -> HashMap<String, Color> {
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         for (rank, (name, _)) in ranked.iter().enumerate() {
             map.insert(
-                model_shade_key(provider, name),
-                get_provider_shade(provider, rank),
+                model_shade_key(&provider, name),
+                get_provider_shade(&provider, rank),
             );
         }
     }
     map
 }
 
-fn provider_color_key<'a>(provider: &'a str, model: &'a str) -> &'a str {
-    if provider.is_empty() || provider.contains(", ") {
-        get_provider_from_model(model)
-    } else {
-        provider
+pub fn provider_color_key(provider: &str, model: &str) -> String {
+    let provider = provider.trim();
+    let inferred = get_provider_from_model(model);
+
+    if provider.is_empty()
+        || provider.eq_ignore_ascii_case("unknown")
+        || is_gateway_provider(provider)
+    {
+        return if inferred == "unknown" {
+            "unknown".to_string()
+        } else {
+            inferred.to_string()
+        };
+    }
+
+    if provider.contains(',') {
+        if inferred != "unknown" {
+            return inferred.to_string();
+        }
+        return provider
+            .split(',')
+            .map(str::trim)
+            .find(|part| !part.is_empty() && !part.eq_ignore_ascii_case("unknown"))
+            .unwrap_or("unknown")
+            .to_string();
+    }
+
+    provider.to_string()
+}
+
+fn is_gateway_provider(provider: &str) -> bool {
+    let normalized = provider.trim().to_lowercase().replace(['-', ' '], "_");
+    matches!(
+        normalized.as_str(),
+        "openrouter"
+            | "fireworks"
+            | "fireworks_ai"
+            | "together"
+            | "together_ai"
+            | "bedrock"
+            | "openai_compatible"
+            | "cursor"
+            | "gateway"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_color_key_preserves_explicit_provider() {
+        assert_eq!(provider_color_key("openai", "sonnet-shared"), "openai");
+        assert_eq!(
+            provider_color_key("anthropic", "sonnet-shared"),
+            "anthropic"
+        );
+    }
+
+    #[test]
+    fn provider_color_key_uses_model_owner_for_merged_provider_labels() {
+        assert_eq!(provider_color_key("claude, qwen", "qwen3-coder"), "qwen");
+        assert_eq!(provider_color_key("cursor, claude", "composer-2"), "cursor");
+    }
+
+    #[test]
+    fn provider_color_key_uses_model_owner_for_gateway_providers() {
+        assert_eq!(provider_color_key("openrouter", "qwen3-coder"), "qwen");
+        assert_eq!(provider_color_key("fireworks", "kimi-k2.6"), "moonshotai");
+        assert_eq!(provider_color_key("cursor", "qwen3.6-plus"), "qwen");
+        assert_eq!(provider_color_key("cursor", "composer-2"), "cursor");
+    }
+
+    #[test]
+    fn provider_color_key_falls_back_to_first_merged_provider_when_model_is_unknown() {
+        assert_eq!(
+            provider_color_key("custom-a, custom-b", "local-model"),
+            "custom-a"
+        );
     }
 }
