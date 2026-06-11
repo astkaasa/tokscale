@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1120" viewBox="0 0 720 1120">
+  <defs>
+    <style>
+      .mono { font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace; }
+      .h1 { font-size: 18px; font-weight: 800; fill: #d9dde5; }
+      .h2 { font-size: 16px; font-weight: 800; fill: #7bd7c5; }
+      .txt { font-size: 15px; fill: #cbd0d8; }
+      .small { font-size: 13px; fill: #929baa; }
+      .muted { fill: #818b99; }
+      .green { fill: #95d36a; }
+      .teal { fill: #28d1b1; }
+      .blue { fill: #5c86ff; }
+      .orange { fill: #ff9950; }
+      .purple { fill: #9b72ff; }
+      .yellow { fill: #e8c74f; }
+      .panel { fill: #080d13; stroke: #344052; stroke-width: 1.2; }
+      .panel2 { fill: #0b1118; stroke: #40506a; stroke-width: 1.2; }
+      .row { fill: #0e151e; }
+      .selected { fill: #86b6ce; }
+      .barbg { fill: #1a222d; }
+      .line { stroke: #252f3b; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="720" height="1120" fill="#070b10"/>
+  <text x="18" y="30" class="mono h1 teal">Tokscale</text>
+  <text x="110" y="30" class="mono small muted">Detail</text>
+  <text x="524" y="30" class="mono small muted">Esc Back</text>
+  <line x1="10" y1="46" x2="710" y2="46" class="line"/>
+
+  <rect x="10" y="46" width="700" height="1026" class="panel"/>
+  <text x="26" y="78" class="mono h2">Model Detail</text>
+  <text x="26" y="106" class="mono txt orange">claude-4-6-opus-high-thinking</text>
+  <text x="26" y="132" class="mono small muted">Anthropic · All Time · #1 by cost</text>
+
+  <rect x="24" y="154" width="672" height="154" class="panel2"/>
+  <text x="44" y="182" class="mono h2">Summary</text>
+  <text x="44" y="214" class="mono small muted">Cost</text>
+  <text x="150" y="214" class="mono h1 green">$288.20</text>
+  <text x="44" y="242" class="mono small muted">Tokens</text>
+  <text x="150" y="242" class="mono txt">298.7M</text>
+  <text x="44" y="270" class="mono small muted">Efficiency</text>
+  <text x="150" y="270" class="mono txt">$0.96 / 1M tokens</text>
+
+  <rect x="24" y="324" width="672" height="178" class="panel2"/>
+  <text x="44" y="352" class="mono h2">Token Mix</text>
+  <text x="44" y="386" class="mono small muted">Input</text>
+  <rect x="170" y="374" width="360" height="14" class="barbg"/>
+  <rect x="170" y="374" width="36" height="14" fill="#5c86ff"/>
+  <text x="548" y="387" class="mono txt">7.0M</text>
+  <text x="44" y="420" class="mono small muted">Output</text>
+  <rect x="170" y="408" width="360" height="14" class="barbg"/>
+  <rect x="170" y="408" width="12" height="14" fill="#28d1b1"/>
+  <text x="548" y="421" class="mono txt">2.2M</text>
+  <text x="44" y="454" class="mono small muted">Cache read</text>
+  <rect x="170" y="442" width="360" height="14" class="barbg"/>
+  <rect x="170" y="442" width="348" height="14" fill="#9b72ff"/>
+  <text x="548" y="455" class="mono txt">289.4M</text>
+  <text x="44" y="488" class="mono small muted">Cache write</text>
+  <rect x="170" y="476" width="360" height="14" class="barbg"/>
+  <rect x="170" y="476" width="10" height="14" fill="#e8c74f"/>
+  <text x="548" y="489" class="mono txt">9.2M</text>
+
+  <rect x="24" y="518" width="672" height="500" class="panel2"/>
+  <text x="44" y="546" class="mono h2">Breakdown</text>
+  <text x="522" y="546" class="mono small muted">Cost desc</text>
+  <rect x="38" y="568" width="644" height="48" class="selected"/>
+  <text x="52" y="590" class="mono txt">1  2026-06-09  Codex</text>
+  <text x="52" y="610" class="mono small">   $108.44  131.1M tok  1,893 msgs</text>
+  <rect x="38" y="622" width="644" height="48" class="row"/>
+  <text x="52" y="644" class="mono txt">2  2026-04-17  Codex</text>
+  <text x="52" y="664" class="mono small">   $96.41   93.5M tok   38 sessions</text>
+  <rect x="38" y="676" width="644" height="48" class="row"/>
+  <text x="52" y="698" class="mono txt">3  2026-03-26  Codex</text>
+  <text x="52" y="718" class="mono small">   $52.73   60.1M tok   21 sessions</text>
+  <text x="52" y="778" class="mono small muted">Narrow drilldown keeps the same page model.</text>
+  <text x="52" y="804" class="mono small muted">Panels stack vertically; dense tables become two-line rows.</text>
+  <line x1="38" y1="952" x2="682" y2="952" class="line"/>
+  <text x="52" y="982" class="mono small">↑↓ rows   Enter next detail   Esc back</text>
+
+  <rect x="10" y="1072" width="700" height="38" class="panel"/>
+  <text x="24" y="1097" class="mono small">↑↓ Navigate   Enter Details   Esc Back   q Quit</text>
+</svg>

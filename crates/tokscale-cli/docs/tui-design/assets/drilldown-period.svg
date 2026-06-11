@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1586" height="992" viewBox="0 0 1586 992">
+  <defs>
+    <style>
+      .mono { font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace; }
+      .h1 { font-size: 18px; font-weight: 800; fill: #d9dde5; }
+      .h2 { font-size: 16px; font-weight: 800; fill: #7bd7c5; }
+      .txt { font-size: 16px; fill: #cbd0d8; }
+      .small { font-size: 14px; fill: #929baa; }
+      .muted { fill: #818b99; }
+      .green { fill: #95d36a; }
+      .teal { fill: #28d1b1; }
+      .blue { fill: #5c86ff; }
+      .orange { fill: #ff9950; }
+      .purple { fill: #9b72ff; }
+      .yellow { fill: #e8c74f; }
+      .red { fill: #ff646c; }
+      .panel { fill: #080d13; stroke: #344052; stroke-width: 1.2; }
+      .panel2 { fill: #0b1118; stroke: #40506a; stroke-width: 1.2; }
+      .row { fill: #0e151e; }
+      .selected { fill: #86b6ce; }
+      .barbg { fill: #1a222d; }
+      .line { stroke: #252f3b; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="1586" height="992" fill="#070b10"/>
+  <text x="24" y="30" class="mono h1 teal">Tokscale</text>
+  <text x="108" y="30" class="mono small muted">v3.1.0</text>
+  <rect x="682" y="10" width="94" height="24" fill="#245dd8"/>
+  <text x="700" y="29" class="mono txt">Overview</text>
+  <text x="818" y="30" class="mono txt">Models</text>
+  <text x="938" y="30" class="mono txt">Timeline</text>
+  <text x="1072" y="30" class="mono txt">Usage</text>
+  <text x="1334" y="30" class="mono small muted">All Time</text>
+  <text x="1432" y="30" class="mono small green">69 days</text>
+  <text x="1520" y="30" class="mono small green">36 models</text>
+  <line x1="10" y1="45" x2="1576" y2="45" class="line"/>
+
+  <rect x="10" y="45" width="1566" height="898" class="panel"/>
+  <text x="26" y="76" class="mono h2">Period Detail</text>
+  <text x="154" y="76" class="mono small muted">Overview / Chart / 2026-06-09</text>
+  <text x="1370" y="76" class="mono small muted">Esc Back</text>
+
+  <rect x="24" y="94" width="430" height="236" class="panel2"/>
+  <text x="44" y="122" class="mono h2">2026-06-09</text>
+  <text x="164" y="122" class="mono small muted">Monday · Daily</text>
+  <text x="44" y="154" class="mono small muted">Cost</text>
+  <text x="150" y="154" class="mono h1 green">$108.71</text>
+  <text x="44" y="184" class="mono small muted">Tokens</text>
+  <text x="150" y="184" class="mono txt">131.1M</text>
+  <text x="44" y="214" class="mono small muted">Messages</text>
+  <text x="150" y="214" class="mono txt">1,893</text>
+  <text x="44" y="244" class="mono small muted">Turns</text>
+  <text x="150" y="244" class="mono txt">156</text>
+  <text x="44" y="274" class="mono small muted">Sources</text>
+  <text x="150" y="274" class="mono txt">Codex</text>
+  <text x="44" y="304" class="mono small muted">Models</text>
+  <text x="150" y="304" class="mono txt">2 active models</text>
+
+  <rect x="468" y="94" width="526" height="236" class="panel2"/>
+  <text x="488" y="122" class="mono h2">Provider Mix</text>
+  <text x="488" y="158" class="mono txt orange">Anthropic</text>
+  <rect x="630" y="144" width="280" height="18" class="barbg"/>
+  <rect x="630" y="144" width="280" height="18" fill="#ff9950"/>
+  <text x="926" y="158" class="mono txt">$108.71 100%</text>
+  <text x="488" y="198" class="mono h2">Token Mix</text>
+  <text x="488" y="228" class="mono small muted">Input</text>
+  <rect x="630" y="214" width="280" height="16" class="barbg"/>
+  <rect x="630" y="214" width="14" height="16" fill="#5c86ff"/>
+  <text x="926" y="228" class="mono txt">6.4M</text>
+  <text x="488" y="258" class="mono small muted">Cache read</text>
+  <rect x="630" y="244" width="280" height="16" class="barbg"/>
+  <rect x="630" y="244" width="264" height="16" fill="#9b72ff"/>
+  <text x="926" y="258" class="mono txt">124.1M</text>
+  <text x="488" y="288" class="mono small muted">Output</text>
+  <rect x="630" y="274" width="280" height="16" class="barbg"/>
+  <rect x="630" y="274" width="2" height="16" fill="#28d1b1"/>
+  <text x="926" y="288" class="mono txt">474K</text>
+
+  <rect x="1008" y="94" width="554" height="236" class="panel2"/>
+  <text x="1028" y="122" class="mono h2">Top Models</text>
+  <text x="1028" y="158" class="mono txt orange">claude-4-6-opus-high-thinking</text>
+  <rect x="1028" y="174" width="330" height="18" class="barbg"/>
+  <rect x="1028" y="174" width="328" height="18" fill="#ff9950"/>
+  <text x="1374" y="188" class="mono txt">$108.44</text>
+  <text x="1028" y="224" class="mono txt green">codex-auto-review</text>
+  <rect x="1028" y="240" width="330" height="18" class="barbg"/>
+  <rect x="1028" y="240" width="3" height="18" fill="#28d1b1"/>
+  <text x="1374" y="254" class="mono txt">$0.27</text>
+  <text x="1028" y="292" class="mono small muted">Click or Enter on a model row opens Model Detail.</text>
+
+  <rect x="24" y="348" width="1538" height="562" class="panel2"/>
+  <text x="44" y="376" class="mono h2">Model Breakdown</text>
+  <text x="1376" y="376" class="mono small muted">Sort: Cost desc</text>
+  <text x="52" y="410" class="mono small muted">#</text>
+  <text x="92" y="410" class="mono small muted">Model</text>
+  <text x="430" y="410" class="mono small muted">Provider</text>
+  <text x="590" y="410" class="mono small muted">Source</text>
+  <text x="740" y="410" class="mono small muted">Cost</text>
+  <text x="850" y="410" class="mono small muted">Tokens</text>
+  <text x="980" y="410" class="mono small muted">Input</text>
+  <text x="1100" y="410" class="mono small muted">Output</text>
+  <text x="1222" y="410" class="mono small muted">Cache R</text>
+  <text x="1350" y="410" class="mono small muted">Cache W</text>
+  <text x="1470" y="410" class="mono small muted">Msgs</text>
+  <rect x="38" y="424" width="1506" height="24" class="selected"/>
+  <text x="52" y="442" class="mono txt">1</text>
+  <text x="92" y="442" class="mono txt orange">claude-4-6-opus-high-thinking</text>
+  <text x="430" y="442" class="mono txt">Anthropic</text>
+  <text x="590" y="442" class="mono txt">Codex</text>
+  <text x="740" y="442" class="mono txt green">$108.44</text>
+  <text x="850" y="442" class="mono txt">131.1M</text>
+  <text x="980" y="442" class="mono txt blue">6.4M</text>
+  <text x="1100" y="442" class="mono txt teal">474K</text>
+  <text x="1222" y="442" class="mono txt purple">124.1M</text>
+  <text x="1350" y="442" class="mono txt yellow">0</text>
+  <text x="1470" y="442" class="mono txt">1,893</text>
+  <rect x="38" y="454" width="1506" height="24" class="row"/>
+  <text x="52" y="472" class="mono txt">2</text>
+  <text x="92" y="472" class="mono txt green">codex-auto-review</text>
+  <text x="430" y="472" class="mono txt">OpenAI</text>
+  <text x="590" y="472" class="mono txt">Codex</text>
+  <text x="740" y="472" class="mono txt green">$0.27</text>
+  <text x="850" y="472" class="mono txt">12K</text>
+  <text x="980" y="472" class="mono txt blue">11K</text>
+  <text x="1100" y="472" class="mono txt teal">1K</text>
+  <text x="1222" y="472" class="mono txt purple">0</text>
+  <text x="1350" y="472" class="mono txt yellow">0</text>
+  <text x="1470" y="472" class="mono txt">4</text>
+  <text x="52" y="512" class="mono small muted">The same page shape is reused for day, week, and month. Weekly/monthly aggregate the same fields across matching dates.</text>
+  <line x1="38" y1="850" x2="1544" y2="850" class="line"/>
+  <text x="52" y="880" class="mono small muted">Navigation</text>
+  <text x="160" y="880" class="mono small">↑↓ rows   d date   c cost   t tokens   Enter model   Esc back</text>
+
+  <rect x="10" y="943" width="1566" height="38" class="panel"/>
+  <text x="28" y="968" class="mono small">↑↓ Navigate   Enter Model   Esc Back   c Cost   t Tokens   q Quit</text>
+  <text x="1270" y="968" class="mono small muted">Period Detail: 2026-06-09</text>
+</svg>

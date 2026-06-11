@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1586" height="992" viewBox="0 0 1586 992">
+  <defs>
+    <style>
+      .mono { font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace; }
+      .h1 { font-size: 18px; font-weight: 800; fill: #d9dde5; }
+      .h2 { font-size: 16px; font-weight: 800; fill: #7bd7c5; }
+      .txt { font-size: 16px; fill: #cbd0d8; }
+      .small { font-size: 14px; fill: #929baa; }
+      .muted { fill: #818b99; }
+      .green { fill: #95d36a; }
+      .teal { fill: #28d1b1; }
+      .blue { fill: #5c86ff; }
+      .orange { fill: #ff9950; }
+      .purple { fill: #9b72ff; }
+      .yellow { fill: #e8c74f; }
+      .panel { fill: #080d13; stroke: #344052; stroke-width: 1.2; }
+      .panel2 { fill: #0b1118; stroke: #40506a; stroke-width: 1.2; }
+      .row { fill: #0e151e; }
+      .selected { fill: #86b6ce; }
+      .barbg { fill: #1a222d; }
+      .line { stroke: #252f3b; stroke-width: 1; }
+      .grid { stroke: #27313d; stroke-width: 1; stroke-dasharray: 3 5; }
+    </style>
+  </defs>
+
+  <rect width="1586" height="992" fill="#070b10"/>
+  <text x="24" y="30" class="mono h1 teal">Tokscale</text>
+  <text x="108" y="30" class="mono small muted">v3.1.0</text>
+  <text x="700" y="30" class="mono txt">Overview</text>
+  <rect x="818" y="10" width="76" height="24" fill="#245dd8"/>
+  <text x="836" y="29" class="mono txt">Models</text>
+  <text x="938" y="30" class="mono txt">Timeline</text>
+  <text x="1072" y="30" class="mono txt">Usage</text>
+  <text x="1334" y="30" class="mono small muted">All Time</text>
+  <text x="1432" y="30" class="mono small green">69 days</text>
+  <text x="1520" y="30" class="mono small green">36 models</text>
+  <line x1="10" y1="45" x2="1576" y2="45" class="line"/>
+
+  <rect x="10" y="45" width="1566" height="898" class="panel"/>
+  <text x="26" y="76" class="mono h2">Model Detail</text>
+  <text x="162" y="76" class="mono small muted">Overview / Top Models / claude-4-6-opus-high-thinking</text>
+  <text x="1370" y="76" class="mono small muted">Esc Back</text>
+
+  <rect x="24" y="94" width="506" height="236" class="panel2"/>
+  <text x="44" y="122" class="mono h2">claude-4-6-opus-high-thinking</text>
+  <text x="44" y="154" class="mono small muted">Provider</text>
+  <text x="160" y="154" class="mono txt orange">Anthropic</text>
+  <text x="44" y="184" class="mono small muted">Cost</text>
+  <text x="160" y="184" class="mono h1 green">$288.20</text>
+  <text x="292" y="184" class="mono small muted">31.4% of range</text>
+  <text x="44" y="214" class="mono small muted">Tokens</text>
+  <text x="160" y="214" class="mono txt">298.7M</text>
+  <text x="292" y="214" class="mono small muted">7.0M in · 2.2M out</text>
+  <text x="44" y="244" class="mono small muted">Sessions</text>
+  <text x="160" y="244" class="mono txt">109</text>
+  <text x="292" y="244" class="mono small muted">active on 12 days</text>
+  <text x="44" y="274" class="mono small muted">Efficiency</text>
+  <text x="160" y="274" class="mono txt">$0.96 / 1M tokens</text>
+  <text x="44" y="304" class="mono small muted">Rank</text>
+  <text x="160" y="304" class="mono txt">#1 by cost · #3 by tokens</text>
+
+  <rect x="544" y="94" width="1018" height="236" class="panel2"/>
+  <text x="564" y="122" class="mono h2">Trend &amp; Mix</text>
+  <text x="1378" y="122" class="mono small muted">Daily usage in range</text>
+  <line x1="588" y1="268" x2="1010" y2="268" class="grid"/>
+  <rect x="610" y="226" width="12" height="42" fill="#ff9950"/>
+  <rect x="654" y="204" width="12" height="64" fill="#ff9950"/>
+  <rect x="708" y="238" width="12" height="30" fill="#ff9950"/>
+  <rect x="780" y="184" width="12" height="84" fill="#ff9950"/>
+  <rect x="822" y="148" width="12" height="120" fill="#ff9950"/>
+  <rect x="876" y="216" width="12" height="52" fill="#ff9950"/>
+  <rect x="934" y="138" width="12" height="130" fill="#ff9950"/>
+  <rect x="990" y="180" width="12" height="88" fill="#ff9950"/>
+  <text x="588" y="292" class="mono small muted">Mar 15</text>
+  <text x="784" y="292" class="mono small muted">Apr 22</text>
+  <text x="956" y="292" class="mono small muted">Jun 10</text>
+
+  <text x="1076" y="154" class="mono small muted">Input</text>
+  <rect x="1200" y="140" width="250" height="16" class="barbg"/>
+  <rect x="1200" y="140" width="46" height="16" fill="#5c86ff"/>
+  <text x="1464" y="154" class="mono txt">7.0M</text>
+  <text x="1076" y="184" class="mono small muted">Output</text>
+  <rect x="1200" y="170" width="250" height="16" class="barbg"/>
+  <rect x="1200" y="170" width="15" height="16" fill="#28d1b1"/>
+  <text x="1464" y="184" class="mono txt">2.2M</text>
+  <text x="1076" y="214" class="mono small muted">Cache read</text>
+  <rect x="1200" y="200" width="250" height="16" class="barbg"/>
+  <rect x="1200" y="200" width="242" height="16" fill="#9b72ff"/>
+  <text x="1464" y="214" class="mono txt">289.4M</text>
+  <text x="1076" y="244" class="mono small muted">Cache write</text>
+  <rect x="1200" y="230" width="250" height="16" class="barbg"/>
+  <rect x="1200" y="230" width="8" height="16" fill="#e8c74f"/>
+  <text x="1464" y="244" class="mono txt">9.2M</text>
+  <text x="1076" y="282" class="mono small muted">Cache hit</text>
+  <text x="1200" y="282" class="mono txt green">97.6%</text>
+
+  <rect x="24" y="348" width="1538" height="562" class="panel2"/>
+  <text x="44" y="376" class="mono h2">Breakdown</text>
+  <text x="1380" y="376" class="mono small muted">Sort: Cost desc</text>
+  <text x="52" y="410" class="mono small muted">#</text>
+  <text x="92" y="410" class="mono small muted">Date</text>
+  <text x="236" y="410" class="mono small muted">Source</text>
+  <text x="416" y="410" class="mono small muted">Workspace</text>
+  <text x="660" y="410" class="mono small muted">Cost</text>
+  <text x="780" y="410" class="mono small muted">Tokens</text>
+  <text x="916" y="410" class="mono small muted">Input</text>
+  <text x="1040" y="410" class="mono small muted">Output</text>
+  <text x="1168" y="410" class="mono small muted">Cache R</text>
+  <text x="1300" y="410" class="mono small muted">Cache W</text>
+  <text x="1430" y="410" class="mono small muted">Sessions</text>
+  <rect x="38" y="424" width="1506" height="24" class="selected"/>
+  <text x="52" y="442" class="mono txt">1</text>
+  <text x="92" y="442" class="mono txt">2026-06-09</text>
+  <text x="236" y="442" class="mono txt">Codex</text>
+  <text x="416" y="442" class="mono txt">tokscale</text>
+  <text x="660" y="442" class="mono txt green">$108.44</text>
+  <text x="780" y="442" class="mono txt">131.1M</text>
+  <text x="916" y="442" class="mono txt blue">7.0M</text>
+  <text x="1040" y="442" class="mono txt teal">2.2M</text>
+  <text x="1168" y="442" class="mono txt purple">121.9M</text>
+  <text x="1300" y="442" class="mono txt yellow">0</text>
+  <text x="1430" y="442" class="mono txt">109</text>
+  <rect x="38" y="454" width="1506" height="24" class="row"/>
+  <text x="52" y="472" class="mono txt">2</text>
+  <text x="92" y="472" class="mono txt">2026-04-17</text>
+  <text x="236" y="472" class="mono txt">Codex</text>
+  <text x="416" y="472" class="mono txt">config</text>
+  <text x="660" y="472" class="mono txt green">$96.41</text>
+  <text x="780" y="472" class="mono txt">93.5M</text>
+  <text x="916" y="472" class="mono txt blue">920K</text>
+  <text x="1040" y="472" class="mono txt teal">1.0M</text>
+  <text x="1168" y="472" class="mono txt purple">91.2M</text>
+  <text x="1300" y="472" class="mono txt yellow">410K</text>
+  <text x="1430" y="472" class="mono txt">38</text>
+  <text x="52" y="512" class="mono small muted">Rows continue by date/source/workspace. Enter opens the selected period; Esc returns to Models or Overview.</text>
+  <line x1="38" y1="850" x2="1544" y2="850" class="line"/>
+  <text x="52" y="880" class="mono small muted">Navigation</text>
+  <text x="160" y="880" class="mono small">↑↓ rows   d date   c cost   t tokens   Enter period   Esc back</text>
+
+  <rect x="10" y="943" width="1566" height="38" class="panel"/>
+  <text x="28" y="968" class="mono small">↑↓ Navigate   Enter Period   Esc Back   c Cost   t Tokens   q Quit</text>
+  <text x="1260" y="968" class="mono small muted">Model Detail: claude-4-6-opus-high-thinking</text>
+</svg>

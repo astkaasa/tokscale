@@ -1,0 +1,242 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1586" height="992" viewBox="0 0 1586 992">
+  <defs>
+    <style>
+      .mono { font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace; }
+      .title { font-size: 34px; font-weight: 800; fill: #e4e8ee; }
+      .h1 { font-size: 18px; font-weight: 800; fill: #d9dde5; }
+      .h2 { font-size: 16px; font-weight: 800; fill: #78a0ff; }
+      .txt { font-size: 16px; fill: #cbd0d8; }
+      .small { font-size: 14px; fill: #929baa; }
+      .tiny { font-size: 12px; fill: #7d8796; }
+      .muted { fill: #818b99; }
+      .green { fill: #6bd17f; }
+      .teal { fill: #28d1b1; }
+      .blue { fill: #5c86ff; }
+      .purple { fill: #a875ff; }
+      .orange { fill: #ff9950; }
+      .yellow { fill: #e8c74f; }
+      .red { fill: #ff646c; }
+      .panel { fill: #0b1016; stroke: #344052; stroke-width: 1.2; }
+      .panel2 { fill: #0d131b; stroke: #40506a; stroke-width: 1.2; }
+      .selected { fill: #111a24; stroke: #376be8; stroke-width: 1.4; }
+      .row { fill: #101821; }
+      .row2 { fill: #0d141d; }
+      .button { fill: #132039; stroke: #3f6be8; stroke-width: 1; }
+      .button2 { fill: #141923; stroke: #4a5665; stroke-width: 1; }
+      .grid { stroke: #252f3b; stroke-width: 1; }
+      .barbg { fill: #1d2530; }
+    </style>
+  </defs>
+
+  <rect width="1586" height="992" fill="#070b10"/>
+  <rect x="0" y="0" width="1586" height="992" fill="#070b10"/>
+
+  <!-- Header -->
+  <text x="18" y="28" class="mono h1 teal">Tokscale</text>
+  <text x="104" y="28" class="mono small muted">v3.1.0</text>
+  <line x1="10" y1="42" x2="1576" y2="42" stroke="#4e5968" stroke-width="1"/>
+  <rect x="410" y="2" width="188" height="40" fill="#0b1016" stroke="#87909b" stroke-width="1"/>
+  <rect x="598" y="2" width="188" height="40" fill="#0b1016" stroke="#87909b" stroke-width="1"/>
+  <rect x="786" y="2" width="188" height="40" fill="#0b1016" stroke="#87909b" stroke-width="1"/>
+  <rect x="974" y="2" width="188" height="40" fill="#2861de" stroke="#b7c7ff" stroke-width="1"/>
+  <text x="466" y="27" class="mono txt">Overview</text>
+  <text x="658" y="27" class="mono txt">Models</text>
+  <text x="840" y="27" class="mono txt">Timeline</text>
+  <text x="1034" y="27" class="mono txt" fill="#ffffff">Usage</text>
+  <text x="1205" y="27" class="mono small muted">Subscription data</text>
+  <text x="1365" y="27" class="mono small green">4 providers</text>
+  <text x="1472" y="27" class="mono small green">3 accounts</text>
+
+  <!-- Main frame -->
+  <rect x="10" y="42" width="1566" height="898" rx="2" class="panel"/>
+  <text x="26" y="84" class="mono title">Usage</text>
+  <text x="150" y="85" class="mono small muted">Account, quota, credential and sync status</text>
+  <text x="1318" y="74" class="mono small muted">Last synced:</text>
+  <text x="1424" y="74" class="mono txt">09:43:12</text>
+  <circle cx="1360" cy="94" r="5" fill="#6bd17f"/>
+  <text x="1374" y="100" class="mono small green">All systems nominal</text>
+
+  <!-- Action strip -->
+  <text x="28" y="112" class="mono small muted">Actions</text>
+  <rect x="96" y="96" width="112" height="26" rx="3" class="button"/>
+  <text x="113" y="114" class="mono small blue">u Refresh</text>
+  <rect x="218" y="96" width="132" height="26" rx="3" class="button"/>
+  <text x="235" y="114" class="mono small teal">a Add Codex</text>
+  <rect x="360" y="96" width="100" height="26" rx="3" class="button2"/>
+  <text x="378" y="114" class="mono small muted">Auto off</text>
+
+  <!-- Left usage status panel -->
+  <rect x="24" y="130" width="830" height="520" class="panel2"/>
+  <text x="44" y="153" class="mono h2">Usage Status</text>
+  <text x="640" y="153" class="mono tiny muted">readiness board</text>
+
+  <text x="62" y="192" class="mono small muted">State</text>
+  <text x="210" y="192" class="mono h1 yellow">Ready with warnings</text>
+  <text x="62" y="224" class="mono small muted">Active</text>
+  <text x="210" y="224" class="mono txt green">work@example.com</text>
+  <text x="62" y="256" class="mono small muted">Capacity</text>
+  <text x="210" y="256" class="mono txt">3 ready · 1 watch · 0 critical</text>
+  <text x="62" y="288" class="mono small muted">Fallback</text>
+  <text x="210" y="288" class="mono txt">personal@example.com · 95% left</text>
+  <text x="62" y="320" class="mono small muted">Next Reset</text>
+  <text x="210" y="320" class="mono txt">work@example.com · resets in 3h 27m</text>
+  <text x="62" y="352" class="mono small muted">Action</text>
+  <text x="210" y="352" class="mono txt green">Keep current account</text>
+
+  <text x="44" y="402" class="mono h2">Provider Readiness</text>
+  <text x="62" y="436" class="mono h1 teal">Codex</text>
+  <text x="134" y="436" class="mono small muted">3 accounts</text>
+  <text x="250" y="436" class="mono small teal">3 ready</text>
+  <text x="640" y="436" class="mono small green">Active: work</text>
+
+  <rect x="62" y="456" width="754" height="34" class="selected"/>
+  <circle cx="80" cy="473" r="5" fill="#28d1b1"/>
+  <text x="98" y="479" class="mono txt">work@example.com</text>
+  <text x="300" y="479" class="mono small teal">Ready</text>
+  <text x="390" y="479" class="mono small muted">Plus</text>
+  <text x="470" y="479" class="mono small">Session</text>
+  <rect x="558" y="465" width="154" height="14" class="barbg"/>
+  <rect x="558" y="465" width="146" height="14" fill="#28d1b1"/>
+  <text x="726" y="479" class="mono small green">95%</text>
+
+  <rect x="62" y="496" width="754" height="34" class="row2"/>
+  <circle cx="80" cy="513" r="5" fill="#606a78"/>
+  <text x="98" y="519" class="mono txt">personal@example.com</text>
+  <text x="300" y="519" class="mono small teal">Ready</text>
+  <text x="390" y="519" class="mono small muted">Pro</text>
+  <text x="470" y="519" class="mono small">Session</text>
+  <rect x="558" y="505" width="154" height="14" class="barbg"/>
+  <rect x="558" y="505" width="145" height="14" fill="#28d1b1"/>
+  <text x="726" y="519" class="mono small green">95%</text>
+
+  <rect x="62" y="536" width="754" height="34" class="row"/>
+  <circle cx="80" cy="553" r="5" fill="#606a78"/>
+  <text x="98" y="559" class="mono txt">lab@example.com</text>
+  <text x="300" y="559" class="mono small teal">Ready</text>
+  <text x="390" y="559" class="mono small muted">Prolite</text>
+  <text x="470" y="559" class="mono small">Session</text>
+  <rect x="558" y="545" width="154" height="14" class="barbg"/>
+  <rect x="558" y="545" width="154" height="14" fill="#28d1b1"/>
+  <text x="726" y="559" class="mono small green">100%</text>
+
+  <text x="62" y="608" class="mono h1 orange">Copilot</text>
+  <text x="150" y="608" class="mono small muted">1 account</text>
+  <text x="250" y="608" class="mono small yellow">1 watch</text>
+  <text x="390" y="608" class="mono small muted">managed externally</text>
+
+  <!-- Right selected account panel -->
+  <rect x="866" y="130" width="690" height="520" class="panel2"/>
+  <text x="890" y="153" class="mono h2">Selected Account</text>
+  <text x="1078" y="153" class="mono small muted">Codex / work</text>
+  <rect x="888" y="172" width="640" height="118" rx="2" class="panel"/>
+  <text x="908" y="198" class="mono small muted">Readiness</text>
+  <text x="1080" y="198" class="mono txt green">Ready</text>
+  <text x="908" y="222" class="mono small muted">Action</text>
+  <text x="1080" y="222" class="mono txt green">Current active account</text>
+  <text x="908" y="246" class="mono small muted">Email</text>
+  <text x="1080" y="246" class="mono txt">work@example.com</text>
+  <text x="908" y="270" class="mono small muted">Credential</text>
+  <text x="1080" y="270" class="mono txt">saved store, active auth.json</text>
+
+  <text x="890" y="326" class="mono h2">Limits &amp; Reset</text>
+  <text x="908" y="358" class="mono small muted">Session</text>
+  <text x="1278" y="358" class="mono small green">95% left</text>
+  <text x="1390" y="358" class="mono small muted">resets in 3h 27m</text>
+  <rect x="908" y="370" width="600" height="18" class="barbg"/>
+  <rect x="908" y="370" width="570" height="18" fill="#28d1b1"/>
+  <text x="908" y="412" class="mono small muted">Weekly</text>
+  <text x="1278" y="412" class="mono small green">93% left</text>
+  <text x="1390" y="412" class="mono small muted">resets Mon 10pm</text>
+  <rect x="908" y="424" width="600" height="18" class="barbg"/>
+  <rect x="908" y="424" width="558" height="18" fill="#6bd17f"/>
+
+  <text x="890" y="512" class="mono h2">Sync Snapshot</text>
+  <rect x="888" y="532" width="640" height="92" rx="2" class="panel"/>
+  <text x="908" y="560" class="mono green">Ready</text>
+  <text x="982" y="560" class="mono txt">Codex / work</text>
+  <text x="1190" y="560" class="mono small muted">loaded</text>
+  <text x="908" y="589" class="mono green">Ready</text>
+  <text x="982" y="589" class="mono txt">Codex / personal</text>
+  <text x="1190" y="589" class="mono small muted">loaded</text>
+  <text x="908" y="618" class="mono yellow">Watch</text>
+  <text x="982" y="618" class="mono txt">Copilot</text>
+  <text x="1190" y="618" class="mono small muted">loaded</text>
+
+  <!-- Bottom table -->
+  <rect x="24" y="666" width="1532" height="252" class="panel2"/>
+  <text x="44" y="690" class="mono h2">Accounts</text>
+  <text x="146" y="690" class="mono tiny muted">credential inventory, health, limits and reset windows</text>
+  <line x1="42" y1="710" x2="1538" y2="710" class="grid"/>
+  <text x="62" y="735" class="mono small muted">#</text>
+  <text x="98" y="735" class="mono small muted">Provider</text>
+  <text x="270" y="735" class="mono small muted">Account</text>
+  <text x="548" y="735" class="mono small muted">Plan</text>
+  <text x="664" y="735" class="mono small muted">Auth</text>
+  <text x="790" y="735" class="mono small muted">Health</text>
+  <text x="930" y="735" class="mono small muted">Limit</text>
+  <text x="1130" y="735" class="mono small muted">Reset</text>
+  <text x="1374" y="735" class="mono small muted">Actions</text>
+
+  <rect x="42" y="750" width="1496" height="32" fill="#245dd8"/>
+  <text x="62" y="772" class="mono txt">1</text>
+  <text x="98" y="772" class="mono txt">Codex</text>
+  <text x="270" y="772" class="mono txt">work@example.com</text>
+  <text x="548" y="772" class="mono txt">Plus</text>
+  <text x="664" y="772" class="mono txt">Active</text>
+  <text x="790" y="772" class="mono txt">Ready</text>
+  <text x="930" y="772" class="mono txt">Session 95% left</text>
+  <text x="1130" y="772" class="mono txt">resets in 3h 27m</text>
+  <text x="1374" y="772" class="mono txt">Remove</text>
+
+  <rect x="42" y="782" width="1496" height="32" fill="#0e151e"/>
+  <text x="62" y="804" class="mono txt">2</text>
+  <text x="98" y="804" class="mono txt">Codex</text>
+  <text x="270" y="804" class="mono txt">personal@example.com</text>
+  <text x="548" y="804" class="mono txt">Plus</text>
+  <text x="664" y="804" class="mono small muted">Saved</text>
+  <text x="790" y="804" class="mono green">Ready</text>
+  <text x="930" y="804" class="mono txt">Session 95% left</text>
+  <text x="1130" y="804" class="mono txt">resets in 3h 27m</text>
+  <text x="1374" y="804" class="mono blue">Use</text>
+  <text x="1432" y="804" class="mono muted">Remove</text>
+
+  <rect x="42" y="814" width="1496" height="32" fill="#0b1118"/>
+  <text x="62" y="836" class="mono txt">3</text>
+  <text x="98" y="836" class="mono txt">Codex</text>
+  <text x="270" y="836" class="mono txt">lab@example.com</text>
+  <text x="548" y="836" class="mono txt">Prolite</text>
+  <text x="664" y="836" class="mono small muted">Saved</text>
+  <text x="790" y="836" class="mono green">Ready</text>
+  <text x="930" y="836" class="mono txt">Session 100% left</text>
+  <text x="1130" y="836" class="mono txt">resets in 3h 27m</text>
+  <text x="1374" y="836" class="mono blue">Use</text>
+  <text x="1432" y="836" class="mono muted">Confirm</text>
+
+  <rect x="42" y="846" width="1496" height="32" fill="#0e151e"/>
+  <text x="62" y="868" class="mono txt">4</text>
+  <text x="98" y="868" class="mono txt">Copilot</text>
+  <text x="270" y="868" class="mono txt">copilot@example.com</text>
+  <text x="548" y="868" class="mono txt">Individual</text>
+  <text x="664" y="868" class="mono yellow">Quota low</text>
+  <text x="790" y="868" class="mono yellow">Watch</text>
+  <text x="930" y="868" class="mono txt">Chat 200/200 left</text>
+  <text x="1130" y="868" class="mono txt">managed externally</text>
+  <text x="1374" y="868" class="mono muted">Managed externally</text>
+
+  <!-- Footer -->
+  <rect x="10" y="948" width="1566" height="34" class="panel"/>
+  <text x="24" y="970" class="mono small blue">↑↓</text>
+  <text x="54" y="970" class="mono small muted">Navigate</text>
+  <text x="148" y="970" class="mono small blue">←→</text>
+  <text x="178" y="970" class="mono small muted">Workspace</text>
+  <text x="296" y="970" class="mono small yellow">u</text>
+  <text x="318" y="970" class="mono small muted">Refresh</text>
+  <text x="410" y="970" class="mono small teal">a</text>
+  <text x="432" y="970" class="mono small muted">Add Codex</text>
+  <text x="548" y="970" class="mono small blue">R</text>
+  <text x="570" y="970" class="mono small muted">Auto</text>
+  <text x="644" y="970" class="mono small muted">q Quit</text>
+  <text x="1096" y="970" class="mono small muted">Usage:</text>
+  <text x="1162" y="970" class="mono small green">Loaded</text>
+  <text x="1232" y="970" class="mono small muted">| 4 providers | 3 accounts | 8 limits</text>
+</svg>
