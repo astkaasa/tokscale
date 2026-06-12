@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use super::bar_chart::{render_stacked_bar_chart, ModelSegment, StackedBarData};
 use super::mix::{render_stacked_mix_summary, MixRow};
+use super::overview_today;
 use super::widgets::scrollbar_state;
 use super::widgets::{
     format_cost, format_tokens, get_provider_display_name, get_provider_shade,
@@ -181,7 +182,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         area,
     );
 
-    if area.width >= 96 && area.height >= 18 {
+    if app.overview_mode == OverviewMode::Today {
+        overview_today::render(frame, app, area);
+    } else if area.width >= 96 && area.height >= 18 {
         render_wide_dashboard(frame, app, area);
     } else {
         render_compact_dashboard(frame, app, area);
@@ -1169,11 +1172,12 @@ mod tests {
     use super::*;
     use crate::tui::app::{OverviewMode, Tab, TuiConfig};
     use crate::tui::data::{
-        DailyModelInfo, DailySourceInfo, DailyUsage, ModelUsage, TokenBreakdown, UsageData,
+        DailyModelInfo, DailySourceInfo, DailyUsage, HourlyModelInfo, HourlyUsage, ModelUsage,
+        TokenBreakdown, UsageData,
     };
     use chrono::NaiveDate;
     use ratatui::{backend::TestBackend, Terminal};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
@@ -1289,6 +1293,49 @@ mod tests {
         }
     }
 
+    fn hourly_usage_with_model(
+        date: NaiveDate,
+        hour: u32,
+        source: &str,
+        provider: &str,
+        display_name: &str,
+        color_key: &str,
+        input: u64,
+        output: u64,
+        cost: f64,
+    ) -> HourlyUsage {
+        let tokens = TokenBreakdown {
+            input,
+            output,
+            cache_read: 0,
+            cache_write: 0,
+            reasoning: 0,
+        };
+        let mut models = BTreeMap::new();
+        models.insert(
+            display_name.to_string(),
+            HourlyModelInfo {
+                provider: provider.to_string(),
+                display_name: display_name.to_string(),
+                color_key: color_key.to_string(),
+                tokens: tokens.clone(),
+                cost,
+            },
+        );
+        let mut clients = BTreeSet::new();
+        clients.insert(source.to_string());
+
+        HourlyUsage {
+            datetime: date.and_hms_opt(hour, 0, 0).unwrap(),
+            tokens,
+            cost,
+            clients,
+            models,
+            message_count: 3,
+            turn_count: 2,
+        }
+    }
+
     fn render_body(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1314,6 +1361,17 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    fn visual_col(line: &str, needle: &str) -> usize {
+        let byte_index = line
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing `{needle}` in line `{line}`"));
+        line[..byte_index].chars().count()
+    }
+
+    fn visual_end_col(line: &str, needle: &str) -> usize {
+        visual_col(line, needle) + needle.chars().count()
     }
 
     #[test]
@@ -1491,12 +1549,235 @@ mod tests {
         let body = render_body(&mut app, 120, 30);
 
         assert!(body.contains("Today"), "missing Today title\n{body}");
+        assert!(
+            body.contains("24h Pace"),
+            "missing today pace chart\n{body}"
+        );
+        assert!(
+            body.contains("Live Summary"),
+            "missing live summary\n{body}"
+        );
+        assert!(
+            body.contains("Today's Signals"),
+            "missing today signals\n{body}"
+        );
+        assert!(body.contains("Momentum"), "missing momentum panel\n{body}");
+        assert!(
+            body.contains("Today's Models"),
+            "missing today model table\n{body}"
+        );
         assert!(body.contains("Qwen"), "missing inferred provider\n{body}");
         assert!(body.contains("qwen3-coder"), "missing today model\n{body}");
         assert!(
             !body.contains("gpt-4.1"),
             "today view leaked all-time model rows\n{body}"
         );
+    }
+
+    #[test]
+    fn today_live_dashboard_uses_hourly_pace_and_model_signals() {
+        let mut app = make_app(140);
+        let today = chrono::Local::now().date_naive();
+        app.overview_mode = OverviewMode::Today;
+        app.data.models = vec![model_usage(
+            "all-time-only",
+            "openai",
+            120_000,
+            35_000,
+            18.50,
+        )];
+        app.data.daily = vec![
+            daily_usage(today - chrono::Days::new(1), 12.0, 120_000),
+            daily_usage_with_model(today, "openai", "gpt-5.5", "gpt-5.5", 70_000, 30_000, 24.0),
+        ];
+        app.data.hourly = vec![
+            hourly_usage_with_model(
+                today, 8, "codex", "openai", "gpt-5.5", "gpt-5.5", 20_000, 10_000, 8.0,
+            ),
+            hourly_usage_with_model(
+                today, 9, "codex", "openai", "gpt-5.5", "gpt-5.5", 50_000, 20_000, 16.0,
+            ),
+        ];
+
+        let body = render_body(&mut app, 140, 32);
+
+        assert!(
+            body.contains("Cost by hour"),
+            "missing hourly chart\n{body}"
+        );
+        assert!(
+            body.contains("Current pace"),
+            "missing current pace projection\n{body}"
+        );
+        assert!(body.contains("Cost leader"), "missing cost signal\n{body}");
+        assert!(body.contains("Token surge"), "missing surge signal\n{body}");
+        assert!(body.contains("Mix"), "missing mix signal\n{body}");
+        assert!(body.contains("+40K"), "missing jump amount\n{body}");
+        assert!(
+            body.contains("Signal"),
+            "missing signal label header\n{body}"
+        );
+        assert!(
+            body.contains("Context"),
+            "missing signal context header\n{body}"
+        );
+        assert!(
+            body.contains("Last hour"),
+            "missing last-hour momentum\n{body}"
+        );
+        assert!(
+            body.contains("vs avg hour"),
+            "missing average-hour momentum\n{body}"
+        );
+        assert!(
+            body.contains("of tokens"),
+            "token surge context should say what it is sharing\n{body}"
+        );
+        assert!(
+            body.contains("leads 100%"),
+            "mix context should fit the leading model percentage\n{body}"
+        );
+        assert!(
+            !body.contains("Top provider"),
+            "today signals should not repeat provider as a separate driver\n{body}"
+        );
+        assert!(
+            !body.contains("Top source"),
+            "today signals should not repeat source as a separate driver\n{body}"
+        );
+        assert!(body.contains("gpt-5.5"), "missing live model row\n{body}");
+        assert!(
+            !body.contains("all-time-only"),
+            "today view leaked all-time model rows\n{body}"
+        );
+    }
+
+    #[test]
+    fn today_models_table_cells_align_with_headers() {
+        let mut app = make_app(180);
+        let today = chrono::Local::now().date_naive();
+        app.overview_mode = OverviewMode::Today;
+        app.data.daily = vec![
+            daily_usage(today - chrono::Days::new(1), 12.0, 120_000),
+            daily_usage_with_model(today, "openai", "gpt-5.5", "gpt-5.5", 70_000, 30_000, 24.0),
+        ];
+        app.data.hourly = vec![
+            hourly_usage_with_model(
+                today, 8, "codex", "openai", "gpt-5.5", "gpt-5.5", 20_000, 10_000, 8.0,
+            ),
+            hourly_usage_with_model(
+                today, 9, "codex", "openai", "gpt-5.5", "gpt-5.5", 50_000, 20_000, 16.0,
+            ),
+        ];
+
+        let body = render_body(&mut app, 180, 34);
+        let header = body
+            .lines()
+            .find(|line| {
+                line.contains("# Model")
+                    && line.contains("Provider")
+                    && line.contains("Cost")
+                    && line.contains("Peak")
+                    && line.contains("Signal")
+            })
+            .unwrap_or_else(|| panic!("missing today model table header\n{body}"));
+        let model_row = body
+            .lines()
+            .find(|line| {
+                line.contains("gpt-5.5")
+                    && line.contains("OpenAI")
+                    && line.contains("$24.00")
+                    && line.contains("above usual pace")
+            })
+            .unwrap_or_else(|| panic!("missing today model table row\n{body}"));
+
+        assert_eq!(
+            visual_col(header, "Provider"),
+            visual_col(model_row, "OpenAI"),
+            "provider column should start under its header\n{body}"
+        );
+        assert_eq!(
+            visual_end_col(header, "Cost"),
+            visual_end_col(model_row, "$24.00"),
+            "cost column should right-align with its header\n{body}"
+        );
+        assert_eq!(
+            visual_end_col(header, "Tokens"),
+            visual_end_col(model_row, "100K"),
+            "tokens column should right-align with its header\n{body}"
+        );
+        assert_eq!(
+            visual_end_col(header, "Peak"),
+            visual_end_col(model_row, "09:00 $16.00"),
+            "peak column should right-align with its header\n{body}"
+        );
+        assert_eq!(
+            visual_col(header, "Signal"),
+            visual_col(model_row, "above usual pace"),
+            "signal column should start under its header\n{body}"
+        );
+    }
+
+    #[test]
+    fn today_live_dashboard_shows_loading_state_for_empty_background_scan() {
+        let config = TuiConfig {
+            theme: "blue".to_string(),
+            refresh: 0,
+            sessions_path: None,
+            clients: None,
+            since: None,
+            until: None,
+            year: None,
+            initial_tab: Some(Tab::Overview),
+        };
+        let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
+        app.overview_mode = OverviewMode::Today;
+        app.background_loading = true;
+        app.data.models = vec![model_usage(
+            "all-time-only",
+            "openai",
+            120_000,
+            35_000,
+            18.50,
+        )];
+        app.data.total_tokens = app
+            .data
+            .models
+            .iter()
+            .map(|model| model.tokens.total())
+            .sum();
+        app.data.total_cost = app.data.models.iter().map(|model| model.cost).sum();
+
+        let body = render_body(&mut app, 120, 30);
+
+        assert!(
+            body.contains("Scanning session data"),
+            "missing loading state\n{body}"
+        );
+        assert!(
+            !body.contains("No hourly activity yet"),
+            "loading state looked like an empty day\n{body}"
+        );
+        assert!(
+            !body.contains("No model activity today"),
+            "loading state looked like an empty model table\n{body}"
+        );
+    }
+
+    #[test]
+    fn today_models_sort_title_matches_direction() {
+        let mut app = make_app(140);
+        let today = chrono::Local::now().date_naive();
+        app.overview_mode = OverviewMode::Today;
+        app.sort_field = SortField::Tokens;
+        app.sort_direction = SortDirection::Ascending;
+        app.data.daily = vec![daily_usage_with_model(
+            today, "openai", "gpt-5.5", "gpt-5.5", 70_000, 30_000, 24.0,
+        )];
+
+        let body = render_body(&mut app, 140, 32);
+
+        assert!(body.contains("Sort: Tokens asc"), "{body}");
     }
 
     #[test]

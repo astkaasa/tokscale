@@ -1,0 +1,211 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1586" height="992" viewBox="0 0 1586 992">
+  <defs>
+    <style>
+      .mono { font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace; }
+      .h1 { font-size: 18px; font-weight: 800; fill: #d9dde5; }
+      .h2 { font-size: 16px; font-weight: 800; fill: #7bd7c5; }
+      .txt { font-size: 16px; fill: #cbd0d8; }
+      .small { font-size: 14px; fill: #929baa; }
+      .tiny { font-size: 12px; fill: #818b99; }
+      .muted { fill: #818b99; }
+      .green { fill: #95d36a; }
+      .teal { fill: #28d1b1; }
+      .blue { fill: #5c86ff; }
+      .orange { fill: #ff9950; }
+      .coral { fill: #df785f; }
+      .purple { fill: #9b72ff; }
+      .yellow { fill: #e8c74f; }
+      .red { fill: #f46a6a; }
+      .panel { fill: #080d13; stroke: #344052; stroke-width: 1.2; }
+      .panel2 { fill: #0b1118; stroke: #40506a; stroke-width: 1.2; }
+      .row { fill: #0e151e; }
+      .selected { fill: #86b6ce; }
+      .barbg { fill: #1a222d; }
+      .line { stroke: #252f3b; stroke-width: 1; }
+      .grid { stroke: #27313d; stroke-width: 1; stroke-dasharray: 3 5; }
+      .now { stroke: #e8c74f; stroke-width: 2; stroke-dasharray: 4 5; }
+      .future { fill: #18222d; stroke: #2d3a4a; stroke-width: 1; stroke-dasharray: 3 5; }
+      .chip { fill: #253142; }
+      .active { fill: #245dd8; }
+    </style>
+  </defs>
+
+  <rect width="1586" height="992" fill="#070b10"/>
+  <text x="24" y="30" class="mono h1 teal">Tokscale</text>
+  <text x="108" y="30" class="mono small muted">v3.1.0</text>
+  <rect x="700" y="10" width="92" height="24" class="active"/>
+  <text x="718" y="29" class="mono txt">Overview</text>
+  <text x="838" y="30" class="mono txt">Models</text>
+  <text x="946" y="30" class="mono txt">Timeline</text>
+  <text x="1070" y="30" class="mono txt">Usage</text>
+  <text x="1276" y="30" class="mono small muted">Today</text>
+  <text x="1340" y="30" class="mono small green">Jun 11</text>
+  <text x="1430" y="30" class="mono small green">14h elapsed</text>
+  <line x1="10" y1="45" x2="1576" y2="45" class="line"/>
+
+  <rect x="10" y="45" width="1566" height="898" class="panel"/>
+  <text x="26" y="76" class="mono h2">Today - Jun 11</text>
+  <text x="180" y="76" class="mono small muted">since local midnight</text>
+  <text x="1338" y="76" class="mono small muted">t All Time</text>
+  <text x="1456" y="76" class="mono small muted">r Refresh</text>
+
+  <rect x="24" y="94" width="1120" height="326" class="panel2"/>
+  <text x="44" y="122" class="mono h2">24h Pace</text>
+  <text x="156" y="122" class="mono small muted">cost by hour, stacked by provider</text>
+  <text x="930" y="122" class="mono small muted">Now 13:42</text>
+  <line x1="72" y1="164" x2="1106" y2="164" class="grid"/>
+  <line x1="72" y1="244" x2="1106" y2="244" class="grid"/>
+  <line x1="72" y1="324" x2="1106" y2="324" class="grid"/>
+  <text x="42" y="168" class="mono tiny muted">$30</text>
+  <text x="42" y="248" class="mono tiny muted">$15</text>
+  <text x="54" y="328" class="mono tiny muted">$0</text>
+
+  <rect x="80" y="302" width="20" height="22" fill="#9b72ff"/>
+  <rect x="124" y="288" width="20" height="36" fill="#9b72ff"/>
+  <rect x="168" y="300" width="20" height="24" fill="#9b72ff"/>
+  <rect x="212" y="260" width="20" height="64" fill="#9b72ff"/>
+  <rect x="256" y="278" width="20" height="46" fill="#9b72ff"/>
+  <rect x="300" y="232" width="20" height="92" fill="#28d1b1"/>
+  <rect x="300" y="278" width="20" height="46" fill="#df785f"/>
+  <rect x="344" y="214" width="20" height="110" fill="#28d1b1"/>
+  <rect x="344" y="260" width="20" height="64" fill="#ff9950"/>
+  <rect x="388" y="248" width="20" height="76" fill="#28d1b1"/>
+  <rect x="432" y="190" width="20" height="134" fill="#28d1b1"/>
+  <rect x="432" y="244" width="20" height="80" fill="#ff9950"/>
+  <rect x="476" y="274" width="20" height="50" fill="#df785f"/>
+  <rect x="520" y="232" width="20" height="92" fill="#df785f"/>
+  <rect x="564" y="154" width="20" height="170" fill="#28d1b1"/>
+  <rect x="564" y="224" width="20" height="100" fill="#ff9950"/>
+  <rect x="608" y="196" width="20" height="128" fill="#28d1b1"/>
+  <rect x="608" y="268" width="20" height="56" fill="#9b72ff"/>
+  <line x1="654" y1="138" x2="654" y2="344" class="now"/>
+  <rect x="652" y="132" width="48" height="18" class="chip"/>
+  <text x="660" y="146" class="mono tiny yellow">NOW</text>
+  <rect x="696" y="274" width="20" height="50" class="future"/>
+  <rect x="740" y="268" width="20" height="56" class="future"/>
+  <rect x="784" y="258" width="20" height="66" class="future"/>
+  <rect x="828" y="246" width="20" height="78" class="future"/>
+  <rect x="872" y="238" width="20" height="86" class="future"/>
+  <rect x="916" y="254" width="20" height="70" class="future"/>
+  <rect x="960" y="268" width="20" height="56" class="future"/>
+  <rect x="1004" y="280" width="20" height="44" class="future"/>
+  <rect x="1048" y="292" width="20" height="32" class="future"/>
+  <text x="78" y="370" class="mono tiny muted">00</text>
+  <text x="254" y="370" class="mono tiny muted">04</text>
+  <text x="430" y="370" class="mono tiny muted">08</text>
+  <text x="606" y="370" class="mono tiny muted">12</text>
+  <text x="782" y="370" class="mono tiny muted">16</text>
+  <text x="958" y="370" class="mono tiny muted">20</text>
+  <text x="1060" y="370" class="mono tiny muted">23</text>
+  <circle cx="80" cy="398" r="5" fill="#28d1b1"/>
+  <text x="94" y="403" class="mono small">OpenAI</text>
+  <circle cx="178" cy="398" r="5" fill="#df785f"/>
+  <text x="192" y="403" class="mono small">Anthropic</text>
+  <circle cx="306" cy="398" r="5" fill="#9b72ff"/>
+  <text x="320" y="403" class="mono small">Cursor</text>
+  <circle cx="420" cy="398" r="5" fill="#ff9950"/>
+  <text x="434" y="403" class="mono small">OpenCode</text>
+  <text x="916" y="403" class="mono small muted">dotted bars are projected pace</text>
+
+  <rect x="1160" y="94" width="402" height="326" class="panel2"/>
+  <text x="1180" y="122" class="mono h2">Live Summary</text>
+  <text x="1180" y="154" class="mono small muted">Today</text>
+  <text x="1304" y="154" class="mono h1 green">$124.52</text>
+  <text x="1418" y="154" class="mono txt">148.3M</text>
+  <text x="1180" y="190" class="mono small muted">Projected</text>
+  <text x="1304" y="190" class="mono h1 yellow">$212.80</text>
+  <text x="1418" y="190" class="mono txt">252M</text>
+  <text x="1180" y="226" class="mono small muted">vs usual</text>
+  <text x="1304" y="226" class="mono h1 red">+43%</text>
+  <text x="1418" y="226" class="mono small muted">7d median</text>
+  <text x="1180" y="262" class="mono small muted">Last activity</text>
+  <text x="1304" y="262" class="mono txt">13:39</text>
+  <text x="1418" y="262" class="mono small muted">Codex</text>
+  <text x="1180" y="298" class="mono small muted">Peak hour</text>
+  <text x="1304" y="298" class="mono txt">12:00</text>
+  <text x="1418" y="298" class="mono small green">$30.12</text>
+  <text x="1180" y="334" class="mono small muted">Quota risk</text>
+  <text x="1304" y="334" class="mono txt red">Codex Plus</text>
+  <text x="1418" y="334" class="mono small muted">0%</text>
+  <text x="1180" y="370" class="mono small muted">Next reset</text>
+  <text x="1304" y="370" class="mono txt">Fri 5am</text>
+
+  <rect x="24" y="438" width="1538" height="152" class="panel2"/>
+  <text x="44" y="468" class="mono h2">Today's Drivers</text>
+  <text x="44" y="504" class="mono small muted">Top model</text>
+  <text x="176" y="504" class="mono txt teal">gpt-5.5</text>
+  <rect x="330" y="490" width="230" height="16" class="barbg"/>
+  <rect x="330" y="490" width="182" height="16" fill="#28d1b1"/>
+  <text x="580" y="504" class="mono txt green">$70.18</text>
+  <text x="44" y="536" class="mono small muted">Top provider</text>
+  <text x="176" y="536" class="mono txt teal">OpenAI</text>
+  <rect x="330" y="522" width="230" height="16" class="barbg"/>
+  <rect x="330" y="522" width="174" height="16" fill="#28d1b1"/>
+  <text x="580" y="536" class="mono txt green">$77.48</text>
+  <text x="720" y="504" class="mono small muted">Top source</text>
+  <text x="852" y="504" class="mono txt">Codex</text>
+  <rect x="1000" y="490" width="230" height="16" class="barbg"/>
+  <rect x="1000" y="490" width="196" height="16" fill="#5c86ff"/>
+  <text x="1250" y="504" class="mono txt green">$92.30</text>
+  <text x="720" y="536" class="mono small muted">Biggest jump</text>
+  <text x="852" y="536" class="mono txt yellow">+18.4M tokens</text>
+  <text x="1068" y="536" class="mono small muted">from 11:00 to 12:00</text>
+  <text x="44" y="570" class="mono small muted">Enter on any row below opens Hour Detail. Shift+Enter opens model detail.</text>
+
+  <rect x="24" y="608" width="1538" height="302" class="panel2"/>
+  <text x="44" y="638" class="mono h2">Today's Models</text>
+  <text x="1330" y="638" class="mono small muted">Sort: Cost desc</text>
+  <text x="52" y="672" class="mono small muted">#</text>
+  <text x="92" y="672" class="mono small muted">Model</text>
+  <text x="432" y="672" class="mono small muted">Provider</text>
+  <text x="594" y="672" class="mono small muted">Cost</text>
+  <text x="724" y="672" class="mono small muted">Tokens</text>
+  <text x="866" y="672" class="mono small muted">First</text>
+  <text x="982" y="672" class="mono small muted">Last</text>
+  <text x="1100" y="672" class="mono small muted">Peak</text>
+  <text x="1238" y="672" class="mono small muted">Signal</text>
+  <rect x="38" y="686" width="1506" height="26" class="selected"/>
+  <text x="52" y="705" class="mono txt">1</text>
+  <text x="92" y="705" class="mono txt teal">gpt-5.5</text>
+  <text x="432" y="705" class="mono txt">OpenAI</text>
+  <text x="594" y="705" class="mono txt green">$70.18</text>
+  <text x="724" y="705" class="mono txt">77.4M</text>
+  <text x="866" y="705" class="mono txt">08:12</text>
+  <text x="982" y="705" class="mono txt">13:39</text>
+  <text x="1100" y="705" class="mono txt yellow">12:00 $30.12</text>
+  <text x="1238" y="705" class="mono txt red">above usual pace</text>
+  <rect x="38" y="718" width="1506" height="26" class="row"/>
+  <text x="52" y="737" class="mono txt">2</text>
+  <text x="92" y="737" class="mono txt orange">claude-4-6-opus-high-thinking</text>
+  <text x="432" y="737" class="mono txt">Anthropic</text>
+  <text x="594" y="737" class="mono txt green">$25.84</text>
+  <text x="724" y="737" class="mono txt">18.2M</text>
+  <text x="866" y="737" class="mono txt">02:21</text>
+  <text x="982" y="737" class="mono txt">12:16</text>
+  <text x="1100" y="737" class="mono txt">09:00 $8.40</text>
+  <text x="1238" y="737" class="mono txt">normal</text>
+  <text x="52" y="769" class="mono txt">3</text>
+  <text x="92" y="769" class="mono txt purple">composer-2-fast</text>
+  <text x="432" y="769" class="mono txt">Cursor</text>
+  <text x="594" y="769" class="mono txt green">$21.06</text>
+  <text x="724" y="769" class="mono txt">38.4M</text>
+  <text x="866" y="769" class="mono txt">00:42</text>
+  <text x="982" y="769" class="mono txt">10:58</text>
+  <text x="1100" y="769" class="mono txt">04:00 $6.18</text>
+  <text x="1238" y="769" class="mono txt">overnight work</text>
+  <rect x="38" y="782" width="1506" height="26" class="row"/>
+  <text x="52" y="801" class="mono txt">4</text>
+  <text x="92" y="801" class="mono txt orange">glms-5.1</text>
+  <text x="432" y="801" class="mono txt">OpenCode</text>
+  <text x="594" y="801" class="mono txt green">$7.44</text>
+  <text x="724" y="801" class="mono txt">8.7M</text>
+  <text x="866" y="801" class="mono txt">11:17</text>
+  <text x="982" y="801" class="mono txt">13:20</text>
+  <text x="1100" y="801" class="mono txt">12:00 $3.91</text>
+  <text x="1238" y="801" class="mono txt">recent spike</text>
+  <text x="52" y="840" class="mono small muted">Rows are scoped to today only. All Time ranking stays on the normal Overview page.</text>
+
+  <rect x="10" y="943" width="1566" height="38" class="panel"/>
+  <text x="28" y="968" class="mono small">↑↓ Navigate   t All Time   Enter Hour Detail   m Model Detail   c Cost   T Tokens   r Refresh   q Quit</text>
+  <text x="1260" y="968" class="mono small muted">Today: Live | $124.52 | projected $212.80</text>
+</svg>

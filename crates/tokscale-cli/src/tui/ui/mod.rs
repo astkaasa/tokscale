@@ -11,6 +11,7 @@ mod minutely;
 mod mix;
 mod models;
 mod overview;
+mod overview_today;
 pub mod spinner;
 mod stats;
 mod usage;

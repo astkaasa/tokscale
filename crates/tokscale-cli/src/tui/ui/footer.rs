@@ -384,15 +384,17 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
             app.theme.muted,
             width,
         );
-        push_key_fit(
-            &mut spans,
-            "D/W/M",
-            "Chart",
-            Some("Chart"),
-            app.theme.foreground,
-            app.theme.muted,
-            width,
-        );
+        if app.overview_mode == OverviewMode::All {
+            push_key_fit(
+                &mut spans,
+                "D/W/M",
+                "Chart",
+                Some("Chart"),
+                app.theme.foreground,
+                app.theme.muted,
+                width,
+            );
+        }
     }
     if app.current_tab == Tab::Daily && !app.is_daily_detail_active() {
         push_key_fit(
@@ -416,6 +418,8 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
     }
     let date_label = if app.current_tab == Tab::Models {
         "Name"
+    } else if app.current_tab == Tab::Overview && app.overview_mode == OverviewMode::Today {
+        "Last"
     } else {
         "Date"
     };
@@ -1101,6 +1105,19 @@ mod tests {
 
         assert!(wide.contains("Navigate"), "{wide}");
         assert!(wide.contains("Workspace"), "{wide}");
+    }
+
+    #[test]
+    fn today_overview_footer_uses_today_specific_hints() {
+        let mut app = make_app_on(Tab::Overview);
+        app.overview_mode = OverviewMode::Today;
+
+        let hints = line_text(&Line::from(action_spans(&mut app, 0, 0, 120)));
+
+        assert!(hints.contains(" t  All"), "{hints}");
+        assert!(hints.contains(" d  Last"), "{hints}");
+        assert!(!hints.contains("D/W/M"), "{hints}");
+        assert!(!hints.contains("Chart"), "{hints}");
     }
 
     #[test]

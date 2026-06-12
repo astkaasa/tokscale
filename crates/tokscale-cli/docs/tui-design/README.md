@@ -12,6 +12,10 @@ All-time/range dashboard target for the default Overview mode.
 
 Live-focused Overview mode entered with `t` or `--today`.
 
+![Today live dashboard](assets/today-live.svg)
+
+Earlier Overview-style direction:
+
 ![Overview today mode dashboard](assets/overview-today.png)
 
 ## Models
