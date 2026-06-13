@@ -727,10 +727,12 @@ mod tests {
     }
 
     fn render_models(width: u16) -> String {
-        let mut data = UsageData::default();
-        data.total_cost = 42.0;
-        data.total_tokens = 2_050_000;
-        data.models = vec![model("claude-4-sonnet", "anthropic", 32.0)];
+        let data = UsageData {
+            total_cost: 42.0,
+            total_tokens: 2_050_000,
+            models: vec![model("claude-4-sonnet", "anthropic", 32.0)],
+            ..UsageData::default()
+        };
 
         let config = TuiConfig {
             theme: "blue".to_string(),

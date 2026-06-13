@@ -490,7 +490,7 @@ fn provider_mix_line(
     let marker_width = usize::from(width >= 22) * 2;
     let value_width = value.chars().count().min(9);
     let percent_width = if width >= 24 {
-        percent.chars().count().max(3).min(4)
+        percent.chars().count().clamp(3, 4)
     } else {
         0
     };
@@ -734,27 +734,28 @@ fn render_model_breakdown_row(
     let row_style = row_style(app, index, selected);
     frame.render_widget(Paragraph::new("").style(row_style), area);
 
-    let mut spans = Vec::new();
-    spans.push(Span::styled(
-        pad_right(&row_marker(index, selected), 4),
-        subtle_or_selected(app, selected),
-    ));
-    spans.push(Span::styled(
-        pad_left(&row.date.to_string(), 12),
-        subtle_or_selected(app, selected),
-    ));
-    spans.push(Span::styled(
-        pad_left(&get_client_display_name(&row.source), 14),
-        subtle_or_selected(app, selected),
-    ));
-    spans.push(Span::styled(
-        pad_right(&format_cost(row.cost), 10),
-        metric_style(app, selected, Color::Green),
-    ));
-    spans.push(Span::styled(
-        pad_right(&format_tokens(row.tokens.total()), 10),
-        subtle_or_selected(app, selected),
-    ));
+    let mut spans = vec![
+        Span::styled(
+            pad_right(&row_marker(index, selected), 4),
+            subtle_or_selected(app, selected),
+        ),
+        Span::styled(
+            pad_left(&row.date.to_string(), 12),
+            subtle_or_selected(app, selected),
+        ),
+        Span::styled(
+            pad_left(&get_client_display_name(&row.source), 14),
+            subtle_or_selected(app, selected),
+        ),
+        Span::styled(
+            pad_right(&format_cost(row.cost), 10),
+            metric_style(app, selected, Color::Green),
+        ),
+        Span::styled(
+            pad_right(&format_tokens(row.tokens.total()), 10),
+            subtle_or_selected(app, selected),
+        ),
+    ];
     if area.width >= 96 {
         spans.push(Span::styled(
             pad_right(&format_tokens(row.tokens.input), 10),

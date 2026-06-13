@@ -179,6 +179,7 @@ fn fit_status_text(text: &str, width: u16) -> String {
 
 fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    let hint_area = Rect::new(x, y, width, 1);
 
     if app.is_drilldown_active() {
         push_key_fit(
@@ -216,35 +217,23 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         push_sort_key_fit(
             &mut spans,
             app,
-            x,
-            y,
-            width,
-            "c",
-            "Cost",
-            Some("Cost"),
+            hint_area,
+            ("c", "Cost", Some("Cost")),
             SortField::Cost,
         );
         push_sort_key_fit(
             &mut spans,
             app,
-            x,
-            y,
-            width,
-            "t",
-            "Tokens",
-            Some("Tok"),
+            hint_area,
+            ("t", "Tokens", Some("Tok")),
             SortField::Tokens,
         );
         if matches!(app.drilldown_view(), Some(DrilldownView::Model(_))) {
             push_sort_key_fit(
                 &mut spans,
                 app,
-                x,
-                y,
-                width,
-                "d",
-                "Date",
-                Some("Date"),
+                hint_area,
+                ("d", "Date", Some("Date")),
                 SortField::Date,
             );
         }
@@ -274,20 +263,20 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         push_action_key_fit(
             &mut spans,
             app,
-            x,
-            y,
-            width,
-            "u",
-            if app.is_fetching_usage() {
-                "Syncing"
-            } else {
-                "Refresh"
-            },
-            Some(if app.is_fetching_usage() {
-                "Sync"
-            } else {
-                "Reload"
-            }),
+            hint_area,
+            (
+                "u",
+                if app.is_fetching_usage() {
+                    "Syncing"
+                } else {
+                    "Refresh"
+                },
+                Some(if app.is_fetching_usage() {
+                    "Sync"
+                } else {
+                    "Reload"
+                }),
+            ),
             if app.is_fetching_usage() {
                 app.theme.muted
             } else {
@@ -298,20 +287,20 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         push_action_key_fit(
             &mut spans,
             app,
-            x,
-            y,
-            width,
-            "a",
-            if app.is_codex_login_running() {
-                "Adding"
-            } else {
-                "Add Codex"
-            },
-            Some(if app.is_codex_login_running() {
-                "Adding"
-            } else {
-                "Add"
-            }),
+            hint_area,
+            (
+                "a",
+                if app.is_codex_login_running() {
+                    "Adding"
+                } else {
+                    "Add Codex"
+                },
+                Some(if app.is_codex_login_running() {
+                    "Adding"
+                } else {
+                    "Add"
+                }),
+            ),
             if app.is_codex_login_running() {
                 app.theme.muted
             } else {
@@ -322,20 +311,20 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         push_action_key_fit(
             &mut spans,
             app,
-            x,
-            y,
-            width,
-            "m",
-            if app.hide_usage_emails {
-                "Show Emails"
-            } else {
-                "Hide Emails"
-            },
-            Some(if app.hide_usage_emails {
-                "Show"
-            } else {
-                "Hide"
-            }),
+            hint_area,
+            (
+                "m",
+                if app.hide_usage_emails {
+                    "Show Emails"
+                } else {
+                    "Hide Emails"
+                },
+                Some(if app.hide_usage_emails {
+                    "Show"
+                } else {
+                    "Hide"
+                }),
+            ),
             if app.hide_usage_emails {
                 Color::Green
             } else {
@@ -372,20 +361,20 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         push_action_key_fit(
             &mut spans,
             app,
-            x,
-            y,
-            width,
-            "r",
-            if app.is_fetching_weread() {
-                "Syncing"
-            } else {
-                "Sync WeRead"
-            },
-            Some(if app.is_fetching_weread() {
-                "Sync"
-            } else {
-                "WeRead"
-            }),
+            hint_area,
+            (
+                "r",
+                if app.is_fetching_weread() {
+                    "Syncing"
+                } else {
+                    "Sync WeRead"
+                },
+                Some(if app.is_fetching_weread() {
+                    "Sync"
+                } else {
+                    "WeRead"
+                }),
+            ),
             if app.is_fetching_weread() {
                 app.theme.muted
             } else {
@@ -466,39 +455,31 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         push_sort_key_fit(
             &mut spans,
             app,
-            x,
-            y,
-            width,
-            "d",
-            date_label,
-            Some(date_label),
+            hint_area,
+            ("d", date_label, Some(date_label)),
             SortField::Date,
         );
     }
     push_sort_key_fit(
         &mut spans,
         app,
-        x,
-        y,
-        width,
-        "c",
-        "Cost",
-        Some("Cost"),
+        hint_area,
+        ("c", "Cost", Some("Cost")),
         SortField::Cost,
     );
     push_sort_key_fit(
         &mut spans,
         app,
-        x,
-        y,
-        width,
-        if app.current_tab == Tab::Overview {
-            "T"
-        } else {
-            "t"
-        },
-        "Tokens",
-        Some("Tok"),
+        hint_area,
+        (
+            if app.current_tab == Tab::Overview {
+                "T"
+            } else {
+                "t"
+            },
+            "Tokens",
+            Some("Tok"),
+        ),
         SortField::Tokens,
     );
     push_key_fit(
@@ -555,28 +536,25 @@ fn timeline_key_color(app: &App, granularity: crate::tui::app::TimelineGranulari
 fn push_sort_key_fit(
     spans: &mut Vec<Span<'static>>,
     app: &mut App,
-    x: u16,
-    y: u16,
-    available_width: u16,
-    key: &'static str,
-    label: &'static str,
-    compact_label: Option<&'static str>,
+    area: Rect,
+    hint: (&'static str, &'static str, Option<&'static str>),
     field: SortField,
 ) {
+    let (key, label, compact_label) = hint;
     let color = if app.sort_field == field {
         app.theme.foreground
     } else {
         Color::Blue
     };
     let Some((display_label, display_width)) =
-        fitting_hint(spans, key, label, compact_label, available_width)
+        fitting_hint(spans, key, label, compact_label, area.width)
     else {
         return;
     };
     let start = Line::from(spans.clone()).width() as u16;
     push_key(spans, key, display_label, color, app.theme.muted);
     app.add_click_area(
-        Rect::new(x.saturating_add(start), y, display_width, 1),
+        Rect::new(area.x.saturating_add(start), area.y, display_width, 1),
         ClickAction::Sort(field),
     );
 }
@@ -584,24 +562,21 @@ fn push_sort_key_fit(
 fn push_action_key_fit(
     spans: &mut Vec<Span<'static>>,
     app: &mut App,
-    x: u16,
-    y: u16,
-    available_width: u16,
-    key: &'static str,
-    label: &'static str,
-    compact_label: Option<&'static str>,
+    area: Rect,
+    hint: (&'static str, &'static str, Option<&'static str>),
     key_color: Color,
     action: ClickAction,
 ) {
+    let (key, label, compact_label) = hint;
     let Some((display_label, display_width)) =
-        fitting_hint(spans, key, label, compact_label, available_width)
+        fitting_hint(spans, key, label, compact_label, area.width)
     else {
         return;
     };
     let start = Line::from(spans.clone()).width() as u16;
     push_key(spans, key, display_label, key_color, app.theme.muted);
     app.add_click_area(
-        Rect::new(x.saturating_add(start), y, display_width, 1),
+        Rect::new(area.x.saturating_add(start), area.y, display_width, 1),
         action,
     );
 }

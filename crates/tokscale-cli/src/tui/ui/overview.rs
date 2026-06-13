@@ -1078,9 +1078,7 @@ fn format_tokens_tiny(tokens: u64) -> String {
         }
     } else if tokens >= 1_000 {
         let value = tokens as f64 / 1_000.0;
-        if value >= 100.0 {
-            format!("{value:.0}K")
-        } else if value >= 10.0 {
+        if value >= 10.0 {
             format!("{value:.0}K")
         } else {
             format!("{value:.1}K")
@@ -1296,10 +1294,6 @@ mod tests {
     fn hourly_usage_with_model(
         date: NaiveDate,
         hour: u32,
-        source: &str,
-        provider: &str,
-        display_name: &str,
-        color_key: &str,
         input: u64,
         output: u64,
         cost: f64,
@@ -1313,17 +1307,17 @@ mod tests {
         };
         let mut models = BTreeMap::new();
         models.insert(
-            display_name.to_string(),
+            "gpt-5.5".to_string(),
             HourlyModelInfo {
-                provider: provider.to_string(),
-                display_name: display_name.to_string(),
-                color_key: color_key.to_string(),
+                provider: "openai".to_string(),
+                display_name: "gpt-5.5".to_string(),
+                color_key: "gpt-5.5".to_string(),
                 tokens: tokens.clone(),
                 cost,
             },
         );
         let mut clients = BTreeSet::new();
-        clients.insert(source.to_string());
+        clients.insert("codex".to_string());
 
         HourlyUsage {
             datetime: date.and_hms_opt(hour, 0, 0).unwrap(),
@@ -1591,12 +1585,8 @@ mod tests {
             daily_usage_with_model(today, "openai", "gpt-5.5", "gpt-5.5", 70_000, 30_000, 24.0),
         ];
         app.data.hourly = vec![
-            hourly_usage_with_model(
-                today, 8, "codex", "openai", "gpt-5.5", "gpt-5.5", 20_000, 10_000, 8.0,
-            ),
-            hourly_usage_with_model(
-                today, 9, "codex", "openai", "gpt-5.5", "gpt-5.5", 50_000, 20_000, 16.0,
-            ),
+            hourly_usage_with_model(today, 8, 20_000, 10_000, 8.0),
+            hourly_usage_with_model(today, 9, 50_000, 20_000, 16.0),
         ];
 
         let body = render_body(&mut app, 140, 32);
@@ -1662,12 +1652,8 @@ mod tests {
             daily_usage_with_model(today, "openai", "gpt-5.5", "gpt-5.5", 70_000, 30_000, 24.0),
         ];
         app.data.hourly = vec![
-            hourly_usage_with_model(
-                today, 8, "codex", "openai", "gpt-5.5", "gpt-5.5", 20_000, 10_000, 8.0,
-            ),
-            hourly_usage_with_model(
-                today, 9, "codex", "openai", "gpt-5.5", "gpt-5.5", 50_000, 20_000, 16.0,
-            ),
+            hourly_usage_with_model(today, 8, 20_000, 10_000, 8.0),
+            hourly_usage_with_model(today, 9, 50_000, 20_000, 16.0),
         ];
 
         let body = render_body(&mut app, 180, 34);

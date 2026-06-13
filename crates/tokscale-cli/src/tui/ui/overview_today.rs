@@ -217,7 +217,7 @@ fn median_value(values: &[f64]) -> Option<f64> {
     }
 
     let middle = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         Some((values[middle - 1] + values[middle]) / 2.0)
     } else {
         Some(values[middle])
@@ -452,13 +452,15 @@ fn render_today_hour_chart(frame: &mut Frame, app: &mut App, area: Rect, summary
         if bucket.projected {
             draw_today_bar_segment(
                 buf,
-                x_start,
-                bar_width as u16,
-                plot_y + plot_height - filled_height,
-                filled_height,
-                '░',
-                Style::default().fg(app.theme.muted),
-                plot_x + plot_width,
+                BarSegment {
+                    x_start,
+                    width: bar_width as u16,
+                    y_start: plot_y + plot_height - filled_height,
+                    height: filled_height,
+                    symbol: '░',
+                    style: Style::default().fg(app.theme.muted),
+                    x_limit: plot_x + plot_width,
+                },
             );
             continue;
         }
@@ -470,13 +472,15 @@ fn render_today_hour_chart(frame: &mut Frame, app: &mut App, area: Rect, summary
         if segments.is_empty() {
             draw_today_bar_segment(
                 buf,
-                x_start,
-                bar_width as u16,
-                plot_y + plot_height - filled_height,
-                filled_height,
-                '█',
-                Style::default().fg(app.theme.highlight),
-                plot_x + plot_width,
+                BarSegment {
+                    x_start,
+                    width: bar_width as u16,
+                    y_start: plot_y + plot_height - filled_height,
+                    height: filled_height,
+                    symbol: '█',
+                    style: Style::default().fg(app.theme.highlight),
+                    x_limit: plot_x + plot_width,
+                },
             );
             continue;
         }
@@ -495,13 +499,15 @@ fn render_today_hour_chart(frame: &mut Frame, app: &mut App, area: Rect, summary
             segment_y_end = segment_y_end.saturating_sub(segment_height);
             draw_today_bar_segment(
                 buf,
-                x_start,
-                bar_width as u16,
-                segment_y_end,
-                segment_height,
-                '█',
-                Style::default().fg(segment.color),
-                plot_x + plot_width,
+                BarSegment {
+                    x_start,
+                    width: bar_width as u16,
+                    y_start: segment_y_end,
+                    height: segment_height,
+                    symbol: '█',
+                    style: Style::default().fg(segment.color),
+                    x_limit: plot_x + plot_width,
+                },
             );
             remaining = remaining.saturating_sub(segment_height);
         }
@@ -568,8 +574,7 @@ fn write_buf_text(buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style, ma
     }
 }
 
-fn draw_today_bar_segment(
-    buf: &mut Buffer,
+struct BarSegment {
     x_start: u16,
     width: u16,
     y_start: u16,
@@ -577,7 +582,19 @@ fn draw_today_bar_segment(
     symbol: char,
     style: Style,
     x_limit: u16,
-) {
+}
+
+fn draw_today_bar_segment(buf: &mut Buffer, segment: BarSegment) {
+    let BarSegment {
+        x_start,
+        width,
+        y_start,
+        height,
+        symbol,
+        style,
+        x_limit,
+    } = segment;
+
     for y in y_start..y_start.saturating_add(height) {
         for dx in 0..width {
             let x = x_start.saturating_add(dx);

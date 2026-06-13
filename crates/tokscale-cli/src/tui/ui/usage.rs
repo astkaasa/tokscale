@@ -712,8 +712,8 @@ fn attention_outputs(outputs: &[UsageOutput]) -> Vec<(usize, &UsageOutput)> {
         .collect();
 
     items.sort_by(|(left_index, left), (right_index, right)| {
-        attention_severity_rank(*left)
-            .cmp(&attention_severity_rank(*right))
+        attention_severity_rank(left)
+            .cmp(&attention_severity_rank(right))
             .then_with(|| attention_action_rank(left).cmp(&attention_action_rank(right)))
             .then_with(|| output_score(left).total_cmp(&output_score(right)))
             .then_with(|| left_index.cmp(right_index))
@@ -1648,15 +1648,12 @@ fn overall_readiness(outputs: &[UsageOutput]) -> UsageReadiness {
         }
     }
 
-    if outputs
-        .iter()
-        .any(|output| readiness_status(output) == UsageReadiness::Critical)
-    {
-        UsageReadiness::Watch
-    } else if outputs
-        .iter()
-        .any(|output| readiness_status(output) == UsageReadiness::Watch)
-    {
+    if outputs.iter().any(|output| {
+        matches!(
+            readiness_status(output),
+            UsageReadiness::Critical | UsageReadiness::Watch
+        )
+    }) {
         UsageReadiness::Watch
     } else if outputs
         .iter()

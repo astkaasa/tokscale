@@ -78,13 +78,15 @@ pub(crate) fn stacked_mix_summary_lines(
     append_mix_rows(
         &mut lines,
         app,
-        width,
-        max_lines,
-        &legend_rows,
-        total,
-        footer,
-        reserve_footer,
-        stacked_mix_legend_line,
+        MixRowsConfig {
+            width,
+            max_lines,
+            legend_rows: &legend_rows,
+            total,
+            footer,
+            reserve_footer,
+            legend_line: stacked_mix_legend_line,
+        },
     );
 
     lines
@@ -118,13 +120,15 @@ pub(crate) fn compact_mix_summary_lines(
     append_mix_rows(
         &mut lines,
         app,
-        width,
-        max_lines,
-        &legend_rows,
-        total,
-        footer,
-        reserve_footer,
-        compact_mix_legend_line,
+        MixRowsConfig {
+            width,
+            max_lines,
+            legend_rows: &legend_rows,
+            total,
+            footer,
+            reserve_footer,
+            legend_line: compact_mix_legend_line,
+        },
     );
 
     lines
@@ -240,9 +244,9 @@ pub(crate) fn ranking_bar_line(
 fn ranking_value_width(value: &str, width: usize) -> usize {
     let raw_width = value.chars().count();
     if width >= 42 {
-        raw_width.max(7).min(10)
+        raw_width.clamp(7, 10)
     } else if width >= 32 {
-        raw_width.max(6).min(8)
+        raw_width.clamp(6, 8)
     } else {
         raw_width.min(7)
     }
@@ -278,17 +282,27 @@ pub(crate) fn embedded_mix_line_limit(container_height: u16, preferred: usize) -
     preferred.min(cap)
 }
 
-fn append_mix_rows(
-    lines: &mut Vec<Line<'static>>,
-    app: &App,
+struct MixRowsConfig<'a> {
     width: u16,
     max_lines: usize,
-    legend_rows: &[&MixRow],
+    legend_rows: &'a [&'a MixRow],
     total: f64,
     footer: Option<String>,
     reserve_footer: bool,
     legend_line: fn(&MixRow, f64, u16, &App) -> Line<'static>,
-) {
+}
+
+fn append_mix_rows(lines: &mut Vec<Line<'static>>, app: &App, config: MixRowsConfig<'_>) {
+    let MixRowsConfig {
+        width,
+        max_lines,
+        legend_rows,
+        total,
+        footer,
+        reserve_footer,
+        legend_line,
+    } = config;
+
     let footer_slots = usize::from(reserve_footer);
     let legend_capacity = max_lines.saturating_sub(lines.len() + footer_slots);
     let visible_legend_rows = if legend_rows.len() > legend_capacity && legend_capacity > 1 {
@@ -342,7 +356,7 @@ fn compact_mix_legend_line(row: &MixRow, ratio: f64, width: u16, app: &App) -> L
     let show_percent = width >= 22;
     let percent = format_mix_percent(ratio).trim().to_string();
     let percent_width = if show_percent {
-        percent.chars().count().max(3).min(4)
+        percent.chars().count().clamp(3, 4)
     } else {
         0
     };

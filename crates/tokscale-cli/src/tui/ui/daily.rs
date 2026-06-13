@@ -910,7 +910,7 @@ fn timeline_rows(app: &App) -> Vec<TimelineRowData> {
         TimelineGranularity::Hour => app
             .get_sorted_hourly()
             .into_iter()
-            .map(|hour| timeline_hour_row(hour))
+            .map(timeline_hour_row)
             .collect(),
     }
 }
