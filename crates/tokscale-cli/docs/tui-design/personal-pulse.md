@@ -2,6 +2,8 @@
 
 Personal Pulse is a low-noise dashboard for personal operating context. It should answer "what needs my attention now?" instead of mirroring every connected app.
 
+Product boundary and surface strategy are defined in [personal-pulse-architecture.md](personal-pulse-architecture.md). This document focuses on the WeRead-first implementation plan.
+
 The first implementation target is WeRead. Other modules are intentionally framed as future integrations so the initial surface stays small and shippable.
 
 ## Goals

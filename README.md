@@ -746,6 +746,20 @@ Use `env.WEREAD_API_KEY` to enable the WeRead Pulse TUI integration without expo
 
 For one-off overrides, set the real `WEREAD_API_KEY` environment variable before launching Tokscale; it takes precedence over `settings.json`.
 
+#### Personal Pulse digests
+
+The WeRead Pulse data can also leave the TUI as a local digest:
+
+```bash
+# Markdown weekly digest for Obsidian or review notes
+tokscale pulse --weekly > weekly-pulse.md
+
+# Agent-readable JSON summary
+tokscale pulse --json
+```
+
+The first version uses cached subscription-usage signals plus normalized WeRead data. It reads `env.WEREAD_API_KEY` from `settings.json` when it needs to refresh stale or missing WeRead data; a real `WEREAD_API_KEY` environment variable still overrides the settings value for that run.
+
 #### Enabling the Minutely tab
 
 The Minutely tab shows a per-minute breakdown of token usage and is most useful for diagnosing burst patterns, debugging a single session, or watching activity in near-real-time alongside `autoRefreshEnabled`. It is hidden by default because the per-minute aggregation runs over every parsed message during data loading, which adds RAM and CPU cost that most users do not need.

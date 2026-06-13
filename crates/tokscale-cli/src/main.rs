@@ -271,6 +271,13 @@ enum Commands {
         #[arg(long, help = "Light terminal output (no TUI)")]
         light: bool,
     },
+    #[command(about = "Generate a local Personal Pulse digest")]
+    Pulse {
+        #[arg(long, help = "Output agent-readable JSON")]
+        json: bool,
+        #[arg(long, conflicts_with = "json", help = "Output Markdown weekly digest")]
+        weekly: bool,
+    },
     #[command(about = "Cursor API cache integration commands")]
     Cursor {
         #[command(subcommand)]
@@ -702,6 +709,10 @@ fn main() -> Result<()> {
         Some(Commands::Usage { json, light }) => {
             reject_unsupported_home_override(&cli.home, "usage")?;
             commands::usage::run(json, light)
+        }
+        Some(Commands::Pulse { json, weekly: _ }) => {
+            reject_unsupported_home_override(&cli.home, "pulse")?;
+            commands::pulse::run(json)
         }
         Some(Commands::Trae { subcommand }) => {
             reject_unsupported_home_override(&cli.home, "trae")?;

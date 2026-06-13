@@ -6,7 +6,7 @@ pub mod config;
 pub mod data;
 mod event;
 mod export;
-mod integrations;
+pub(crate) mod integrations;
 pub mod settings;
 mod themes;
 mod ui;

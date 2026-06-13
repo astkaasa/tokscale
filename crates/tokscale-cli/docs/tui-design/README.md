@@ -2,6 +2,12 @@
 
 These images are directional mockups for the local TUI redesign branch. They define the target information architecture and visual density, not pixel-perfect implementation requirements.
 
+## Personal Pulse
+
+Product architecture: [personal-pulse-architecture.md](personal-pulse-architecture.md)
+
+Detailed WeRead-first plan: [personal-pulse.md](personal-pulse.md)
+
 ## Overview
 
 All-time/range dashboard target for the default Overview mode.
