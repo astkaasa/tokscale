@@ -1,4 +1,5 @@
 mod app;
+mod background_job;
 mod cache;
 pub mod client_ui;
 mod colors;
@@ -6,7 +7,7 @@ pub mod config;
 pub mod data;
 mod event;
 mod export;
-pub(crate) mod integrations;
+mod pulse_state;
 pub mod settings;
 mod themes;
 mod ui;

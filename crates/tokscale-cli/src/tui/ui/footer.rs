@@ -1,5 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
+use tokscale_core::pulse::weread::{format_read_duration, WeReadStatus};
 
 use super::spinner::{get_phase_message, get_scanner_spans};
 use super::widgets::{format_cost, format_tokens};
@@ -806,21 +807,22 @@ fn pulse_summary_line(app: &App, width: u16) -> Line<'static> {
     let status = if app.is_fetching_weread() {
         "syncing"
     } else {
-        app.weread.status.label()
+        app.pulse.weread.status.label()
     };
     let status_color = if app.is_fetching_weread() {
         Color::Yellow
     } else {
-        match app.weread.status {
-            crate::tui::integrations::weread::WeReadStatus::Fresh => Color::Green,
-            crate::tui::integrations::weread::WeReadStatus::Loading => Color::Yellow,
-            crate::tui::integrations::weread::WeReadStatus::Stale => Color::Yellow,
-            crate::tui::integrations::weread::WeReadStatus::AuthMissing
-            | crate::tui::integrations::weread::WeReadStatus::Error
-            | crate::tui::integrations::weread::WeReadStatus::UpgradeRequired => app.theme.muted,
+        match app.pulse.weread.status {
+            WeReadStatus::Fresh => Color::Green,
+            WeReadStatus::Loading => Color::Yellow,
+            WeReadStatus::Stale => Color::Yellow,
+            WeReadStatus::AuthMissing | WeReadStatus::Error | WeReadStatus::UpgradeRequired => {
+                app.theme.muted
+            }
         }
     };
     let week = app
+        .pulse
         .weread
         .weekly
         .as_ref()
@@ -828,11 +830,12 @@ fn pulse_summary_line(app: &App, width: u16) -> Line<'static> {
             format!(
                 "{}/7 · {}",
                 weekly.read_days,
-                crate::tui::integrations::weread::format_read_duration(weekly.total_seconds)
+                format_read_duration(weekly.total_seconds)
             )
         })
         .unwrap_or_else(|| "no reading data".to_string());
     let notes = app
+        .pulse
         .weread
         .notes
         .as_ref()

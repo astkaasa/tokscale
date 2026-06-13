@@ -2,12 +2,12 @@ use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SKILL_VERSION: &str = "1.0.3";
-pub(crate) const WEEKLY_STALE_MS: u64 = 15 * 60 * 1000;
+pub const SKILL_VERSION: &str = "1.0.3";
+pub const WEEKLY_STALE_MS: u64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum WeReadStatus {
+pub enum WeReadStatus {
     AuthMissing,
     Loading,
     Fresh,
@@ -17,7 +17,7 @@ pub(crate) enum WeReadStatus {
 }
 
 impl WeReadStatus {
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             WeReadStatus::AuthMissing => "auth missing",
             WeReadStatus::Loading => "syncing",
@@ -31,20 +31,20 @@ impl WeReadStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadState {
+pub struct WeReadState {
     #[serde(default)]
-    pub(crate) weekly: Option<WeReadWeekly>,
+    pub weekly: Option<WeReadWeekly>,
     #[serde(default)]
-    pub(crate) monthly: Option<WeReadMonthly>,
+    pub monthly: Option<WeReadMonthly>,
     #[serde(default)]
-    pub(crate) shelf: Option<WeReadShelfSummary>,
+    pub shelf: Option<WeReadShelfSummary>,
     #[serde(default)]
-    pub(crate) notes: Option<WeReadNotesSummary>,
-    pub(crate) status: WeReadStatus,
+    pub notes: Option<WeReadNotesSummary>,
+    pub status: WeReadStatus,
     #[serde(default)]
-    pub(crate) last_refresh_ms: Option<u64>,
+    pub last_refresh_ms: Option<u64>,
     #[serde(default)]
-    pub(crate) error: Option<String>,
+    pub error: Option<String>,
 }
 
 impl Default for WeReadState {
@@ -54,7 +54,7 @@ impl Default for WeReadState {
 }
 
 impl WeReadState {
-    pub(crate) fn empty(status: WeReadStatus) -> Self {
+    pub fn empty(status: WeReadStatus) -> Self {
         Self {
             weekly: None,
             monthly: None,
@@ -66,30 +66,26 @@ impl WeReadState {
         }
     }
 
-    pub(crate) fn has_data(&self) -> bool {
+    pub fn has_data(&self) -> bool {
         self.weekly.is_some()
             || self.monthly.is_some()
             || self.shelf.is_some()
             || self.notes.is_some()
     }
 
-    pub(crate) fn is_stale_at(&self, now_ms: u64) -> bool {
+    pub fn is_stale_at(&self, now_ms: u64) -> bool {
         match self.last_refresh_ms {
             Some(last) => now_ms.saturating_sub(last) > WEEKLY_STALE_MS,
             None => true,
         }
     }
 
-    pub(crate) fn mark_error(&mut self, message: String) {
+    pub fn mark_error(&mut self, message: String) {
         self.error = Some(message);
-        self.status = if self.has_data() {
-            WeReadStatus::Error
-        } else {
-            WeReadStatus::Error
-        };
+        self.status = WeReadStatus::Error;
     }
 
-    pub(crate) fn mark_auth_missing(&mut self) {
+    pub fn mark_auth_missing(&mut self) {
         self.error = Some("env.WEREAD_API_KEY is not configured".to_string());
         self.status = if self.has_data() {
             WeReadStatus::Stale
@@ -101,27 +97,27 @@ impl WeReadState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadWeekly {
-    pub(crate) period_start: NaiveDate,
-    pub(crate) period_end: NaiveDate,
-    pub(crate) read_days: u8,
-    pub(crate) total_seconds: u32,
-    pub(crate) day_average_seconds: u32,
-    pub(crate) compare_ratio: Option<f64>,
-    pub(crate) days: [WeReadDay; 7],
-    pub(crate) focus: Option<WeReadFocusBook>,
+pub struct WeReadWeekly {
+    pub period_start: NaiveDate,
+    pub period_end: NaiveDate,
+    pub read_days: u8,
+    pub total_seconds: u32,
+    pub day_average_seconds: u32,
+    pub compare_ratio: Option<f64>,
+    pub days: [WeReadDay; 7],
+    pub focus: Option<WeReadFocusBook>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadDay {
-    pub(crate) date: NaiveDate,
-    pub(crate) read_seconds: u32,
-    pub(crate) checked_in: bool,
+pub struct WeReadDay {
+    pub date: NaiveDate,
+    pub read_seconds: u32,
+    pub checked_in: bool,
 }
 
 impl WeReadDay {
-    pub(crate) fn new(date: NaiveDate, read_seconds: u32) -> Self {
+    pub fn new(date: NaiveDate, read_seconds: u32) -> Self {
         Self {
             date,
             read_seconds,
@@ -132,91 +128,91 @@ impl WeReadDay {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadFocusBook {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) author: Option<String>,
-    pub(crate) read_seconds: u32,
+pub struct WeReadFocusBook {
+    pub id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub read_seconds: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadMonthly {
-    pub(crate) read_days: u16,
-    pub(crate) total_seconds: u32,
-    pub(crate) day_average_seconds: u32,
-    pub(crate) prefer_category_word: Option<String>,
-    pub(crate) categories: Vec<WeReadCategory>,
+pub struct WeReadMonthly {
+    pub read_days: u16,
+    pub total_seconds: u32,
+    pub day_average_seconds: u32,
+    pub prefer_category_word: Option<String>,
+    pub categories: Vec<WeReadCategory>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadCategory {
-    pub(crate) title: String,
-    pub(crate) reading_seconds: u32,
-    pub(crate) reading_count: u32,
-    pub(crate) weight: f64,
+pub struct WeReadCategory {
+    pub title: String,
+    pub reading_seconds: u32,
+    pub reading_count: u32,
+    pub weight: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadShelfSummary {
-    pub(crate) books: u32,
-    pub(crate) albums: u32,
-    pub(crate) has_mp: bool,
-    pub(crate) visible_items: u32,
-    pub(crate) private_items: u32,
-    pub(crate) recent: Vec<WeReadBookRef>,
+pub struct WeReadShelfSummary {
+    pub books: u32,
+    pub albums: u32,
+    pub has_mp: bool,
+    pub visible_items: u32,
+    pub private_items: u32,
+    pub recent: Vec<WeReadBookRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadBookRef {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) author: Option<String>,
-    pub(crate) last_read_time: Option<i64>,
+pub struct WeReadBookRef {
+    pub id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub last_read_time: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadNotesSummary {
-    pub(crate) total_books: u32,
-    pub(crate) total_notes: u32,
-    pub(crate) top_books: Vec<WeReadNotebookSummary>,
+pub struct WeReadNotesSummary {
+    pub total_books: u32,
+    pub total_notes: u32,
+    pub top_books: Vec<WeReadNotebookSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WeReadNotebookSummary {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) author: Option<String>,
-    pub(crate) total_notes: u32,
-    pub(crate) review_count: u32,
-    pub(crate) note_count: u32,
-    pub(crate) bookmark_count: u32,
+pub struct WeReadNotebookSummary {
+    pub id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub total_notes: u32,
+    pub review_count: u32,
+    pub note_count: u32,
+    pub bookmark_count: u32,
 }
 
-pub(crate) fn now_millis() -> u64 {
+pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
 }
 
-pub(crate) fn local_date_from_unix_seconds(seconds: i64) -> Option<NaiveDate> {
+pub fn local_date_from_unix_seconds(seconds: i64) -> Option<NaiveDate> {
     DateTime::from_timestamp(seconds, 0).map(|dt| dt.with_timezone(&Local).date_naive())
 }
 
-pub(crate) fn week_start_for(date: NaiveDate) -> NaiveDate {
+pub fn week_start_for(date: NaiveDate) -> NaiveDate {
     date.checked_sub_signed(ChronoDuration::days(
         date.weekday().num_days_from_monday() as i64
     ))
     .unwrap_or(date)
 }
 
-pub(crate) fn format_read_duration(seconds: u32) -> String {
+pub fn format_read_duration(seconds: u32) -> String {
     let minutes = seconds / 60;
     let hours = minutes / 60;
     let mins = minutes % 60;
@@ -229,7 +225,7 @@ pub(crate) fn format_read_duration(seconds: u32) -> String {
     }
 }
 
-pub(crate) fn format_compare_ratio(ratio: Option<f64>) -> String {
+pub fn format_compare_ratio(ratio: Option<f64>) -> String {
     let Some(ratio) = ratio else {
         return "n/a".to_string();
     };

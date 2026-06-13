@@ -241,3 +241,14 @@ Near-term sequence:
 5. Use the TUI to show evidence and actions; use companion surfaces for long-form consumption and agent context.
 
 The main product risk is overfitting to TUI aesthetics. The main product opportunity is owning the local personal telemetry layer that both humans and agents can read.
+
+## Current Code Boundary
+
+The current branch keeps Personal Pulse domain logic out of Ratatui modules:
+
+- `tokscale_core::pulse` owns normalized signal types, WeRead fetch/cache/normalization, and Markdown/JSON digest generation.
+- `tokscale-cli::commands::pulse` adapts local CLI caches and settings into core Pulse inputs, then writes stdout.
+- `tokscale-cli::tui::pulse_state` owns TUI refresh/runtime state and background polling.
+- `tokscale-cli::tui::ui::pulse` only renders cached state and should not perform network, cache, or settings I/O.
+
+Future modules should follow the same shape before adding UI: connector and normalized signal in core, TUI runtime state in CLI, rendering as a consumer.

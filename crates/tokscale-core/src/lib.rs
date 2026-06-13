@@ -10,6 +10,7 @@ mod parser;
 pub mod paths;
 pub mod pricing;
 mod provider_identity;
+pub mod pulse;
 pub mod scanner;
 pub mod sessionize;
 pub mod sessions;

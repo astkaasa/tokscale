@@ -4,27 +4,27 @@ Tokscale's TUI should keep a small set of stable workspaces at the top level, th
 
 ## Mockups
 
-Directional mockups for the target TUI are saved in [`docs/tui-design/`](docs/tui-design/README.md).
+Directional mockups for the target TUI are saved next to this document.
 
 ### Overview
 
-![Overview all-time dashboard](docs/tui-design/assets/overview-all.png)
+![Overview all-time dashboard](assets/overview-all.png)
 
 ### Today Mode
 
-![Overview today mode dashboard](docs/tui-design/assets/overview-today.png)
+![Overview today mode dashboard](assets/overview-today.png)
 
 ### Models
 
-![Models table with selected model inspector](docs/tui-design/assets/models.png)
+![Models table with selected model inspector](assets/models.png)
 
 ### Timeline
 
-![Timeline workspace with hourly granularity and detail panel](docs/tui-design/assets/timeline.png)
+![Timeline workspace with hourly granularity and detail panel](assets/timeline.png)
 
 ### Usage
 
-![Usage status and quota workspace](docs/tui-design/assets/usage.png)
+![Usage status and quota workspace](assets/usage.png)
 
 Usage is the operational account/quota workspace. The target interaction includes refreshing subscription status, adding Codex accounts through browser login, switching the active Codex account, and two-step account removal. The main page should answer whether the current account is ready, which fallback is safest, when quota resets, and which saved accounts need attention.
 

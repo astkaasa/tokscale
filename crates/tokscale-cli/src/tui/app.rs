@@ -13,11 +13,12 @@ use crate::ClientFilter;
 
 use ratatui::style::Color;
 
+use super::background_job::{BackgroundJob, BackgroundJobPoll};
 use super::data::{
     AgentUsage, DailyUsage, DataLoader, HourlyUsage, MinutelyUsage, ModelUsage, TokenBreakdown,
     UsageData,
 };
-use super::integrations::weread::{self, WeReadState, WeReadStatus};
+use super::pulse_state::PulseState;
 use super::settings::Settings;
 use super::themes::{Theme, ThemeName};
 use super::ui::dialog::{ClientPickerDialog, ConfirmDialog, DialogStack};
@@ -432,9 +433,8 @@ pub struct App {
     pub hide_usage_emails: bool,
 
     pub usage_fetch_attempted: bool,
-    usage_rx: Option<std::sync::mpsc::Receiver<Vec<crate::commands::usage::UsageOutput>>>,
-    pub weread: WeReadState,
-    weread_rx: Option<std::sync::mpsc::Receiver<Result<WeReadState, String>>>,
+    usage_job: BackgroundJob<Vec<crate::commands::usage::UsageOutput>>,
+    pub pulse: PulseState,
     #[cfg(test)]
     usage_fetcher: UsageFetcher,
     codex_login_rx: Option<std::sync::mpsc::Receiver<CodexLoginEvent>>,
@@ -503,11 +503,7 @@ impl App {
             Tab::Overview
         };
         let (sort_field, sort_direction) = Self::default_sort_for_tab(current_tab);
-        let mut weread =
-            super::integrations::weread::cache::load().unwrap_or_else(WeReadState::default);
-        if settings.env_value("WEREAD_API_KEY").is_none() {
-            weread.mark_auth_missing();
-        }
+        let pulse = PulseState::new(&settings);
 
         let mut app = Self {
             should_quit: false,
@@ -568,9 +564,8 @@ impl App {
             confirmed_codex_remove_account_id,
             hide_usage_emails: true,
             usage_fetch_attempted: false,
-            usage_rx: None,
-            weread,
-            weread_rx: None,
+            usage_job: BackgroundJob::default(),
+            pulse,
             #[cfg(test)]
             usage_fetcher: test_usage_fetcher,
             codex_login_rx: None,
@@ -670,29 +665,24 @@ impl App {
             self.needs_reload = true;
         }
 
-        // Poll background usage fetch
-        if let Some(ref rx) = self.usage_rx {
-            match rx.try_recv() {
-                Ok(results) => {
-                    self.usage_rx = None;
-                    self.subscription_usage = results;
-                    self.clamp_selection();
-                    if !self.subscription_usage.is_empty() {
-                        crate::commands::usage::save_cache(&self.subscription_usage);
-                        self.status_message = Some("Usage data loaded".into());
-                    } else {
-                        crate::commands::usage::clear_cache();
-                        self.status_message = Some("No usage data available".into());
-                    }
-                    self.status_message_time = Some(std::time::Instant::now());
+        match self.usage_job.poll() {
+            Some(BackgroundJobPoll::Ready(results)) => {
+                self.subscription_usage = results;
+                self.clamp_selection();
+                if !self.subscription_usage.is_empty() {
+                    crate::commands::usage::save_cache(&self.subscription_usage);
+                    self.status_message = Some("Usage data loaded".into());
+                } else {
+                    crate::commands::usage::clear_cache();
+                    self.status_message = Some("No usage data available".into());
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.usage_rx = None;
-                    self.status_message = Some("Usage fetch failed".into());
-                    self.status_message_time = Some(std::time::Instant::now());
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                self.status_message_time = Some(std::time::Instant::now());
             }
+            Some(BackgroundJobPoll::Disconnected) => {
+                self.status_message = Some("Usage fetch failed".into());
+                self.status_message_time = Some(std::time::Instant::now());
+            }
+            None => {}
         }
 
         self.poll_weread_fetch();
@@ -937,31 +927,29 @@ impl App {
     }
 
     pub fn fetch_subscription_usage(&mut self) {
-        if self.usage_rx.is_some() {
+        if self.usage_job.is_running() {
             return; // already fetching
         }
         self.usage_fetch_attempted = true;
         self.status_message = Some("Fetching usage data...".into());
         self.status_message_time = Some(std::time::Instant::now());
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.usage_rx = Some(rx);
         #[cfg(test)]
         let usage_fetcher = self.usage_fetcher;
-        std::thread::spawn(move || {
+        self.usage_job.start(move || {
             #[cfg(test)]
             let results = usage_fetcher();
             #[cfg(not(test))]
             let results = crate::commands::usage::fetch_all();
-            let _ = tx.send(results);
+            results
         });
     }
 
     pub fn is_fetching_usage(&self) -> bool {
-        self.usage_rx.is_some()
+        self.usage_job.is_running()
     }
 
     pub fn refresh_usage(&mut self) {
-        if self.usage_rx.is_some() {
+        if self.usage_job.is_running() {
             self.set_status("Refresh already in progress");
         } else {
             self.fetch_subscription_usage();
@@ -969,83 +957,36 @@ impl App {
     }
 
     pub fn is_fetching_weread(&self) -> bool {
-        self.weread_rx.is_some()
+        self.pulse.is_fetching_weread()
     }
 
     pub fn refresh_weread(&mut self) {
-        if self.weread_rx.is_some() {
-            self.set_status("WeRead sync already in progress");
-            return;
+        if let Some(status) = self.pulse.refresh_weread(&self.settings) {
+            self.set_status(status);
         }
-
-        let Some(api_key) = self.settings.env_value("WEREAD_API_KEY") else {
-            self.weread.mark_auth_missing();
-            self.set_status("Set env.WEREAD_API_KEY in settings.json to enable WeRead");
-            return;
-        };
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.weread_rx = Some(rx);
-        self.weread.status = WeReadStatus::Loading;
-        self.set_status("Syncing WeRead...");
-
-        std::thread::spawn(move || {
-            let result = weread::fetch_current(&api_key)
-                .map_err(|error| sanitize_weread_error(error, &api_key));
-            let _ = tx.send(result);
-        });
     }
 
     fn maybe_fetch_usage_on_entry(&mut self) {
-        if self.current_tab == Tab::Usage && !self.usage_fetch_attempted && self.usage_rx.is_none()
+        if self.current_tab == Tab::Usage
+            && !self.usage_fetch_attempted
+            && !self.usage_job.is_running()
         {
             self.fetch_subscription_usage();
         }
     }
 
     fn maybe_fetch_weread_on_entry(&mut self) {
-        if self.weread_rx.is_some() {
-            return;
+        if let Some(status) = self.pulse.maybe_fetch_weread_on_entry(&self.settings) {
+            self.set_status(status);
         }
-        if self.settings.env_value("WEREAD_API_KEY").is_none() {
-            self.weread.mark_auth_missing();
-            return;
-        }
-        if self.weread.has_data() && !self.weread.is_stale_at(weread::now_millis()) {
-            return;
-        }
-        self.refresh_weread();
     }
 
     fn poll_weread_fetch(&mut self) {
-        let Some(rx) = self.weread_rx.as_ref() else {
-            return;
-        };
-
-        match rx.try_recv() {
-            Ok(Ok(state)) => {
-                self.weread_rx = None;
-                self.weread = state;
+        if let Some(update) = self.pulse.poll_weread_fetch() {
+            if update.loaded {
                 self.clamp_selection();
-                self.set_status("WeRead data loaded");
             }
-            Ok(Err(message)) => {
-                self.weread_rx = None;
-                if message.starts_with("WeRead skill upgrade required:") {
-                    self.weread.status = WeReadStatus::UpgradeRequired;
-                    self.weread.error = Some(message);
-                } else {
-                    self.weread.mark_error(message);
-                }
-                self.set_status("WeRead sync failed");
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.weread_rx = None;
-                self.weread
-                    .mark_error("WeRead sync worker stopped".to_string());
-                self.set_status("WeRead sync failed");
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            self.set_status(update.status);
         }
     }
 
@@ -2638,14 +2579,6 @@ impl App {
     pub fn is_very_narrow(&self) -> bool {
         self.terminal_width < 60
     }
-}
-
-fn sanitize_weread_error(error: anyhow::Error, api_key: &str) -> String {
-    let mut message = error.to_string();
-    if !api_key.is_empty() {
-        message = message.replace(api_key, "[redacted]");
-    }
-    message
 }
 
 fn run_codex_login_worker(tx: std::sync::mpsc::Sender<CodexLoginEvent>) {

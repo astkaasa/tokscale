@@ -1,5 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
+use tokscale_core::pulse::weread::format_read_duration;
 
 use super::widgets::{format_cost, format_tokens};
 use crate::tui::app::{App, ClickAction, Tab};
@@ -58,6 +59,7 @@ fn render_right_status(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool
         .count();
     let (scope, status) = if app.current_tab == Tab::Pulse {
         let week = app
+            .pulse
             .weread
             .weekly
             .as_ref()
@@ -65,10 +67,10 @@ fn render_right_status(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool
                 format!(
                     "{}/7  •  {}",
                     weekly.read_days,
-                    crate::tui::integrations::weread::format_read_duration(weekly.total_seconds)
+                    format_read_duration(weekly.total_seconds)
                 )
             })
-            .unwrap_or_else(|| app.weread.status.label().to_string());
+            .unwrap_or_else(|| app.pulse.weread.status.label().to_string());
         ("WeRead", week)
     } else if app.current_tab == Tab::Overview
         && app.overview_mode == crate::tui::app::OverviewMode::Today

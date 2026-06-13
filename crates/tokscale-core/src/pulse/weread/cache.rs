@@ -33,7 +33,7 @@ fn cache_file() -> PathBuf {
     crate::paths::get_cache_dir().join("weread-pulse-cache.json")
 }
 
-pub(crate) fn load() -> Option<WeReadState> {
+pub fn load() -> Option<WeReadState> {
     let path = cache_file();
     let file = File::open(path).ok()?;
     let cached: CachedWeReadPulse = serde_json::from_reader(BufReader::new(file)).ok()?;
@@ -59,7 +59,7 @@ pub(crate) fn load() -> Option<WeReadState> {
     Some(state)
 }
 
-pub(crate) fn save(state: &WeReadState) -> std::io::Result<()> {
+pub fn save(state: &WeReadState) -> std::io::Result<()> {
     let path = cache_file();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

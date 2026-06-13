@@ -3477,6 +3477,7 @@ dependencies = [
 name = "tokscale-core"
 version = "3.1.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "chrono",
  "dirs",

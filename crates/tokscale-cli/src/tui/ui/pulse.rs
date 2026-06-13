@@ -6,10 +6,9 @@ use super::text_width::display_width;
 use super::text_width::truncate_display;
 use super::widgets::light_ratio_bar_spans;
 use crate::tui::app::{App, ClickAction};
-use crate::tui::integrations::weread::model::{WeReadFocusBook, WeReadMonthly};
-use crate::tui::integrations::weread::{
+use tokscale_core::pulse::weread::{
     format_compare_ratio, format_read_duration, now_millis, WeReadBookRef, WeReadCategory,
-    WeReadState, WeReadStatus, WeReadWeekly,
+    WeReadFocusBook, WeReadMonthly, WeReadState, WeReadStatus, WeReadWeekly,
 };
 
 const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -74,7 +73,7 @@ fn render_weread_pulse(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    match &app.weread.weekly {
+    match &app.pulse.weread.weekly {
         Some(weekly) if inner.width >= 22 && inner.height >= 5 => {
             let focus_height = u16::from(weekly.focus.is_some() && inner.height >= 6);
             let chunks = Layout::default()
@@ -98,13 +97,13 @@ fn render_weread_pulse(frame: &mut Frame, app: &mut App, area: Rect) {
                 render_focus_line(frame, app, focus, chunks[2]);
             }
             frame.render_widget(
-                Paragraph::new(status_line(app, &app.weread))
+                Paragraph::new(status_line(app, &app.pulse.weread))
                     .style(Style::default().bg(app.theme.background)),
                 chunks[3],
             );
         }
         _ => {
-            let lines = weread_pulse_lines(app, &app.weread, inner.width);
+            let lines = weread_pulse_lines(app, &app.pulse.weread, inner.width);
             frame.render_widget(
                 Paragraph::new(lines)
                     .style(
@@ -203,7 +202,7 @@ fn render_month_rhythm(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    if let Some(monthly) = &app.weread.monthly {
+    if let Some(monthly) = &app.pulse.weread.monthly {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(2), Constraint::Min(0)])
@@ -331,8 +330,9 @@ fn render_library_signals(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let has_stats = app.weread.shelf.is_some() || app.weread.notes.is_some();
+    let has_stats = app.pulse.weread.shelf.is_some() || app.pulse.weread.notes.is_some();
     let recent = app
+        .pulse
         .weread
         .shelf
         .as_ref()
@@ -348,7 +348,7 @@ fn render_library_signals(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let stats_height = if has_stats {
-        u16::from(app.weread.shelf.is_some()) + u16::from(app.weread.notes.is_some())
+        u16::from(app.pulse.weread.shelf.is_some()) + u16::from(app.pulse.weread.notes.is_some())
     } else {
         0
     };
@@ -374,7 +374,7 @@ fn render_library_stats(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let mut rows = Vec::new();
-    if let Some(shelf) = &app.weread.shelf {
+    if let Some(shelf) = &app.pulse.weread.shelf {
         let public_items = shelf.visible_items.saturating_sub(shelf.private_items);
         let mut pairs = vec![
             ("Items", shelf.visible_items.to_string()),
@@ -385,7 +385,7 @@ fn render_library_stats(frame: &mut Frame, app: &App, area: Rect) {
         }
         rows.push(stat_row(app, &pairs));
     }
-    if let Some(notes) = &app.weread.notes {
+    if let Some(notes) = &app.pulse.weread.notes {
         rows.push(stat_row(
             app,
             &[
@@ -673,10 +673,9 @@ mod tests {
     use super::*;
     use crate::tui::app::TuiConfig;
     use crate::tui::data::UsageData;
-    use crate::tui::integrations::weread::model::{WeReadDay, WeReadFocusBook};
-    use crate::tui::integrations::weread::WeReadWeekly;
     use chrono::NaiveDate;
     use ratatui::{backend::TestBackend, Terminal};
+    use tokscale_core::pulse::weread::{WeReadDay, WeReadFocusBook, WeReadWeekly};
 
     fn make_app() -> App {
         let config = TuiConfig {
@@ -695,7 +694,7 @@ mod tests {
     #[test]
     fn renders_weekly_check_marks_without_panic() {
         let mut app = make_app();
-        app.weread.weekly = Some(WeReadWeekly {
+        app.pulse.weread.weekly = Some(WeReadWeekly {
             period_start: NaiveDate::from_ymd_opt(2026, 6, 8).unwrap(),
             period_end: NaiveDate::from_ymd_opt(2026, 6, 14).unwrap(),
             read_days: 4,

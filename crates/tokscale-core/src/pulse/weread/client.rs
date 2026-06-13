@@ -15,7 +15,7 @@ use super::model::{
 const GATEWAY_URL: &str = "https://i.weread.qq.com/api/agent/gateway";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-pub(crate) fn fetch_current(api_key: &str) -> Result<WeReadState> {
+pub fn fetch_current(api_key: &str) -> Result<WeReadState> {
     let api_key = api_key.trim();
     if api_key.is_empty() {
         return Err(anyhow!("WEREAD_API_KEY is not set"));
@@ -136,7 +136,7 @@ fn upgrade_message(value: &Value) -> Option<String> {
         .or_else(|| Some(info.to_string()))
 }
 
-pub(crate) fn normalize_weekly(value: &Value) -> Result<WeReadWeekly> {
+pub fn normalize_weekly(value: &Value) -> Result<WeReadWeekly> {
     let today = Local::now().date_naive();
     let period_start = value
         .get("baseTime")
@@ -181,7 +181,7 @@ pub(crate) fn normalize_weekly(value: &Value) -> Result<WeReadWeekly> {
     })
 }
 
-pub(crate) fn normalize_monthly(value: &Value) -> WeReadMonthly {
+pub fn normalize_monthly(value: &Value) -> WeReadMonthly {
     let mut categories = value
         .get("preferCategory")
         .and_then(Value::as_array)
@@ -231,7 +231,7 @@ pub(crate) fn normalize_monthly(value: &Value) -> WeReadMonthly {
     }
 }
 
-pub(crate) fn normalize_shelf(value: &Value) -> WeReadShelfSummary {
+pub fn normalize_shelf(value: &Value) -> WeReadShelfSummary {
     let books = value
         .get("books")
         .and_then(Value::as_array)
@@ -279,7 +279,7 @@ pub(crate) fn normalize_shelf(value: &Value) -> WeReadShelfSummary {
     }
 }
 
-pub(crate) fn normalize_notes(value: &Value) -> WeReadNotesSummary {
+pub fn normalize_notes(value: &Value) -> WeReadNotesSummary {
     let mut top_books = value
         .get("books")
         .and_then(Value::as_array)

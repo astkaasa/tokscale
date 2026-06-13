@@ -2,17 +2,17 @@
 
 This branch treats the Overview tab as an operational dashboard, not a shortened Models table.
 
-Directional mockups are saved in [`docs/tui-design/`](docs/tui-design/README.md). The relevant Overview targets are embedded below.
+Directional mockups are saved next to this document. The relevant Overview targets are embedded below.
 
 ## Mockups
 
 ### Overview
 
-![Overview all-time dashboard](docs/tui-design/assets/overview-all.png)
+![Overview all-time dashboard](assets/overview-all.png)
 
 ### Today Mode
 
-![Overview today mode dashboard](docs/tui-design/assets/overview-today.png)
+![Overview today mode dashboard](assets/overview-today.png)
 
 ## Goals
 
