@@ -17,6 +17,7 @@ use super::data::{
     AgentUsage, DailyUsage, DataLoader, HourlyUsage, MinutelyUsage, ModelUsage, TokenBreakdown,
     UsageData,
 };
+use super::integrations::weread::{self, WeReadState, WeReadStatus};
 use super::settings::Settings;
 use super::themes::{Theme, ThemeName};
 use super::ui::dialog::{ClientPickerDialog, ConfirmDialog, DialogStack};
@@ -38,6 +39,7 @@ pub struct TuiConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
     Overview,
+    Pulse,
     Usage,
     Models,
     Daily,
@@ -49,12 +51,19 @@ pub enum Tab {
 
 impl Tab {
     pub fn workspaces() -> &'static [Tab] {
-        &[Tab::Overview, Tab::Models, Tab::Daily, Tab::Usage]
+        &[
+            Tab::Overview,
+            Tab::Pulse,
+            Tab::Models,
+            Tab::Daily,
+            Tab::Usage,
+        ]
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
+            Tab::Pulse => "Pulse",
             Tab::Usage => "Usage",
             Tab::Models => "Models",
             Tab::Daily => "Daily",
@@ -68,6 +77,7 @@ impl Tab {
     pub fn short_name(&self) -> &'static str {
         match self {
             Tab::Overview => "Ovw",
+            Tab::Pulse => "Pul",
             Tab::Usage => "Use",
             Tab::Models => "Mod",
             Tab::Daily => "Day",
@@ -81,6 +91,7 @@ impl Tab {
     pub fn workspace_label(&self) -> &'static str {
         match self {
             Tab::Daily => "Timeline",
+            Tab::Pulse => "Pulse",
             _ => self.as_str(),
         }
     }
@@ -88,6 +99,7 @@ impl Tab {
     pub fn workspace_short_name(&self) -> &'static str {
         match self {
             Tab::Daily => "Time",
+            Tab::Pulse => "Pul",
             _ => self.short_name(),
         }
     }
@@ -318,6 +330,7 @@ pub enum ClickAction {
     CodexDismissLogin,
     UsageSelect { index: usize },
     UsageToggleEmailPrivacy,
+    WeReadRefresh,
     CodexUseAccount { account_id: String },
     CodexRemoveAccount { account_id: String },
 }
@@ -420,6 +433,8 @@ pub struct App {
 
     pub usage_fetch_attempted: bool,
     usage_rx: Option<std::sync::mpsc::Receiver<Vec<crate::commands::usage::UsageOutput>>>,
+    pub weread: WeReadState,
+    weread_rx: Option<std::sync::mpsc::Receiver<Result<WeReadState, String>>>,
     #[cfg(test)]
     usage_fetcher: UsageFetcher,
     codex_login_rx: Option<std::sync::mpsc::Receiver<CodexLoginEvent>>,
@@ -488,6 +503,11 @@ impl App {
             Tab::Overview
         };
         let (sort_field, sort_direction) = Self::default_sort_for_tab(current_tab);
+        let mut weread =
+            super::integrations::weread::cache::load().unwrap_or_else(WeReadState::default);
+        if settings.env_value("WEREAD_API_KEY").is_none() {
+            weread.mark_auth_missing();
+        }
 
         let mut app = Self {
             should_quit: false,
@@ -549,6 +569,8 @@ impl App {
             hide_usage_emails: true,
             usage_fetch_attempted: false,
             usage_rx: None,
+            weread,
+            weread_rx: None,
             #[cfg(test)]
             usage_fetcher: test_usage_fetcher,
             codex_login_rx: None,
@@ -557,6 +579,7 @@ impl App {
         };
         app.build_model_shade_map();
         app.maybe_fetch_usage_on_entry();
+        app.maybe_fetch_weread_on_entry();
         Ok(app)
     }
 
@@ -672,6 +695,7 @@ impl App {
             }
         }
 
+        self.poll_weread_fetch();
         self.poll_codex_login();
     }
 
@@ -823,7 +847,9 @@ impl App {
                 self.cycle_theme();
             }
             KeyCode::Char('r') => {
-                if self.background_loading {
+                if self.current_tab == Tab::Pulse {
+                    self.refresh_weread();
+                } else if self.background_loading {
                     self.set_status("Refresh already in progress");
                 } else {
                     self.needs_reload = true;
@@ -942,10 +968,84 @@ impl App {
         }
     }
 
+    pub fn is_fetching_weread(&self) -> bool {
+        self.weread_rx.is_some()
+    }
+
+    pub fn refresh_weread(&mut self) {
+        if self.weread_rx.is_some() {
+            self.set_status("WeRead sync already in progress");
+            return;
+        }
+
+        let Some(api_key) = self.settings.env_value("WEREAD_API_KEY") else {
+            self.weread.mark_auth_missing();
+            self.set_status("Set env.WEREAD_API_KEY in settings.json to enable WeRead");
+            return;
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.weread_rx = Some(rx);
+        self.weread.status = WeReadStatus::Loading;
+        self.set_status("Syncing WeRead...");
+
+        std::thread::spawn(move || {
+            let result = weread::fetch_current(&api_key)
+                .map_err(|error| sanitize_weread_error(error, &api_key));
+            let _ = tx.send(result);
+        });
+    }
+
     fn maybe_fetch_usage_on_entry(&mut self) {
         if self.current_tab == Tab::Usage && !self.usage_fetch_attempted && self.usage_rx.is_none()
         {
             self.fetch_subscription_usage();
+        }
+    }
+
+    fn maybe_fetch_weread_on_entry(&mut self) {
+        if self.weread_rx.is_some() {
+            return;
+        }
+        if self.settings.env_value("WEREAD_API_KEY").is_none() {
+            self.weread.mark_auth_missing();
+            return;
+        }
+        if self.weread.has_data() && !self.weread.is_stale_at(weread::now_millis()) {
+            return;
+        }
+        self.refresh_weread();
+    }
+
+    fn poll_weread_fetch(&mut self) {
+        let Some(rx) = self.weread_rx.as_ref() else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok(state)) => {
+                self.weread_rx = None;
+                self.weread = state;
+                self.clamp_selection();
+                self.set_status("WeRead data loaded");
+            }
+            Ok(Err(message)) => {
+                self.weread_rx = None;
+                if message.starts_with("WeRead skill upgrade required:") {
+                    self.weread.status = WeReadStatus::UpgradeRequired;
+                    self.weread.error = Some(message);
+                } else {
+                    self.weread.mark_error(message);
+                }
+                self.set_status("WeRead sync failed");
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.weread_rx = None;
+                self.weread
+                    .mark_error("WeRead sync worker stopped".to_string());
+                self.set_status("WeRead sync failed");
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
@@ -1182,6 +1282,9 @@ impl App {
                         ClickAction::UsageToggleEmailPrivacy => {
                             self.toggle_usage_email_privacy();
                         }
+                        ClickAction::WeReadRefresh => {
+                            self.refresh_weread();
+                        }
                         ClickAction::UsageSelect { index } => {
                             self.selected_index = index;
                         }
@@ -1284,10 +1387,11 @@ impl App {
         self.sort_direction = dir;
 
         self.maybe_fetch_usage_on_entry();
+        self.maybe_fetch_weread_on_entry();
     }
 
     fn default_sort_for_tab(tab: Tab) -> (SortField, SortDirection) {
-        if matches!(tab, Tab::Daily | Tab::Hourly | Tab::Minutely) {
+        if matches!(tab, Tab::Pulse | Tab::Daily | Tab::Hourly | Tab::Minutely) {
             (SortField::Date, SortDirection::Descending)
         } else {
             (SortField::Cost, SortDirection::Descending)
@@ -1458,6 +1562,7 @@ impl App {
 
         match self.current_tab {
             Tab::Overview => self.overview_model_len(),
+            Tab::Pulse => 0,
             Tab::Models => self.data.models.len(),
             Tab::Agents => self.data.agents.len(),
             Tab::Daily if self.is_daily_detail_active() => {
@@ -2032,7 +2137,7 @@ impl App {
                         m.cost
                     )
                 }),
-            Tab::Stats | Tab::Usage => None,
+            Tab::Pulse | Tab::Stats | Tab::Usage => None,
         };
 
         if let Some(text) = text {
@@ -2535,6 +2640,14 @@ impl App {
     }
 }
 
+fn sanitize_weread_error(error: anyhow::Error, api_key: &str) -> String {
+    let mut message = error.to_string();
+    if !api_key.is_empty() {
+        message = message.replace(api_key, "[redacted]");
+    }
+    message
+}
+
 fn run_codex_login_worker(tx: std::sync::mpsc::Sender<CodexLoginEvent>) {
     let result = run_codex_login_worker_inner(tx.clone());
     let outcome = match result {
@@ -2834,13 +2947,20 @@ mod tests {
     fn test_tab_workspaces() {
         assert_eq!(
             Tab::workspaces(),
-            &[Tab::Overview, Tab::Models, Tab::Daily, Tab::Usage]
+            &[
+                Tab::Overview,
+                Tab::Pulse,
+                Tab::Models,
+                Tab::Daily,
+                Tab::Usage
+            ]
         );
     }
 
     #[test]
     fn test_tab_as_str() {
         assert_eq!(Tab::Overview.as_str(), "Overview");
+        assert_eq!(Tab::Pulse.as_str(), "Pulse");
         assert_eq!(Tab::Models.as_str(), "Models");
         assert_eq!(Tab::Agents.as_str(), "Agents");
         assert_eq!(Tab::Daily.as_str(), "Daily");
@@ -2852,6 +2972,7 @@ mod tests {
     #[test]
     fn test_tab_short_name() {
         assert_eq!(Tab::Overview.short_name(), "Ovw");
+        assert_eq!(Tab::Pulse.short_name(), "Pul");
         assert_eq!(Tab::Models.short_name(), "Mod");
         assert_eq!(Tab::Agents.short_name(), "Agt");
         assert_eq!(Tab::Daily.short_name(), "Day");
@@ -3354,6 +3475,9 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Overview);
 
         app.handle_key_event(key(KeyCode::Tab));
+        assert_eq!(app.current_tab, Tab::Pulse);
+
+        app.handle_key_event(key(KeyCode::Tab));
         assert_eq!(app.current_tab, Tab::Models);
 
         app.handle_key_event(key(KeyCode::Tab));
@@ -3381,6 +3505,9 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Models);
 
         app.handle_key_event(key(KeyCode::BackTab));
+        assert_eq!(app.current_tab, Tab::Pulse);
+
+        app.handle_key_event(key(KeyCode::BackTab));
         assert_eq!(app.current_tab, Tab::Overview);
     }
 
@@ -3390,7 +3517,13 @@ mod tests {
         app.settings.minutely_tab_enabled = true;
         assert_eq!(app.current_tab, Tab::Overview);
 
-        for expected in [Tab::Models, Tab::Daily, Tab::Usage, Tab::Overview] {
+        for expected in [
+            Tab::Pulse,
+            Tab::Models,
+            Tab::Daily,
+            Tab::Usage,
+            Tab::Overview,
+        ] {
             app.handle_key_event(key(KeyCode::Tab));
             assert_eq!(app.current_tab, expected);
         }
@@ -3491,6 +3624,9 @@ mod tests {
     #[test]
     fn test_handle_key_left_right_switch() {
         let mut app = make_app();
+        app.handle_key_event(key(KeyCode::Right));
+        assert_eq!(app.current_tab, Tab::Pulse);
+
         app.handle_key_event(key(KeyCode::Right));
         assert_eq!(app.current_tab, Tab::Models);
 

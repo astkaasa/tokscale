@@ -21,6 +21,7 @@ target/
 ffi_otui_debug_*.log
 
 # Temporary files and archives
+tmp/
 opencodetmp/
 *.zip
 .turbo

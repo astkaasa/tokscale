@@ -3467,6 +3467,8 @@ dependencies = [
  "tokscale-core",
  "toml",
  "tracing-subscriber",
+ "unicode-truncate",
+ "unicode-width 0.2.0",
  "usvg",
  "uuid",
 ]

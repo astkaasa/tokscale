@@ -59,6 +59,8 @@ clap = { version = "4.5", features = ["derive", "cargo"] }
 # TUI framework
 ratatui = { version = "0.29", features = ["all-widgets"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
+unicode-truncate = "1"
+unicode-width = "0.2"
 
 # Async utilities
 tokio-stream = "0.1"

@@ -44,6 +44,7 @@ fn current_count_label(app: &App) -> String {
             let (_, _, model_count) = app.overview_totals();
             format!(" ({} models)", model_count)
         }
+        Tab::Pulse => String::new(),
         Tab::Models => format!(" ({} models)", app.data.models.len()),
         Tab::Agents => format!(" ({} agents)", app.data.agents.len()),
         Tab::Daily if app.is_daily_detail_active() => {
@@ -366,6 +367,43 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         return spans;
     }
 
+    if app.current_tab == Tab::Pulse {
+        push_action_key_fit(
+            &mut spans,
+            app,
+            x,
+            y,
+            width,
+            "r",
+            if app.is_fetching_weread() {
+                "Syncing"
+            } else {
+                "Sync WeRead"
+            },
+            Some(if app.is_fetching_weread() {
+                "Sync"
+            } else {
+                "WeRead"
+            }),
+            if app.is_fetching_weread() {
+                app.theme.muted
+            } else {
+                Color::Yellow
+            },
+            ClickAction::WeReadRefresh,
+        );
+        push_key_fit(
+            &mut spans,
+            "q",
+            "Quit",
+            Some("Quit"),
+            app.theme.muted,
+            app.theme.muted,
+            width,
+        );
+        return spans;
+    }
+
     if app.current_tab == Tab::Overview {
         push_key_fit(
             &mut spans,
@@ -639,6 +677,8 @@ fn push_key(
 fn render_scope_summary(frame: &mut Frame, app: &App, area: Rect) {
     let line = if app.current_tab == Tab::Usage {
         usage_summary_line(app, area.width)
+    } else if app.current_tab == Tab::Pulse {
+        pulse_summary_line(app, area.width)
     } else {
         scope_summary_line(app, area.width)
     };
@@ -762,6 +802,64 @@ fn usage_summary_line(app: &App, width: u16) -> Line<'static> {
     )
 }
 
+fn pulse_summary_line(app: &App, width: u16) -> Line<'static> {
+    let status = if app.is_fetching_weread() {
+        "syncing"
+    } else {
+        app.weread.status.label()
+    };
+    let status_color = if app.is_fetching_weread() {
+        Color::Yellow
+    } else {
+        match app.weread.status {
+            crate::tui::integrations::weread::WeReadStatus::Fresh => Color::Green,
+            crate::tui::integrations::weread::WeReadStatus::Loading => Color::Yellow,
+            crate::tui::integrations::weread::WeReadStatus::Stale => Color::Yellow,
+            crate::tui::integrations::weread::WeReadStatus::AuthMissing
+            | crate::tui::integrations::weread::WeReadStatus::Error
+            | crate::tui::integrations::weread::WeReadStatus::UpgradeRequired => app.theme.muted,
+        }
+    };
+    let week = app
+        .weread
+        .weekly
+        .as_ref()
+        .map(|weekly| {
+            format!(
+                "{}/7 · {}",
+                weekly.read_days,
+                crate::tui::integrations::weread::format_read_duration(weekly.total_seconds)
+            )
+        })
+        .unwrap_or_else(|| "no reading data".to_string());
+    let notes = app
+        .weread
+        .notes
+        .as_ref()
+        .map(|notes| format!("{} notes", notes.total_notes))
+        .unwrap_or_else(|| "notes n/a".to_string());
+
+    let fields = vec![
+        vec![
+            Span::styled("WeRead: ", app.theme.subtle_text_style()),
+            Span::styled(
+                status.to_string(),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ],
+        vec![Span::styled(week, app.theme.subtle_text_style())],
+        vec![Span::styled(notes, app.theme.subtle_text_style())],
+    ];
+
+    fit_summary_fields(
+        fields,
+        Span::styled("  |  ", app.theme.subtle_text_style()),
+        width as usize,
+    )
+}
+
 fn fit_summary_fields(
     fields: Vec<Vec<Span<'static>>>,
     separator: Span<'static>,
@@ -809,6 +907,12 @@ fn summary_width(app: &App, available_width: u16) -> u16 {
             42
         } else {
             70
+        }
+    } else if app.current_tab == Tab::Pulse {
+        if app.is_narrow() {
+            42
+        } else {
+            64
         }
     } else if app.is_narrow() {
         38

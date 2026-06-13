@@ -56,7 +56,21 @@ fn render_right_status(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool
         .iter()
         .filter(|day| day.tokens.total() > 0 || day.cost > 0.0)
         .count();
-    let (scope, status) = if app.current_tab == Tab::Overview
+    let (scope, status) = if app.current_tab == Tab::Pulse {
+        let week = app
+            .weread
+            .weekly
+            .as_ref()
+            .map(|weekly| {
+                format!(
+                    "{}/7  •  {}",
+                    weekly.read_days,
+                    crate::tui::integrations::weread::format_read_duration(weekly.total_seconds)
+                )
+            })
+            .unwrap_or_else(|| app.weread.status.label().to_string());
+        ("WeRead", week)
+    } else if app.current_tab == Tab::Overview
         && app.overview_mode == crate::tui::app::OverviewMode::Today
     {
         let (tokens, cost, models) = app.overview_totals();
@@ -331,6 +345,7 @@ mod tests {
             header_tabs(&app),
             vec![
                 Tab::Overview,
+                Tab::Pulse,
                 Tab::Models,
                 Tab::Daily,
                 Tab::Usage,
@@ -351,7 +366,13 @@ mod tests {
         assert!(row.contains("Use"), "{row}");
         assert_eq!(
             header_tabs_for_layout(&app, true),
-            vec![Tab::Daily, Tab::Usage, Tab::Models, Tab::Overview]
+            vec![
+                Tab::Daily,
+                Tab::Usage,
+                Tab::Models,
+                Tab::Pulse,
+                Tab::Overview
+            ]
         );
     }
 }

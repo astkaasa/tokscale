@@ -699,6 +699,9 @@ Tokscale stores settings in `~/.config/tokscale/settings.json`:
   "colorPalette": "blue",
   "includeUnusedModels": false,
   "defaultClients": ["opencode", "claude"],
+  "env": {
+    "WEREAD_API_KEY": "..."
+  },
   "scanner": {
     "extraScanPaths": {
       "codex": [
@@ -722,6 +725,7 @@ Tokscale stores settings in `~/.config/tokscale/settings.json`:
 | `autoRefreshMs` | number | `60000` | Auto-refresh interval (30000-3600000ms) |
 | `nativeTimeoutMs` | number | `300000` | Maximum time for native subprocess processing (5000-3600000ms) |
 | `defaultClients` | string[] | `[]` | Client filter applied when no `--client/-c` flag is passed. Accepts the same ids as `--client` (e.g. `["opencode", "claude", "synthetic"]`). Unknown ids are silently dropped. CLI flags always override this list completely — no merging. |
+| `env` | object | `{}` | Persistent per-user environment values Tokscale may consult for integrations. Real process environment variables take precedence. Values are not injected globally into child processes. |
 | `light.writeCache` | boolean | `false` | When true, `tokscale --light` overwrites the TUI cache atomically after rendering. CLI flags `--write-cache` / `--no-write-cache` override per-invocation. |
 | `minutelyTabEnabled` | boolean | `false` | Show the per-minute Minutely tab in the TUI and aggregate per-minute usage during data loading. Default-off because minute-granularity is a niche/diagnostic view for most users and the per-minute bucketing has a non-trivial cost on large datasets. |
 | `scanner.extraScanPaths` | object | `{}` | Additional per-client scan roots for sessions outside Tokscale's default home-root locations |
@@ -729,6 +733,18 @@ Tokscale stores settings in `~/.config/tokscale/settings.json`:
 Use `scanner.extraScanPaths` for persistent extra roots such as project-level `.codex` directories, imported Gemini/OpenClaw histories, or Hermes profile databases. Hermes entries may point at a profile directory containing `state.db` or directly at a `state.db` file. Tokscale merges these paths with the default scan roots on every run and deduplicates overlapping roots by canonical path.
 
 Use `defaultClients` to pin a personal default — for example, set it to `["opencode", "claude"]` if those are the only clients you use, and `tokscale` (with no flags) will scope every report to them automatically. Pass `--client` on the command line to override for a single run.
+
+Use `env.WEREAD_API_KEY` to enable the WeRead Pulse TUI integration without exporting the key in every shell session:
+
+```json
+{
+  "env": {
+    "WEREAD_API_KEY": "..."
+  }
+}
+```
+
+For one-off overrides, set the real `WEREAD_API_KEY` environment variable before launching Tokscale; it takes precedence over `settings.json`.
 
 #### Enabling the Minutely tab
 
@@ -766,6 +782,7 @@ Environment variables override config file values. For CI/CD or one-off use:
 | `TOKSCALE_API_TOKEN` | unset | Tokscale personal API token for non-interactive `submit` and `delete-submitted-data` runs. Create one from Settings > API Tokens or save it locally with `tokscale login --token tt_xxx`. |
 | `TOKSCALE_EXTRA_DIRS` | unset | One-off extra session roots as `client:/abs/path,client:/abs/path` |
 | `TOKSCALE_CONFIG_DIR` | unset | Overrides the config directory root (where `settings.json`, `star-cache.json`, `cache/`, `antigravity-cache/`, and `trae-cache/` live). Absolute path recommended; relative paths resolve against the process CWD. Useful for CI sandboxes or pinning a non-default location. When set, tokscale will not fall back to the legacy macOS `~/Library/Application Support/tokscale/` path. |
+| `WEREAD_API_KEY` | unset | One-off override for the WeRead Pulse integration. Prefer persistent `env.WEREAD_API_KEY` in `settings.json` for daily use. |
 
 ```bash
 # Example: Increase timeout for very large datasets

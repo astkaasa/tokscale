@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200" role="img" aria-label="WeRead Pulse TUI layout variants">
+  <defs>
+    <style>
+      .bg { fill: #080c10; }
+      .panel { fill: #0d1218; stroke: #27313c; stroke-width: 1; }
+      .panel-soft { fill: #0a0f14; stroke: #1b252f; stroke-width: 1; }
+      .title { fill: #d8e2ea; font: 700 18px "SFMono-Regular", Menlo, Consolas, monospace; }
+      .section { fill: #d8e2ea; font: 700 22px "SFMono-Regular", Menlo, Consolas, monospace; }
+      .text { fill: #b6c2cc; font: 14px "SFMono-Regular", Menlo, Consolas, monospace; }
+      .small { fill: #8795a1; font: 12px "SFMono-Regular", Menlo, Consolas, monospace; }
+      .tiny { fill: #65727f; font: 11px "SFMono-Regular", Menlo, Consolas, monospace; }
+      .accent { fill: #48d39a; }
+      .accent2 { fill: #6bb7ff; }
+      .muted { fill: #65727f; }
+      .warn { fill: #f4c95d; }
+      .line { stroke: #27313c; stroke-width: 1; }
+      .line-soft { stroke: #1b252f; stroke-width: 1; }
+      .tick { fill: #48d39a; font: 700 15px "SFMono-Regular", Menlo, Consolas, monospace; }
+      .dot { fill: #56616d; font: 700 15px "SFMono-Regular", Menlo, Consolas, monospace; }
+      .chip { fill: #111b24; stroke: #253544; stroke-width: 1; }
+      .chip-good { fill: #0d221a; stroke: #256c51; stroke-width: 1; }
+      .bar-green { fill: #249b73; }
+      .bar-blue { fill: #3b82c4; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="1200"/>
+
+  <text x="56" y="48" class="section">Tokscale</text>
+  <text x="210" y="48" class="small">Overview</text>
+  <text x="290" y="48" class="small">Today</text>
+  <text x="350" y="48" class="small">Usage</text>
+  <text x="1008" y="48" class="small">All Time  •  140 days</text>
+  <line x1="42" y1="68" x2="1158" y2="68" class="line-soft"/>
+
+  <rect x="48" y="100" width="1104" height="468" class="panel"/>
+  <text x="76" y="136" class="section">WeRead detail layout</text>
+  <text x="800" y="136" class="small">wide view  •  max-width cards</text>
+  <line x1="76" y1="156" x2="1124" y2="156" class="line-soft"/>
+
+  <rect x="76" y="184" width="604" height="328" class="panel-soft"/>
+  <text x="104" y="222" class="section">WeRead Pulse</text>
+  <text x="566" y="222" class="text"><tspan class="accent">4/7</tspan><tspan class="muted">  </tspan><tspan class="accent2">4h56m</tspan></text>
+  <text x="104" y="252" class="small">2026-06-08 -&gt; 2026-06-14</text>
+  <line x1="104" y1="276" x2="652" y2="276" class="line-soft"/>
+
+  <text x="112" y="312" class="small">Mon</text>
+  <text x="188" y="312" class="small">Tue</text>
+  <text x="264" y="312" class="small">Wed</text>
+  <text x="340" y="312" class="small">Thu</text>
+  <text x="416" y="312" class="small">Fri</text>
+  <text x="492" y="312" class="small">Sat</text>
+  <text x="568" y="312" class="small">Sun</text>
+
+  <rect x="104" y="328" width="38" height="22" class="chip-good"/>
+  <rect x="180" y="328" width="38" height="22" class="chip-good"/>
+  <rect x="256" y="328" width="38" height="22" class="chip-good"/>
+  <rect x="332" y="328" width="38" height="22" class="chip-good"/>
+  <rect x="408" y="328" width="38" height="22" class="chip"/>
+  <rect x="484" y="328" width="38" height="22" class="chip"/>
+  <rect x="560" y="328" width="38" height="22" class="chip"/>
+
+  <text x="117" y="345" class="tick">✓</text>
+  <text x="193" y="345" class="tick">✓</text>
+  <text x="269" y="345" class="tick">✓</text>
+  <text x="345" y="345" class="tick">✓</text>
+  <text x="423" y="345" class="dot">·</text>
+  <text x="499" y="345" class="dot">·</text>
+  <text x="575" y="345" class="dot">·</text>
+
+  <text x="104" y="382" class="small">1h41</text>
+  <text x="180" y="382" class="small">2h26</text>
+  <text x="262" y="382" class="small">21m</text>
+  <text x="338" y="382" class="small">27m</text>
+  <text x="416" y="382" class="small">0m</text>
+  <text x="492" y="382" class="small">0m</text>
+  <text x="568" y="382" class="small">0m</text>
+
+  <line x1="104" y1="414" x2="652" y2="414" class="line-soft"/>
+  <text x="104" y="446" class="small">focus</text>
+  <text x="164" y="446" class="text">万物发明指南</text>
+  <text x="104" y="476" class="small">signal</text>
+  <text x="164" y="476" class="warn">single-day peak</text>
+  <text x="330" y="476" class="small">avg</text>
+  <text x="372" y="476" class="accent2">59m/day</text>
+  <text x="474" y="476" class="small">trend</text>
+  <text x="536" y="476" class="accent">+35%</text>
+
+  <rect x="716" y="184" width="408" height="150" class="panel-soft"/>
+  <text x="744" y="220" class="title">Month rhythm</text>
+  <text x="744" y="252" class="text"><tspan class="accent2">10h05m</tspan><tspan class="muted">  /  11 active days</tspan></text>
+  <text x="744" y="282" class="small">avg 50m/day  •  effective &gt;=1m</text>
+  <text x="744" y="312" class="small"><tspan class="accent">科学技术</tspan><tspan class="muted"> 7h47m this month</tspan></text>
+
+  <rect x="716" y="362" width="408" height="150" class="panel-soft"/>
+  <text x="744" y="398" class="title">Library signals</text>
+  <text x="744" y="430" class="text"><tspan class="accent2">3,829</tspan><tspan class="muted"> shelf items</tspan><tspan class="muted">  •  </tspan><tspan class="accent2">77</tspan><tspan class="muted"> notes</tspan></text>
+  <text x="744" y="460" class="small"><tspan class="accent2">34</tspan><tspan class="muted"> books with notes  •  private-first shelf</tspan></text>
+  <text x="744" y="490" class="small">next pick  <tspan class="text">搞定系统设计</tspan></text>
+
+  <text x="76" y="546" class="tiny">This detail view is intentionally taller than a banner: width is capped by cards, and extra wide space becomes a side column instead of stretching the check-in row.</text>
+
+  <rect x="48" y="626" width="1104" height="300" class="panel"/>
+  <text x="76" y="662" class="section">Compact dashboard variant</text>
+  <text x="862" y="662" class="small">not displayed together with detail view</text>
+  <line x1="76" y1="682" x2="1124" y2="682" class="line-soft"/>
+
+  <rect x="76" y="716" width="318" height="138" class="panel-soft"/>
+  <text x="104" y="752" class="title">WeRead</text>
+  <text x="286" y="752" class="accent">4/7</text>
+  <text x="334" y="752" class="accent2">4h56</text>
+  <text x="104" y="784" class="tiny">Mon Tue Wed Thu Fri Sat Sun</text>
+  <text x="108" y="816" class="tick">✓</text>
+  <text x="150" y="816" class="tick">✓</text>
+  <text x="192" y="816" class="tick">✓</text>
+  <text x="234" y="816" class="tick">✓</text>
+  <text x="276" y="816" class="dot">·</text>
+  <text x="318" y="816" class="dot">·</text>
+  <text x="360" y="816" class="dot">·</text>
+  <text x="104" y="840" class="tiny">avg 59m   effective &gt;=1m   +35%</text>
+
+  <rect x="442" y="716" width="318" height="138" class="panel-soft"/>
+  <text x="470" y="752" class="title">Reading flavor</text>
+  <text x="470" y="786" class="accent">科学技术</text>
+  <rect x="470" y="808" width="210" height="10" class="bar-green"/>
+  <text x="694" y="818" class="small">7h47m</text>
+  <rect x="470" y="832" width="70" height="10" class="bar-blue"/>
+  <text x="554" y="842" class="tiny">计算机 2h16m</text>
+
+  <rect x="808" y="716" width="318" height="138" class="panel-soft"/>
+  <text x="836" y="752" class="title">Library signals</text>
+  <text x="836" y="786" class="small"><tspan class="accent2">3,829</tspan><tspan class="muted"> shelf items</tspan></text>
+  <text x="836" y="816" class="small"><tspan class="accent2">77</tspan><tspan class="muted"> notes  /  </tspan><tspan class="accent2">34</tspan><tspan class="muted"> books</tspan></text>
+  <text x="836" y="840" class="tiny">low-noise metrics only; expand for lists</text>
+
+  <text x="76" y="962" class="small">Mounting rule: show either the detail layout or the compact dashboard variant. Do not stack both in the same TUI screen.</text>
+  <text x="76" y="992" class="tiny">Interaction idea: Enter opens WeRead detail, Tab cycles week/month/shelf, hover/click on a day reveals title + minutes.</text>
+  <text x="76" y="1022" class="tiny">Data source: /readdata/detail, /shelf/sync, /user/notebooks, /book/recommend. Keep API key out of local project files.</text>
+</svg>

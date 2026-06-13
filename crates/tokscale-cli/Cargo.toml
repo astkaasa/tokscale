@@ -17,6 +17,8 @@ tokscale-core = { workspace = true }
 clap = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+unicode-truncate = { workspace = true }
+unicode-width = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 comfy-table = { workspace = true }

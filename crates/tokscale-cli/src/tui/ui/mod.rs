@@ -12,8 +12,10 @@ mod mix;
 mod models;
 mod overview;
 mod overview_today;
+mod pulse;
 pub mod spinner;
 mod stats;
+mod text_width;
 mod usage;
 pub(crate) mod widgets;
 
@@ -51,6 +53,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         match app.current_tab {
             Tab::Overview => overview::render(frame, app, chunks[1]),
+            Tab::Pulse => pulse::render(frame, app, chunks[1]),
             Tab::Models => models::render(frame, app, chunks[1]),
             Tab::Agents => agents::render(frame, app, chunks[1]),
             Tab::Daily => daily::render(frame, app, chunks[1]),

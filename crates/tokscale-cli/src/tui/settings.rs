@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -77,6 +78,16 @@ pub struct Settings {
     pub default_clients: Vec<String>,
     #[serde(default)]
     pub light: LightSettings,
+    /// Local environment values Tokscale may consult when a feature needs
+    /// credentials or per-user knobs. Real process environment variables
+    /// still take precedence over this map. Values are not injected into
+    /// the global process environment; callers opt into individual keys.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_map_lossy",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub env: BTreeMap<String, String>,
     /// Opt-in toggle for the per-minute breakdown tab. Default is `false`
     /// to keep the tab strip focused on the daily/hourly views most users
     /// want and to skip the minute-bucket aggregation cost in DataLoader
@@ -128,6 +139,7 @@ impl Default for Settings {
             scanner: ScannerSettings::default(),
             default_clients: Vec::new(),
             light: LightSettings::default(),
+            env: BTreeMap::new(),
             minutely_tab_enabled: false,
         }
     }
@@ -312,6 +324,41 @@ impl Settings {
         let clamped = timeout_ms.clamp(MIN_NATIVE_TIMEOUT_MS, MAX_NATIVE_TIMEOUT_MS);
         Duration::from_millis(clamped)
     }
+
+    pub fn env_value(&self, key: &str) -> Option<String> {
+        std::env::var(key)
+            .ok()
+            .and_then(|value| non_empty_trimmed(&value).map(str::to_string))
+            .or_else(|| {
+                self.env
+                    .get(key)
+                    .and_then(|value| non_empty_trimmed(value).map(str::to_string))
+            })
+    }
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn deserialize_string_map_lossy<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<BTreeMap<String, serde_json::Value>> =
+        Option::deserialize(deserializer).ok().flatten();
+    Ok(value
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key, value.to_string())))
+        .collect())
 }
 
 #[cfg(test)]
@@ -654,6 +701,64 @@ mod tests {
         let serialized = serde_json::to_string(&light).unwrap();
         let parsed: LightSettings = serde_json::from_str(&serialized).unwrap();
         assert!(parsed.write_cache);
+    }
+
+    #[test]
+    fn settings_env_defaults_to_empty() {
+        let json = r#"{ "colorPalette": "blue" }"#;
+        let parsed: Settings = serde_json::from_str(json).unwrap();
+        assert!(parsed.env.is_empty());
+    }
+
+    #[test]
+    fn settings_env_reads_string_values_lossily() {
+        let json = r#"{
+            "env": {
+                "TOKSCALE_TEST_SETTINGS_ONLY": "from-settings",
+                "IGNORED_NUMBER": 123,
+                "EMPTY": ""
+            }
+        }"#;
+        let parsed: Settings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            parsed.env.get("TOKSCALE_TEST_SETTINGS_ONLY"),
+            Some(&"from-settings".to_string())
+        );
+        assert!(!parsed.env.contains_key("IGNORED_NUMBER"));
+        assert!(parsed.env.contains_key("EMPTY"));
+        assert_eq!(
+            parsed.env_value("TOKSCALE_TEST_SETTINGS_ONLY").as_deref(),
+            Some("from-settings")
+        );
+        assert!(parsed.env_value("EMPTY").is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn settings_env_value_prefers_process_environment() {
+        let mut settings = Settings::default();
+        settings.env.insert(
+            "TOKSCALE_TEST_SETTINGS_ENV".to_string(),
+            "from-settings".to_string(),
+        );
+
+        let previous = std::env::var_os("TOKSCALE_TEST_SETTINGS_ENV");
+        unsafe {
+            std::env::set_var("TOKSCALE_TEST_SETTINGS_ENV", "from-process");
+        }
+
+        assert_eq!(
+            settings.env_value("TOKSCALE_TEST_SETTINGS_ENV").as_deref(),
+            Some("from-process")
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_TEST_SETTINGS_ENV", value),
+                None => std::env::remove_var("TOKSCALE_TEST_SETTINGS_ENV"),
+            }
+        }
     }
 
     #[test]
