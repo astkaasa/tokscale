@@ -2,17 +2,7 @@
 
 This branch treats the Overview tab as an operational dashboard, not a shortened Models table.
 
-Directional mockups are saved next to this document. The relevant Overview targets are embedded below.
-
-## Mockups
-
-### Overview
-
-![Overview all-time dashboard](assets/overview-all.png)
-
-### Today Mode
-
-![Overview today mode dashboard](assets/overview-today.png)
+Keep this document as the layout contract for Overview. Use actual TUI renders for verification instead of preserving bitmap mockups in the repository.
 
 ## Goals
 

@@ -20,9 +20,6 @@ pub enum DialogResult {
     None,
     /// Close the current dialog
     Close,
-    /// Replace the current dialog with a new one
-    #[allow(dead_code)]
-    Replace(Box<dyn DialogContent>),
 }
 
 /// Trait for dialog content that can be rendered and handle events

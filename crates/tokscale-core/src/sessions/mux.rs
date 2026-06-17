@@ -11,8 +11,6 @@ use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 pub struct MuxSessionUsage {
-    #[allow(dead_code)]
-    pub version: Option<u32>,
     #[serde(rename = "byModel")]
     pub by_model: Option<HashMap<String, MuxModelUsage>>,
     #[serde(rename = "lastRequest")]
@@ -37,8 +35,6 @@ pub struct MuxTokenBucket {
 
 #[derive(Debug, Deserialize)]
 pub struct MuxLastRequest {
-    #[allow(dead_code)]
-    pub model: Option<String>,
     pub timestamp: Option<i64>,
 }
 

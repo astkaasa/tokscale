@@ -2,11 +2,11 @@ use super::{UsageMetric, UsageOutput};
 use anyhow::Result;
 
 pub fn has_credentials() -> bool {
-    crate::warp::load_usage_cache().is_some()
+    crate::integrations::warp::load_usage_cache().is_some()
 }
 
 pub fn fetch() -> Result<UsageOutput> {
-    let cache = crate::warp::load_usage_cache()
+    let cache = crate::integrations::warp::load_usage_cache()
         .ok_or_else(|| anyhow::anyhow!("Warp aggregate usage cache not found"))?;
     let mut metrics = Vec::new();
 

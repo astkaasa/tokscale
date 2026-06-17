@@ -18,27 +18,16 @@ use std::path::Path;
 
 /// Gemini session structure
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct GeminiSession {
     #[serde(rename = "sessionId")]
     pub session_id: String,
-    #[serde(rename = "projectHash")]
-    pub project_hash: String,
-    #[serde(rename = "startTime")]
-    pub start_time: String,
-    #[serde(rename = "lastUpdated")]
-    pub last_updated: String,
     pub messages: Vec<GeminiMessage>,
 }
 
 /// Gemini message structure
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct GeminiMessage {
-    pub id: String,
     pub timestamp: Option<String>,
-    #[serde(rename = "type")]
-    pub message_type: String,
     pub tokens: Option<Value>,
     pub model: Option<String>,
 }
@@ -81,7 +70,6 @@ fn deserialize_tokens(value: &Value) -> Option<GeminiTokens> {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct GeminiTokens {
     pub input: Option<i64>,
     pub output: Option<i64>,

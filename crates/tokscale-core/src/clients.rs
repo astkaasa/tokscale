@@ -82,7 +82,6 @@ pub struct ClientDef {
     pub pattern: &'static str,
     pub headless: bool,
     pub parse_local: bool,
-    pub submit_default: bool,
 }
 
 impl ClientDef {
@@ -100,7 +99,7 @@ impl ClientDef {
 }
 
 macro_rules! define_clients {
-    ( $( $variant:ident = $index:expr => { id: $id:expr, root: $root:expr, relative: $rel:expr, pattern: $pat:expr, headless: $hl:expr, parse_local: $pl:expr, submit_default: $sd:expr } ),+ $(,)? ) => {
+    ( $( $variant:ident = $index:expr => { id: $id:expr, root: $root:expr, relative: $rel:expr, pattern: $pat:expr, headless: $hl:expr, parse_local: $pl:expr } ),+ $(,)? ) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         #[repr(usize)]
         pub enum ClientId {
@@ -131,10 +130,6 @@ macro_rules! define_clients {
                 self.data().parse_local
             }
 
-            pub fn submit_default(&self) -> bool {
-                self.data().submit_default
-            }
-
             pub fn iter() -> impl Iterator<Item = ClientId> {
                 Self::ALL.iter().copied()
             }
@@ -153,7 +148,6 @@ macro_rules! define_clients {
                 pattern: $pat,
                 headless: $hl,
                 parse_local: $pl,
-                submit_default: $sd,
             } ),+
         ];
 
@@ -175,8 +169,7 @@ define_clients!(
         relative: "opencode/storage/message",
         pattern: "*.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Claude = 1 => {
         id: "claude",
@@ -184,8 +177,7 @@ define_clients!(
         relative: ".claude/projects",
         pattern: "*.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Codex = 2 => {
         id: "codex",
@@ -196,8 +188,7 @@ define_clients!(
         relative: "sessions",
         pattern: "*.jsonl",
         headless: true,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Cursor = 3 => {
         id: "cursor",
@@ -205,8 +196,7 @@ define_clients!(
         relative: ".config/tokscale/cursor-cache",
         pattern: "usage*.csv",
         headless: false,
-        parse_local: false,
-        submit_default: true
+        parse_local: false
     },
     Gemini = 4 => {
         id: "gemini",
@@ -217,8 +207,7 @@ define_clients!(
         relative: "tmp",
         pattern: "*.json|*.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Amp = 5 => {
         id: "amp",
@@ -226,8 +215,7 @@ define_clients!(
         relative: "amp/threads",
         pattern: "T-*.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Droid = 6 => {
         id: "droid",
@@ -235,8 +223,7 @@ define_clients!(
         relative: ".factory/sessions",
         pattern: "*.settings.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     OpenClaw = 7 => {
         id: "openclaw",
@@ -244,8 +231,7 @@ define_clients!(
         relative: ".openclaw/agents",
         pattern: "*.jsonl*",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Pi = 8 => {
         id: "pi",
@@ -253,8 +239,7 @@ define_clients!(
         relative: ".pi/agent/sessions",
         pattern: "*.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Kimi = 9 => {
         id: "kimi",
@@ -262,8 +247,7 @@ define_clients!(
         relative: ".kimi/sessions",
         pattern: "wire.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Qwen = 10 => {
         id: "qwen",
@@ -271,8 +255,7 @@ define_clients!(
         relative: ".qwen/projects",
         pattern: "*.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     RooCode = 11 => {
         id: "roocode",
@@ -280,8 +263,7 @@ define_clients!(
         relative: ".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/tasks",
         pattern: "ui_messages.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     KiloCode = 12 => {
         id: "kilocode",
@@ -289,8 +271,7 @@ define_clients!(
         relative: ".config/Code/User/globalStorage/kilocode.kilo-code/tasks",
         pattern: "ui_messages.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Mux = 13 => {
         id: "mux",
@@ -298,8 +279,7 @@ define_clients!(
         relative: ".mux/sessions",
         pattern: "session-usage.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Kilo = 14 => {
         id: "kilo",
@@ -307,8 +287,7 @@ define_clients!(
         relative: "kilo/kilo.db",
         pattern: "kilo.db",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Crush = 15 => {
         id: "crush",
@@ -316,8 +295,7 @@ define_clients!(
         relative: "crush/projects.json",
         pattern: "projects.json",
         headless: false,
-        parse_local: true,
-        submit_default: false
+        parse_local: true
     },
     Hermes = 16 => {
         id: "hermes",
@@ -328,8 +306,7 @@ define_clients!(
         relative: "state.db",
         pattern: "state.db",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Copilot = 17 => {
         id: "copilot",
@@ -337,8 +314,7 @@ define_clients!(
         relative: ".copilot/otel",
         pattern: "*.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Goose = 18 => {
         id: "goose",
@@ -346,8 +322,7 @@ define_clients!(
         relative: "goose/sessions/sessions.db",
         pattern: "sessions.db",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Codebuff = 19 => {
         id: "codebuff",
@@ -358,8 +333,7 @@ define_clients!(
         relative: "projects",
         pattern: "chat-messages.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Antigravity = 20 => {
         id: "antigravity",
@@ -367,8 +341,7 @@ define_clients!(
         relative: "antigravity-cache/sessions",
         pattern: "*.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Zed = 21 => {
         id: "zed",
@@ -376,8 +349,7 @@ define_clients!(
         relative: "zed/threads/threads.db",
         pattern: "threads.db",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Kiro = 22 => {
         id: "kiro",
@@ -385,8 +357,7 @@ define_clients!(
         relative: ".kiro/sessions/cli",
         pattern: "*.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Trae = 23 => {
         id: "trae",
@@ -394,8 +365,7 @@ define_clients!(
         relative: "trae-cache/sessions",
         pattern: "*.json",
         headless: false,
-        parse_local: true,
-        submit_default: false
+        parse_local: true
     },
     Warp = 24 => {
         id: "warp",
@@ -403,8 +373,7 @@ define_clients!(
         relative: "warp-cache",
         pattern: "usage*.json",
         headless: false,
-        parse_local: true,
-        submit_default: false
+        parse_local: true
     },
     Cline = 25 => {
         id: "cline",
@@ -412,8 +381,7 @@ define_clients!(
         relative: ".config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks",
         pattern: "ui_messages.json",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     },
     Gjc = 26 => {
         id: "gjc",
@@ -424,8 +392,7 @@ define_clients!(
         relative: "sessions",
         pattern: "*.jsonl",
         headless: false,
-        parse_local: true,
-        submit_default: true
+        parse_local: true
     }
 );
 
@@ -500,7 +467,6 @@ mod tests {
         assert_eq!(client.data().relative_path, "warp-cache");
         assert_eq!(client.data().pattern, "usage*.json");
         assert!(client.data().parse_local);
-        assert!(!client.data().submit_default);
     }
 
     #[test]
@@ -685,7 +651,6 @@ mod tests {
             pattern: "*.jsonl",
             headless: false,
             parse_local: true,
-            submit_default: true,
         };
 
         assert_eq!(client.resolve_path("/tmp/home"), "/tmp/home/.test/sessions");
@@ -732,7 +697,6 @@ mod tests {
         );
         assert_eq!(ClientId::Gjc.data().pattern, "*.jsonl");
         assert!(ClientId::Gjc.data().parse_local);
-        assert!(ClientId::Gjc.data().submit_default);
         assert_eq!(ClientId::from_str("gjc"), Some(ClientId::Gjc));
 
         // Env set but env roots disabled: falls back to home, ignoring env.
@@ -750,11 +714,6 @@ mod tests {
     #[test]
     fn test_cursor_parse_local_is_false() {
         assert!(!ClientId::Cursor.data().parse_local);
-    }
-
-    #[test]
-    fn test_crush_submit_default_is_false() {
-        assert!(!ClientId::Crush.submit_default());
     }
 
     #[test]
@@ -787,11 +746,6 @@ mod tests {
     }
 
     #[test]
-    fn test_antigravity_submit_default_is_true() {
-        assert!(ClientId::Antigravity.submit_default());
-    }
-
-    #[test]
     fn test_zed_data_dir_path() {
         let _guard = env_lock().lock().unwrap();
         let previous = std::env::var("XDG_DATA_HOME").ok();
@@ -806,11 +760,6 @@ mod tests {
     }
 
     #[test]
-    fn test_zed_submit_default_is_true() {
-        assert!(ClientId::Zed.submit_default());
-    }
-
-    #[test]
     fn test_kiro_data_dir_path() {
         assert_eq!(
             ClientId::Kiro.data().resolve_path("/tmp/home"),
@@ -818,7 +767,6 @@ mod tests {
         );
         assert_eq!(ClientId::Kiro.data().pattern, "*.json");
         assert!(ClientId::Kiro.parse_local());
-        assert!(ClientId::Kiro.submit_default());
         assert!(!ClientId::Kiro.supports_headless());
     }
 }

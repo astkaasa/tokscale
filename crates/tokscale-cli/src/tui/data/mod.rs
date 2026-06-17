@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
 
 use anyhow::Result;
-use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Local, NaiveDate, NaiveDateTime, Timelike};
 use tokio::runtime::{Handle, Runtime};
 
 use tokscale_core::sessions::UnifiedMessage;
@@ -132,19 +131,6 @@ pub struct MinutelyUsage {
     pub turn_count: u32,
 }
 
-#[derive(Debug, Clone)]
-pub struct ContributionDay {
-    pub date: NaiveDate,
-    pub tokens: u64,
-    pub cost: f64,
-    pub intensity: f64,
-}
-
-#[derive(Debug, Clone)]
-pub struct GraphData {
-    pub weeks: Vec<Vec<Option<ContributionDay>>>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct UsageData {
     pub models: Vec<ModelUsage>,
@@ -152,7 +138,6 @@ pub struct UsageData {
     pub daily: Vec<DailyUsage>,
     pub hourly: Vec<HourlyUsage>,
     pub minutely: Vec<MinutelyUsage>,
-    pub graph: Option<GraphData>,
     pub total_tokens: u64,
     pub total_cost: f64,
     pub loading: bool,
@@ -162,7 +147,6 @@ pub struct UsageData {
 }
 
 pub struct DataLoader {
-    _sessions_path: Option<PathBuf>,
     pub since: Option<String>,
     pub until: Option<String>,
     pub year: Option<String>,
@@ -272,9 +256,9 @@ fn hourly_model_display_name(group_by: &GroupBy, provider_id: &str, model: &str)
 }
 
 impl DataLoader {
-    pub fn new(sessions_path: Option<PathBuf>) -> Self {
+    #[cfg(test)]
+    pub fn new() -> Self {
         Self {
-            _sessions_path: sessions_path,
             since: None,
             until: None,
             year: None,
@@ -283,13 +267,11 @@ impl DataLoader {
     }
 
     pub fn with_filters(
-        sessions_path: Option<PathBuf>,
         since: Option<String>,
         until: Option<String>,
         year: Option<String>,
     ) -> Self {
         Self {
-            _sessions_path: sessions_path,
             since,
             until,
             year,
@@ -342,61 +324,6 @@ impl DataLoader {
             })
         } else {
             Runtime::new()?.block_on(parse_local_unified_messages(opts))
-        }
-        .map_err(anyhow::Error::msg)?;
-
-        self.aggregate_messages(messages, group_by)
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    fn load_with_pricing(
-        &self,
-        enabled_clients: &[ClientId],
-        group_by: &GroupBy,
-        include_synthetic: bool,
-        pricing: &tokscale_core::pricing::PricingService,
-    ) -> Result<UsageData> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
-            .to_string_lossy()
-            .to_string();
-
-        let mut sources: Vec<String> = enabled_clients
-            .iter()
-            .map(|client| client.as_str().to_string())
-            .collect();
-        if include_synthetic {
-            sources.push("synthetic".to_string());
-        }
-
-        let opts = LocalParseOptions {
-            home_dir: Some(home),
-            clients: Some(sources),
-            since: self.since.clone(),
-            until: self.until.clone(),
-            year: self.year.clone(),
-            use_env_roots: false,
-            scanner_settings: data_loader_scanner_settings(),
-        };
-
-        let messages = if Handle::try_current().is_ok() {
-            std::thread::scope(|s| {
-                s.spawn(|| {
-                    let rt = Runtime::new().map_err(|e| e.to_string())?;
-                    rt.block_on(tokscale_core::parse_local_unified_messages_with_pricing(
-                        opts,
-                        Some(pricing),
-                    ))
-                })
-                .join()
-                .unwrap_or_else(|_| Err("data loader thread panicked".to_string()))
-            })
-        } else {
-            Runtime::new()?.block_on(tokscale_core::parse_local_unified_messages_with_pricing(
-                opts,
-                Some(pricing),
-            ))
         }
         .map_err(anyhow::Error::msg)?;
 
@@ -900,7 +827,6 @@ impl DataLoader {
             .map(|m| if m.cost.is_finite() { m.cost } else { 0.0 })
             .sum();
 
-        let graph = build_contribution_graph(&daily);
         let (current_streak, longest_streak) = calculate_streaks(&daily);
 
         Ok(UsageData {
@@ -909,7 +835,6 @@ impl DataLoader {
             daily,
             hourly,
             minutely,
-            graph: Some(graph),
             total_tokens,
             total_cost,
             loading: false,
@@ -985,67 +910,6 @@ fn minute_bucket_with_fallback(timestamp_ms: i64, date_str: &str) -> Option<Naiv
         return Some(dt);
     }
     parse_date(date_str).and_then(|d| d.and_hms_opt(0, 0, 0))
-}
-
-fn build_contribution_graph(daily: &[DailyUsage]) -> GraphData {
-    build_contribution_graph_for_today(daily, Local::now().date_naive())
-}
-
-fn build_contribution_graph_for_today(daily: &[DailyUsage], today: NaiveDate) -> GraphData {
-    if daily.is_empty() {
-        return GraphData { weeks: vec![] };
-    }
-
-    let days_to_sunday = today.weekday().num_days_from_sunday();
-    let end_date = today;
-    let start_date = end_date - chrono::Duration::days(364 + days_to_sunday as i64);
-
-    let daily_map: HashMap<NaiveDate, &DailyUsage> = daily.iter().map(|d| (d.date, d)).collect();
-
-    let max_cost = daily.iter().map(|d| d.cost).fold(0.0_f64, |a, b| a.max(b));
-
-    let mut weeks: Vec<Vec<Option<ContributionDay>>> = Vec::new();
-    let mut current_week: Vec<Option<ContributionDay>> = Vec::new();
-
-    let mut current_date = start_date;
-    while current_date <= end_date {
-        let day = if let Some(usage) = daily_map.get(&current_date) {
-            let raw_intensity = if max_cost > 0.0 {
-                usage.cost / max_cost
-            } else {
-                0.0
-            };
-            let intensity = if raw_intensity.is_finite() {
-                raw_intensity.clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            Some(ContributionDay {
-                date: current_date,
-                tokens: usage.tokens.total(),
-                cost: usage.cost,
-                intensity,
-            })
-        } else {
-            Some(ContributionDay {
-                date: current_date,
-                tokens: 0,
-                cost: 0.0,
-                intensity: 0.0,
-            })
-        };
-
-        current_week.push(day);
-
-        if current_date.weekday() == chrono::Weekday::Sat || current_date == end_date {
-            weeks.push(current_week);
-            current_week = Vec::new();
-        }
-
-        current_date += chrono::Duration::days(1);
-    }
-
-    GraphData { weeks }
 }
 
 fn calculate_streaks(daily: &[DailyUsage]) -> (u32, u32) {
@@ -1597,8 +1461,7 @@ mod tests {
 
     #[test]
     fn test_data_loader_new() {
-        let loader = DataLoader::new(None);
-        assert!(loader._sessions_path.is_none());
+        let loader = DataLoader::new();
         assert!(loader.since.is_none());
         assert!(loader.until.is_none());
         assert!(loader.year.is_none());
@@ -1630,13 +1493,11 @@ mod tests {
     #[test]
     fn test_data_loader_with_filters() {
         let loader = DataLoader::with_filters(
-            Some(PathBuf::from("/tmp/sessions")),
             Some("2024-01-01".to_string()),
             Some("2024-12-31".to_string()),
             Some("2024".to_string()),
         );
 
-        assert_eq!(loader._sessions_path, Some(PathBuf::from("/tmp/sessions")));
         assert_eq!(loader.since, Some("2024-01-01".to_string()));
         assert_eq!(loader.until, Some("2024-12-31".to_string()));
         assert_eq!(loader.year, Some("2024".to_string()));
@@ -1658,32 +1519,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_contribution_graph_uses_provided_today() {
-        let today = NaiveDate::from_ymd_opt(2026, 3, 8).unwrap();
-        let graph = build_contribution_graph_for_today(&[], today);
-        assert!(graph.weeks.is_empty());
-
-        let daily = vec![DailyUsage {
-            date: NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
-            tokens: TokenBreakdown::default(),
-            cost: 0.0,
-            source_breakdown: BTreeMap::new(),
-            message_count: 0,
-            turn_count: 0,
-        }];
-        let graph = build_contribution_graph_for_today(&daily, today);
-        let last_day = graph
-            .weeks
-            .last()
-            .and_then(|week| week.last())
-            .and_then(|day| day.as_ref())
-            .map(|day| day.date);
-        assert_eq!(last_day, Some(today));
-    }
-
-    #[test]
     fn test_aggregate_messages_builds_agent_usage() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let messages = vec![
             UnifiedMessage::new_with_agent(
                 "opencode",
@@ -1733,7 +1570,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_groups_by_workspace_and_model() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = loader
             .aggregate_messages(
                 vec![
@@ -1771,7 +1608,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_workspace_grouping_keeps_unknown_bucket_visible() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = loader
             .aggregate_messages(
                 vec![
@@ -1810,7 +1647,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_workspace_grouping_keeps_real_unknown_workspace_separate() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = loader
             .aggregate_messages(
                 vec![
@@ -1852,7 +1689,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_workspace_grouping_splits_daily_models_by_workspace() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = loader
             .aggregate_messages(
                 vec![
@@ -1900,7 +1737,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_workspace_grouping_disambiguates_identical_labels() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = loader
             .aggregate_messages(
                 vec![
@@ -1952,7 +1789,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_client_provider_model_splits_providers_in_daily_breakdown() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = loader
             .aggregate_messages(
                 vec![
@@ -2018,7 +1855,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_keeps_same_model_split_across_sources_in_daily_breakdown() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = loader
             .aggregate_messages(
                 vec![
@@ -2077,7 +1914,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_merges_oh_my_opencode_agent_variants() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let messages = vec![
             UnifiedMessage::new_with_agent(
                 "opencode",
@@ -2127,7 +1964,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_merges_opencode_agent_case_variants() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let messages = vec![
             UnifiedMessage::new_with_agent(
                 "opencode",
@@ -2176,7 +2013,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_messages_does_not_merge_omo_variants_for_non_opencode_clients() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let messages = vec![
             UnifiedMessage::new_with_agent(
                 "claude",
@@ -2302,7 +2139,7 @@ after"#,
         }
 
         let pricing = test_pricing_service();
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = load_with_pricing(
             &loader,
             &[ClientId::RooCode],
@@ -2397,7 +2234,7 @@ after"#,
         }
 
         let pricing = test_pricing_service();
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         let usage = load_with_pricing(
             &loader,
             &[ClientId::OpenCode],
@@ -2479,7 +2316,7 @@ after"#,
 
     #[test]
     fn test_minutely_aggregation_skipped_when_flag_disabled() {
-        let loader = DataLoader::new(None);
+        let loader = DataLoader::new();
         assert!(!loader.minutely_enabled);
         let usage = loader
             .aggregate_messages(
@@ -2496,7 +2333,7 @@ after"#,
 
     #[test]
     fn test_minutely_aggregation_runs_when_flag_enabled() {
-        let loader = DataLoader::new(None).with_minutely_enabled(true);
+        let loader = DataLoader::new().with_minutely_enabled(true);
         assert!(loader.minutely_enabled);
         let usage = loader
             .aggregate_messages(
@@ -2514,7 +2351,7 @@ after"#,
 
     #[test]
     fn test_minutely_aggregation_groups_same_minute_messages() {
-        let loader = DataLoader::new(None).with_minutely_enabled(true);
+        let loader = DataLoader::new().with_minutely_enabled(true);
         let base_ms = 1_735_689_600_000_i64;
         let usage = loader
             .aggregate_messages(
@@ -2539,7 +2376,7 @@ after"#,
 
     #[test]
     fn test_minutely_aggregation_splits_adjacent_minutes() {
-        let loader = DataLoader::new(None).with_minutely_enabled(true);
+        let loader = DataLoader::new().with_minutely_enabled(true);
         let base_ms = 1_735_689_600_000_i64;
         let usage = loader
             .aggregate_messages(
@@ -2559,7 +2396,7 @@ after"#,
 
     #[test]
     fn test_minutely_aggregation_clamps_negative_tokens_and_cost() {
-        let loader = DataLoader::new(None).with_minutely_enabled(true);
+        let loader = DataLoader::new().with_minutely_enabled(true);
         let usage = loader
             .aggregate_messages(
                 vec![make_msg(1_735_689_600_000, -50, -50, -10.0)],

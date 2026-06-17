@@ -4,8 +4,8 @@
 
 use crate::sessions::UnifiedMessage;
 use crate::{
-    ClientContribution, DailyContribution, DailyTotals, DataSummary, GraphMeta, GraphResult,
-    SessionContribution, TokenBreakdown, YearSummary,
+    ClientContribution, DailyContribution, DailyTotals, DataSummary, SessionContribution,
+    TokenBreakdown, YearSummary,
 };
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -184,38 +184,6 @@ pub fn calculate_years(contributions: &[DailyContribution]) -> Vec<YearSummary> 
 
     years.sort_by(|a, b| a.year.cmp(&b.year));
     years
-}
-
-/// Generate complete graph result
-pub fn generate_graph_result(
-    contributions: Vec<DailyContribution>,
-    processing_time_ms: u32,
-) -> GraphResult {
-    let summary = calculate_summary(&contributions);
-    let years = calculate_years(&contributions);
-
-    let date_range_start = contributions
-        .first()
-        .map(|c| c.date.clone())
-        .unwrap_or_default();
-    let date_range_end = contributions
-        .last()
-        .map(|c| c.date.clone())
-        .unwrap_or_default();
-
-    GraphResult {
-        meta: GraphMeta {
-            generated_at: chrono::Utc::now().to_rfc3339(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            date_range_start,
-            date_range_end,
-            processing_time_ms,
-        },
-        summary,
-        years,
-        contributions,
-        time_metrics: None,
-    }
 }
 
 // =============================================================================
@@ -1071,37 +1039,6 @@ mod tests {
 
         let years = calculate_years(&contributions);
         assert_eq!(years.len(), 0); // Should skip invalid dates
-    }
-
-    #[test]
-    fn test_generate_graph_result_empty() {
-        let contributions = Vec::new();
-        let result = generate_graph_result(contributions, 100);
-
-        assert_eq!(result.contributions.len(), 0);
-        assert_eq!(result.summary.total_tokens, 0);
-        assert_eq!(result.years.len(), 0);
-        assert_eq!(result.meta.processing_time_ms, 100);
-        assert_eq!(result.meta.date_range_start, "");
-        assert_eq!(result.meta.date_range_end, "");
-    }
-
-    #[test]
-    fn test_generate_graph_result_with_data() {
-        let messages = vec![
-            mock_unified_message("2024-01-01", 1000, 0.05, "claude-3-5-sonnet", "opencode"),
-            mock_unified_message("2024-01-02", 2000, 0.10, "gpt-4", "claude"),
-        ];
-        let contributions = aggregate_by_date(messages);
-        let result = generate_graph_result(contributions, 150);
-
-        assert_eq!(result.contributions.len(), 2);
-        assert_eq!(result.summary.total_tokens, 3000);
-        assert_eq!(result.years.len(), 1);
-        assert_eq!(result.meta.processing_time_ms, 150);
-        assert_eq!(result.meta.date_range_start, "2024-01-01");
-        assert_eq!(result.meta.date_range_end, "2024-01-02");
-        assert_eq!(result.meta.version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

@@ -1,4 +1,3 @@
-mod agents;
 mod bar_chart;
 mod daily;
 pub mod dialog;
@@ -14,7 +13,6 @@ mod overview;
 mod overview_today;
 mod pulse;
 pub mod spinner;
-mod stats;
 mod text_width;
 mod usage;
 pub(crate) mod widgets;
@@ -55,11 +53,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Tab::Overview => overview::render(frame, app, chunks[1]),
             Tab::Pulse => pulse::render(frame, app, chunks[1]),
             Tab::Models => models::render(frame, app, chunks[1]),
-            Tab::Agents => agents::render(frame, app, chunks[1]),
             Tab::Daily => daily::render(frame, app, chunks[1]),
             Tab::Hourly => hourly::render(frame, app, chunks[1]),
             Tab::Minutely => minutely::render(frame, app, chunks[1]),
-            Tab::Stats => stats::render(frame, app, chunks[1]),
             Tab::Usage => usage::render(frame, app, chunks[1]),
         }
     }

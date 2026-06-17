@@ -3,7 +3,6 @@ use ratatui::widgets::ScrollbarState;
 use tokscale_core::ClientId;
 
 use crate::tui::client_ui;
-use crate::tui::config::TokscaleConfig;
 
 pub fn format_tokens_compact(tokens: u64) -> String {
     if tokens >= 1_000_000_000 {
@@ -208,25 +207,8 @@ pub(crate) fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
     }
 }
 
-pub fn get_model_color(model: &str) -> Color {
-    get_provider_shade(get_provider_from_model(model), 0)
-}
-
-/// Returns the shade for a given `(provider, rank)` pair.
-/// Honors `[colors.providers]` config overrides at every rank by deriving
-/// a 7-step lighten-to-white palette from the override base color.
 pub fn get_provider_shade(provider: &str, rank: usize) -> Color {
-    let config = TokscaleConfig::load();
-    if let Some(base) = config.get_provider_color(provider) {
-        return shade_from_base(base, rank);
-    }
-
     let key = canonical_provider_color_key(provider);
-    if key != provider {
-        if let Some(base) = config.get_provider_color(&key) {
-            return shade_from_base(base, rank);
-        }
-    }
 
     if let Some(palette) = branded_provider_palette(&key) {
         let idx = rank.min(palette.len() - 1);
@@ -473,36 +455,7 @@ pub fn get_provider_from_model(model: &str) -> &'static str {
     }
 }
 
-pub fn get_client_color(client: &str) -> Color {
-    let config = TokscaleConfig::load();
-    if let Some(color) = config.get_client_color(client) {
-        return color;
-    }
-    match client.to_lowercase().as_str() {
-        "opencode" => Color::Rgb(34, 197, 94),     // #22c55e
-        "claude" => Color::Rgb(218, 119, 86),      // #DA7756 Claude brand coral
-        "codex" => Color::Rgb(59, 130, 246),       // #3b82f6
-        "cursor" => Color::Rgb(168, 85, 247),      // #a855f7
-        "gemini" => Color::Rgb(6, 182, 212),       // #06b6d4
-        "amp" => Color::Rgb(236, 72, 153),         // #EC4899
-        "droid" => Color::Rgb(16, 185, 129),       // #10b981
-        "openclaw" => Color::Rgb(239, 68, 68),     // #ef4444
-        "hermes" => Color::Rgb(255, 215, 0),       // #ffd700
-        "goose" => Color::Rgb(100, 180, 220),      // #64b4dc
-        "codebuff" => Color::Rgb(124, 58, 237),    // #7C3AED Codebuff brand purple
-        "antigravity" => Color::Rgb(99, 102, 241), // #6366F1 Antigravity indigo
-        "zed" => Color::Rgb(8, 76, 207),           // #084CCF Zed blue
-        "warp" => Color::Rgb(1, 155, 150),         // #019B96 Warp teal
-        "gjc" => Color::Rgb(220, 38, 38),          // #DC2626 gajae-code red-claw
-        _ => Color::Rgb(136, 136, 136),            // #888888
-    }
-}
-
 pub fn get_client_display_name(client: &str) -> String {
-    let config = TokscaleConfig::load();
-    if let Some(name) = config.get_client_display_name(client) {
-        return name.to_string();
-    }
     let client_lower = client.to_lowercase();
     if client_lower == ClientId::OpenClaw.as_str() {
         return "🦞 OpenClaw".to_string();
@@ -514,10 +467,6 @@ pub fn get_client_display_name(client: &str) -> String {
 }
 
 pub fn get_provider_display_name(provider: &str) -> String {
-    let config = TokscaleConfig::load();
-    if let Some(name) = config.get_provider_display_name(provider) {
-        return name.to_string();
-    }
     match provider.to_lowercase().as_str() {
         "anthropic" => "Anthropic".to_string(),
         "openai" => "OpenAI".to_string(),

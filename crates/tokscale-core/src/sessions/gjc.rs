@@ -8,7 +8,7 @@
 //!   message is emitted for it.
 //! - `service_tier_change` — skipped.
 //! - `message` — emits ONLY assistant messages. The assistant `message` object
-//!   carries `model`/`provider`/`api`, a unix-ms `timestamp`, and a `usage`
+//!   carries `model`/`provider`, a unix-ms `timestamp`, and a `usage`
 //!   object that includes an authoritative `usage.cost` (USD) breakdown.
 //!
 //! Cost policy (A1): the embedded `usage.cost.total` (USD) is reused verbatim
@@ -46,8 +46,6 @@ struct GjcMessage {
     role: Option<String>,
     model: Option<String>,
     provider: Option<String>,
-    #[allow(dead_code)]
-    api: Option<String>,
     /// Unix-ms timestamp (preferred for ordering/date).
     timestamp: Option<i64>,
     usage: Option<GjcUsage>,
@@ -60,8 +58,6 @@ struct GjcUsage {
     output: Option<i64>,
     cache_read: Option<i64>,
     cache_write: Option<i64>,
-    #[allow(dead_code)]
-    total_tokens: Option<i64>,
     cost: Option<GjcCost>,
 }
 

@@ -30,7 +30,6 @@ struct WireMessage {
 #[derive(Debug, Deserialize)]
 struct StatusPayload {
     token_usage: Option<TokenUsage>,
-    #[allow(dead_code)]
     message_id: Option<String>,
 }
 

@@ -1775,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn test_forked_child_submit_cap_regression_skips_large_inherited_cache_replays() {
+    fn test_forked_child_replay_cap_regression_skips_large_inherited_cache_replays() {
         let file = create_test_file(concat!(
             r#"{"timestamp":"2026-05-05T21:51:57.991Z","type":"session_meta","payload":{"id":"child-session","forked_from_id":"parent-session","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-session","depth":1,"agent_role":"architect"}}},"model_provider":"openai","agent_nickname":"architect","cwd":"/repo-child"}}"#,
             "\n",

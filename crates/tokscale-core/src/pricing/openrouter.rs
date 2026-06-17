@@ -50,8 +50,6 @@ struct Endpoint {
 
 #[derive(Deserialize)]
 struct EndpointData {
-    #[allow(dead_code)]
-    id: String,
     endpoints: Vec<Endpoint>,
 }
 

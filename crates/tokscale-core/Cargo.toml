@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core library for tokscale - session parsing, scanning, aggregation, pricing"
+description = "Core library for Tokscale local telemetry, usage aggregation, and pulse signals"
 
 [lib]
 crate-type = ["rlib"]

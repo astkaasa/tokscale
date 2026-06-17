@@ -1,7 +1,7 @@
 //! TUI data caching for instant startup.
 //!
 //! This module provides disk-based caching for TUI data to enable instant UI display
-//! while fresh data loads in the background (matching TypeScript implementation behavior).
+//! while fresh data loads in the background.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
@@ -15,11 +15,11 @@ use tokscale_core::{sessions, GroupBy, ModelPerformance};
 use crate::ClientFilter;
 
 use super::data::{
-    AgentUsage, ContributionDay, DailyModelInfo, DailySourceInfo, DailyUsage, GraphData,
-    HourlyModelInfo, HourlyUsage, ModelUsage, TokenBreakdown, UsageData,
+    AgentUsage, DailyModelInfo, DailySourceInfo, DailyUsage, HourlyModelInfo, HourlyUsage,
+    ModelUsage, TokenBreakdown, UsageData,
 };
 
-/// Cache staleness threshold: 5 minutes (matches TS implementation)
+/// Cache staleness threshold: 5 minutes.
 const CACHE_STALE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
 const CACHE_SCHEMA_VERSION: u32 = 9;
 
@@ -43,14 +43,12 @@ impl CacheReportScope {
 /// Single source of truth for the `group_by` value used to key the TUI
 /// cache. The cache file's `groupBy` field is compared verbatim against
 /// this on load (`cache.rs::load_cache`), so any code path that writes
-/// the cache — most importantly the detached `warm-tui-cache` subprocess
-/// fired after `tokscale submit` — must use this exact value, NOT
-/// `GroupBy::default()`.
+/// the cache must use this exact value, NOT `GroupBy::default()`.
 ///
-/// Historical bug: the warm-tui-cache writer keyed on `GroupBy::default()`
+/// Historical bug: an older cache writer keyed on `GroupBy::default()`
 /// (= `ClientModel`) while the TUI loaded with the hard-coded
-/// `GroupBy::Model`, so every submit silently invalidated the next TUI
-/// launch's cache and the "show cached data while refreshing" contract
+/// `GroupBy::Model`, so the next TUI launch's cache could be
+/// invalidated and the "show cached data while refreshing" contract
 /// never triggered. Anchoring both ends on this constant prevents the
 /// two from drifting again — change here ⇒ change everywhere.
 ///
@@ -59,8 +57,7 @@ impl CacheReportScope {
 /// purely a refactor with no user-visible presentation change.
 pub const TUI_DEFAULT_GROUP_BY: GroupBy = GroupBy::Model;
 
-/// Get the cache directory path
-/// Uses `~/.cache/tokscale/` to match TypeScript implementation for cache sharing
+/// Get the cache directory path.
 fn cache_dir() -> Option<PathBuf> {
     Some(crate::paths::get_cache_dir())
 }
@@ -107,7 +104,6 @@ struct CachedUsageData {
     daily: Vec<CachedDailyUsage>,
     #[serde(default)]
     hourly: Vec<CachedHourlyUsage>,
-    graph: Option<CachedGraphData>,
     total_tokens: u64,
     total_cost: f64,
     current_streak: u32,
@@ -218,23 +214,6 @@ struct CachedHourlyUsage {
     #[serde(default)]
     turn_count: u32,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CachedContributionDay {
-    date: String,
-    tokens: u64,
-    cost: f64,
-    intensity: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CachedGraphData {
-    weeks: Vec<Vec<Option<CachedContributionDay>>>,
-}
-
-// Conversion implementations
 
 impl From<&TokenBreakdown> for CachedTokenBreakdown {
     fn from(t: &TokenBreakdown) -> Self {
@@ -543,64 +522,6 @@ impl TryFrom<CachedDailyUsage> for DailyUsage {
     }
 }
 
-impl From<&ContributionDay> for CachedContributionDay {
-    fn from(c: &ContributionDay) -> Self {
-        Self {
-            date: c.date.to_string(),
-            tokens: c.tokens,
-            cost: c.cost,
-            intensity: c.intensity,
-        }
-    }
-}
-
-impl TryFrom<CachedContributionDay> for ContributionDay {
-    type Error = chrono::ParseError;
-
-    fn try_from(c: CachedContributionDay) -> Result<Self, Self::Error> {
-        use chrono::NaiveDate;
-        Ok(Self {
-            date: NaiveDate::parse_from_str(&c.date, "%Y-%m-%d")?,
-            tokens: c.tokens,
-            cost: c.cost,
-            intensity: c.intensity,
-        })
-    }
-}
-
-impl From<&GraphData> for CachedGraphData {
-    fn from(g: &GraphData) -> Self {
-        Self {
-            weeks: g
-                .weeks
-                .iter()
-                .map(|week| {
-                    week.iter()
-                        .map(|day| day.as_ref().map(|d| d.into()))
-                        .collect()
-                })
-                .collect(),
-        }
-    }
-}
-
-impl TryFrom<CachedGraphData> for GraphData {
-    type Error = chrono::ParseError;
-
-    fn try_from(g: CachedGraphData) -> Result<Self, Self::Error> {
-        let weeks: Result<Vec<Vec<Option<ContributionDay>>>, _> = g
-            .weeks
-            .into_iter()
-            .map(|week| {
-                week.into_iter()
-                    .map(|day| day.map(|d| d.try_into()).transpose())
-                    .collect()
-            })
-            .collect();
-        Ok(Self { weeks: weeks? })
-    }
-}
-
 impl From<&UsageData> for CachedUsageData {
     fn from(u: &UsageData) -> Self {
         Self {
@@ -608,7 +529,6 @@ impl From<&UsageData> for CachedUsageData {
             agents: u.agents.iter().map(|a| a.into()).collect(),
             daily: u.daily.iter().map(|d| d.into()).collect(),
             hourly: u.hourly.iter().map(|h| h.into()).collect(),
-            graph: u.graph.as_ref().map(|g| g.into()),
             total_tokens: u.total_tokens,
             total_cost: u.total_cost,
             current_streak: u.current_streak,
@@ -624,8 +544,6 @@ impl TryFrom<CachedUsageData> for UsageData {
         let daily: Result<Vec<DailyUsage>, _> = u.daily.into_iter().map(|d| d.try_into()).collect();
         let hourly: Result<Vec<HourlyUsage>, _> =
             u.hourly.into_iter().map(|h| h.try_into()).collect();
-        let graph: Option<Result<GraphData, _>> = u.graph.map(|g| g.try_into());
-
         Ok(Self {
             models: u.models.into_iter().map(|m| m.into()).collect(),
             agents: normalize_cached_agents(u.agents),
@@ -635,7 +553,6 @@ impl TryFrom<CachedUsageData> for UsageData {
             // not worth round-tripping through the on-disk cache); the
             // first foreground refresh after cache hit will populate it.
             minutely: Vec::new(),
-            graph: graph.transpose()?,
             total_tokens: u.total_tokens,
             total_cost: u.total_cost,
             loading: false,
@@ -1132,7 +1049,6 @@ mod tests {
     "agents": [],
     "daily": [],
     "hourly": [],
-    "graph": null,
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1231,7 +1147,6 @@ mod tests {
     "agents": [],
     "daily": [],
     "hourly": [],
-    "graph": null,
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1279,7 +1194,6 @@ mod tests {
   "data": {
     "models": [],
     "daily": [],
-    "graph": null,
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1323,7 +1237,6 @@ mod tests {
   "data": {
     "models": [],
     "daily": [],
-    "graph": null,
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1396,7 +1309,6 @@ mod tests {
         }
       ]]
     }],
-    "graph": null,
     "totalTokens": 15,
     "totalCost": 1.25,
     "currentStreak": 1,
@@ -1516,7 +1428,6 @@ mod tests {
         }
       ]]
     }],
-    "graph": null,
     "totalTokens": 45,
     "totalCost": 3.25,
     "currentStreak": 1,
@@ -1597,7 +1508,6 @@ mod tests {
       "messageCount": 1,
       "turnCount": 1
     }],
-    "graph": null,
     "totalTokens": 15,
     "totalCost": 1.25,
     "currentStreak": 1,
@@ -1670,7 +1580,6 @@ mod tests {
         }
       ]]
     }],
-    "graph": null,
     "totalTokens": 15,
     "totalCost": 1.25,
     "currentStreak": 1,
@@ -1732,7 +1641,6 @@ mod tests {
     "agents": [],
     "daily": [],
     "hourly": [],
-    "graph": null,
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1789,7 +1697,6 @@ mod tests {
     "agents": [],
     "daily": [],
     "hourly": [],
-    "graph": null,
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1846,7 +1753,6 @@ mod tests {
     "agents": [],
     "daily": [],
     "hourly": [],
-    "graph": null,
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1891,19 +1797,18 @@ mod tests {
 
     /// Regression test for the TUI cache `group_by` mismatch bug.
     ///
-    /// Symptom: `npx tokscale@latest` (TUI launch) silently dropped the
+    /// Symptom: a normal TUI launch silently dropped the
     /// on-disk cache and showed an empty dashboard until the background
     /// scan finished, even though `~/.config/tokscale/cache/tui-data-cache.json`
     /// existed and was well-formed.
     ///
-    /// Root cause: the warm-tui-cache writer (`run_warm_tui_cache` in
-    /// `main.rs`, spawned as a detached subprocess after every successful
-    /// `tokscale submit`) saved the cache with `GroupBy::default()`
+    /// Root cause: an older cache writer saved the cache with
+    /// `GroupBy::default()`
     /// (= `ClientModel`, serialized as `"client,model"`), while the TUI
     /// reader (`tui::run`) loaded with the hard-coded `GroupBy::Model`
     /// (serialized as `"model"`). `cache.rs::load_cache` does a strict
     /// inequality check on the cached vs. requested `group_by`, so the
-    /// two never matched and every submit silently invalidated the next
+    /// two never matched and those writers silently invalidated the next
     /// TUI launch's cache.
     ///
     /// Fix: anchor both ends on `TUI_DEFAULT_GROUP_BY`. This test pins
@@ -1911,7 +1816,7 @@ mod tests {
     /// must return `Fresh`, never `Miss`.
     #[test]
     #[serial]
-    fn warm_cache_round_trip_under_canonical_key_is_fresh() {
+    fn cache_round_trip_under_canonical_key_is_fresh() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
         let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
@@ -1923,8 +1828,7 @@ mod tests {
         let enabled = ClientFilter::default_set();
         let scope = CacheReportScope::default();
 
-        // Write with the canonical key (mirrors what `run_warm_tui_cache`
-        // does after the fix).
+        // Write with the canonical key.
         save_cached_data(
             &UsageData::default(),
             &enabled,
@@ -1954,7 +1858,7 @@ mod tests {
     }
 
     /// Documents the historical bug as a frozen regression: writing with
-    /// `GroupBy::default()` (the pre-fix `run_warm_tui_cache` behavior)
+    /// `GroupBy::default()` (the old writer behavior)
     /// and reading with `TUI_DEFAULT_GROUP_BY` returns `Miss`. If
     /// anyone re-introduces `GroupBy::default()` at any TUI cache write
     /// site, this assertion proves the cache breaks.
@@ -1978,9 +1882,8 @@ mod tests {
         // Reader uses the canonical key. If `GroupBy::default()` and
         // `TUI_DEFAULT_GROUP_BY` ever coincide (e.g. someone changes
         // `impl Default for GroupBy` to return `Model`), this assertion
-        // will start failing — at which point the divergent-write site
-        // in `run_warm_tui_cache` is no longer dangerous and the test
-        // should be updated accordingly.
+        // will start failing, at which point this regression test should
+        // be updated accordingly.
         let result = load_cache(&enabled, &TUI_DEFAULT_GROUP_BY, &scope);
         assert!(
             matches!(result, CacheResult::Miss),

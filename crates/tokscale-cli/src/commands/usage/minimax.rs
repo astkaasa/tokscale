@@ -36,8 +36,6 @@ struct ModelRemains {
     current_interval_remaining_count: Option<i64>,
     current_interval_used_count: Option<i64>,
     current_subscribe_title: Option<String>,
-    #[allow(dead_code)]
-    start_time: Option<i64>,
     end_time: Option<i64>,
     remains_time: Option<i64>,
 }

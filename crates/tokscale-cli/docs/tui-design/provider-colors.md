@@ -18,10 +18,9 @@ Provider colors are identity cues, not immutable brand assets. The implementatio
 
 Provider shades are resolved in this order:
 
-1. User override from `[colors.providers]`.
-2. Built-in branded provider palette or provider base for known provider families.
-3. Stable uncategorized provider base selected from a fixed curated palette by hashing the canonical color key.
-4. Rank shade derived from the selected base color.
+1. Built-in branded provider palette or provider base for known provider families.
+2. Stable uncategorized provider base selected from a fixed curated palette by hashing the canonical color key.
+3. Rank shade derived from the selected base color.
 
 The same rank-shading rule applies to both branded and uncategorized providers: the highest-cost model for a provider uses the base color, and lower-ranked models use progressively lighter shades.
 
@@ -39,4 +38,4 @@ This keeps visual identity stable when UI labels improve later.
 
 ## Extension Policy
 
-New providers can start in the stable uncategorized palette, but common model vendors should get a branded color family once the provider identity is clear. Users can always pin a provider color in config when they want local colors without waiting for upstream or branch defaults.
+New providers can start in the stable uncategorized palette, but common model vendors should get a branded color family once the provider identity is clear. If user-customizable colors become important later, add them to the canonical `settings.json` schema instead of reintroducing a second TUI-only config file.

@@ -42,10 +42,8 @@ struct LimitEntry {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct LimitWindow {
     duration: Option<i64>,
-    time_unit: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

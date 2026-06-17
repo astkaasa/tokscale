@@ -19,12 +19,8 @@ struct QuotaData {
 struct Limit {
     #[serde(rename = "type")]
     limit_type: Option<String>,
-    #[allow(dead_code)]
-    usage: Option<f64>,
     remaining: Option<f64>,
     percentage: Option<f64>,
-    #[allow(dead_code)]
-    current_value: Option<f64>,
     number: Option<i64>,
     unit: Option<i64>,
 }

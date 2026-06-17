@@ -124,7 +124,7 @@ fn resolve_subagent_name(
         }
     }
 
-    // Tier 3: generic fallback (still visible in the Agents tab)
+    // Tier 3: generic fallback for downstream agent-aware summaries.
     normalize_agent_name("claude-code-subagent")
 }
 
@@ -1586,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cc_mirror_variant_client_segment_is_submit_safe() {
+    fn test_cc_mirror_variant_client_segment_is_path_safe() {
         assert_eq!(sanitize_cc_mirror_segment(" zaicc "), "zaicc");
         assert_eq!(sanitize_cc_mirror_segment("../Zai CC!"), "zai-cc");
         assert_eq!(sanitize_cc_mirror_segment("..."), "variant");
@@ -2157,9 +2157,9 @@ mod tests {
     }
 
     #[test]
-    fn test_wrapper_transcript_with_usage_is_parsed() {
-        let content = r#"{"type":"user","timestamp":"2026-04-01T10:00:00.000Z","message":{"content":"Wrapped prompt"}}
-{"type":"assistant","timestamp":"2026-04-01T10:00:01.000Z","requestId":"req_wrapper","message":{"id":"msg_wrapper","model":"claude-sonnet-4","usage":{"input_tokens":123,"output_tokens":45,"cache_read_input_tokens":67,"cache_creation_input_tokens":8}}}"#;
+    fn test_transcript_with_usage_is_parsed() {
+        let content = r#"{"type":"user","timestamp":"2026-04-01T10:00:00.000Z","message":{"content":"Transcript prompt"}}
+{"type":"assistant","timestamp":"2026-04-01T10:00:01.000Z","requestId":"req_transcript","message":{"id":"msg_transcript","model":"claude-sonnet-4","usage":{"input_tokens":123,"output_tokens":45,"cache_read_input_tokens":67,"cache_creation_input_tokens":8}}}"#;
         let (_dir, path) = create_transcript_file(content, "ses_123456789012345678901234567.jsonl");
 
         let messages = parse_claude_file(&path);
@@ -2176,8 +2176,8 @@ mod tests {
     }
 
     #[test]
-    fn test_wrapper_transcript_without_usage_is_skipped() {
-        let content = r#"{"type":"user","timestamp":"2026-04-01T10:00:00.000Z","message":{"content":"Wrapped prompt"}}
+    fn test_transcript_without_usage_is_skipped() {
+        let content = r#"{"type":"user","timestamp":"2026-04-01T10:00:00.000Z","message":{"content":"Transcript prompt"}}
 {"type":"tool_use","timestamp":"2026-04-01T10:00:01.000Z","message":{"content":"Run tool"}}
 {"type":"tool_result","timestamp":"2026-04-01T10:00:02.000Z","message":{"content":"Tool result"}}"#;
         let (_dir, path) = create_transcript_file(content, "ses_765432109876543210987654321.jsonl");
@@ -2186,7 +2186,7 @@ mod tests {
 
         assert!(
             messages.is_empty(),
-            "wrapper transcripts without usage metadata must not be estimated"
+            "transcripts without usage metadata must not be estimated"
         );
     }
 

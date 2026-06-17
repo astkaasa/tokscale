@@ -12,7 +12,6 @@ use serde::Deserialize;
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct KiloMessage {
     #[serde(default)]
     pub id: Option<String>,
@@ -47,7 +46,6 @@ pub struct KiloCache {
 #[derive(Debug, Deserialize)]
 pub struct KiloTime {
     pub created: f64,
-    pub completed: Option<f64>,
 }
 
 pub fn parse_kilo_sqlite(db_path: &Path) -> Vec<UnifiedMessage> {

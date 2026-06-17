@@ -47,7 +47,6 @@ fn current_count_label(app: &App) -> String {
         }
         Tab::Pulse => String::new(),
         Tab::Models => format!(" ({} models)", app.data.models.len()),
-        Tab::Agents => format!(" ({} agents)", app.data.agents.len()),
         Tab::Daily if app.is_daily_detail_active() => {
             format!(" ({} models)", app.get_sorted_daily_detail_rows().len())
         }
@@ -61,7 +60,7 @@ fn current_count_label(app: &App) -> String {
         },
         Tab::Hourly => format!(" ({} hours)", app.data.hourly.len()),
         Tab::Minutely => format!(" ({} minutes)", app.data.minutely.len()),
-        Tab::Stats | Tab::Usage => String::new(),
+        Tab::Usage => String::new(),
     }
 }
 
@@ -918,7 +917,6 @@ mod tests {
         let config = TuiConfig {
             theme: "blue".to_string(),
             refresh: 0,
-            sessions_path: None,
             clients: None,
             since: None,
             until: None,
@@ -983,13 +981,9 @@ mod tests {
             current_count_label(&make_app_on(Tab::Models)),
             " (0 models)"
         );
-        assert_eq!(
-            current_count_label(&make_app_on(Tab::Agents)),
-            " (0 agents)"
-        );
         assert_eq!(current_count_label(&make_app_on(Tab::Daily)), " (0 days)");
         assert_eq!(current_count_label(&make_app_on(Tab::Hourly)), " (0 hours)");
-        assert_eq!(current_count_label(&make_app_on(Tab::Stats)), "");
+        assert_eq!(current_count_label(&make_app_on(Tab::Usage)), "");
     }
 
     #[test]
@@ -1040,6 +1034,7 @@ mod tests {
     #[test]
     fn scope_summary_drops_fields_without_truncating_labels() {
         let mut app = make_app_on(Tab::Models);
+        app.auto_refresh = false;
         app.data.total_tokens = 2_200_000_000;
         app.data.total_cost = 1034.56;
 

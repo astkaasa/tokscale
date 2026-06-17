@@ -15,9 +15,6 @@ pub struct PiSessionHeader {
     #[serde(rename = "type")]
     pub entry_type: String,
     pub id: String,
-    #[allow(dead_code)]
-    pub timestamp: Option<String>,
-    #[allow(dead_code)]
     pub cwd: Option<String>,
 }
 
@@ -26,11 +23,6 @@ pub struct PiSessionHeader {
 pub struct PiSessionEntry {
     #[serde(rename = "type")]
     pub entry_type: String,
-    #[allow(dead_code)]
-    pub id: Option<String>,
-    #[serde(rename = "parentId")]
-    #[allow(dead_code)]
-    pub parent_id: Option<String>,
     pub timestamp: Option<String>,
     pub message: Option<PiMessage>,
 }
@@ -50,8 +42,6 @@ pub struct PiUsage {
     pub output: Option<i64>,
     pub cache_read: Option<i64>,
     pub cache_write: Option<i64>,
-    #[allow(dead_code)]
-    pub total_tokens: Option<i64>,
 }
 
 /// Parse a Pi JSONL session file

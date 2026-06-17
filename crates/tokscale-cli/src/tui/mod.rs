@@ -1,23 +1,27 @@
 mod app;
 mod background_job;
 mod cache;
-pub mod client_ui;
+pub(crate) mod client_ui;
+pub(crate) mod codex_login;
 mod colors;
-pub mod config;
-pub mod data;
+pub(crate) mod data;
+mod drilldown_state;
 mod event;
 mod export;
+mod interaction;
+mod navigation;
+pub(crate) mod privacy;
 mod pulse_state;
-pub mod settings;
+pub(crate) mod settings;
 mod themes;
 mod ui;
 
-pub use app::{App, Tab, TuiConfig};
-pub use cache::{
+pub(crate) use app::{App, Tab, TuiConfig};
+pub(crate) use cache::{
     load_cache, save_cached_data, CacheReportScope, CacheResult, TUI_DEFAULT_GROUP_BY,
 };
-pub use data::{DataLoader, UsageData};
-pub use event::{Event, EventHandler};
+pub(crate) use data::{DataLoader, UsageData};
+pub(crate) use event::{Event, EventHandler};
 
 use std::collections::HashSet;
 use std::io;
@@ -61,7 +65,7 @@ fn background_data_loader(
     year: Option<String>,
     minutely_enabled: bool,
 ) -> DataLoader {
-    DataLoader::with_filters(None, since, until, year).with_minutely_enabled(minutely_enabled)
+    DataLoader::with_filters(since, until, year).with_minutely_enabled(minutely_enabled)
 }
 
 fn background_cache_scope(
@@ -92,7 +96,6 @@ pub fn run(
     let config = TuiConfig {
         theme: theme.to_string(),
         refresh,
-        sessions_path: None,
         clients: clients.clone(),
         since: since.clone(),
         until: until.clone(),
@@ -115,10 +118,10 @@ pub fn run(
     };
 
     // Single file read: load cache and check freshness in one pass.
-    // The key MUST be `cache::TUI_DEFAULT_GROUP_BY` — any code path that
-    // writes the TUI cache (notably `run_warm_tui_cache` in main.rs) keys
-    // on the same constant. Hard-coding a different value here would
-    // silently invalidate the cache on every launch after `submit`.
+    // The key MUST be `cache::TUI_DEFAULT_GROUP_BY` so TUI cache readers
+    // and writers stay on the same grouping contract. Hard-coding a
+    // different value here would silently invalidate otherwise fresh
+    // cache entries.
     let initial_group_by = TUI_DEFAULT_GROUP_BY;
     let initial_report_scope = background_cache_scope(&since, &until, &year);
     let (cached_data, needs_background_load) = decide_initial_data(load_cache(
@@ -335,53 +338,6 @@ fn run_loop_with_background(
             break;
         }
     }
-    Ok(())
-}
-
-pub fn test_data_loading() -> Result<()> {
-    println!("Testing data loading...");
-
-    let loader = DataLoader::new(None);
-    let all_clients = vec![
-        ClientId::OpenCode,
-        ClientId::Claude,
-        ClientId::Cursor,
-        ClientId::Gemini,
-        ClientId::Codex,
-        ClientId::Amp,
-        ClientId::Droid,
-        ClientId::OpenClaw,
-        ClientId::Pi,
-        ClientId::Kimi,
-        ClientId::Qwen,
-        ClientId::RooCode,
-        ClientId::KiloCode,
-        ClientId::Kilo,
-        ClientId::Mux,
-        ClientId::Crush,
-        ClientId::Hermes,
-        ClientId::Codebuff,
-    ];
-
-    let data = loader.load(&all_clients, &tokscale_core::GroupBy::default(), false)?;
-
-    println!("Loaded {} models", data.models.len());
-    println!("Total cost: ${:.2}", data.total_cost);
-
-    println!("\nAll models (client:model):");
-    let mut models = data.models.clone();
-    models.sort_by(|a, b| {
-        let client_cmp = a.client.cmp(&b.client);
-        if client_cmp == std::cmp::Ordering::Equal {
-            a.model.cmp(&b.model)
-        } else {
-            client_cmp
-        }
-    });
-    for m in &models {
-        println!("{}:{}", m.client.to_lowercase(), m.model);
-    }
-
     Ok(())
 }
 

@@ -2,7 +2,9 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::commands::usage::{helpers, UsageMetric, UsageOutput};
-use crate::tui::app::{App, ClickAction, CodexLoginOutcome};
+use crate::tui::app::{App, ClickAction};
+use crate::tui::codex_login::CodexLoginOutcome;
+use crate::tui::privacy::looks_like_email;
 use crate::tui::ui::widgets::{
     get_provider_shade, light_ratio_bar_spans, truncate_ellipsis as truncate_string,
 };
@@ -1844,11 +1846,6 @@ fn privacy_text(app: &App, value: &str) -> String {
     }
 }
 
-fn looks_like_email(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.contains('@') && trimmed.split('@').count() == 2
-}
-
 fn account_state_label(output: &UsageOutput) -> String {
     match &output.account {
         Some(account) if account.is_active => "Active".to_string(),
@@ -1956,7 +1953,6 @@ mod tests {
         let config = TuiConfig {
             theme: "blue".to_string(),
             refresh: 0,
-            sessions_path: None,
             clients: None,
             since: None,
             until: None,

@@ -18,7 +18,6 @@ use std::path::Path;
 
 /// OpenCode message structure (from JSON files and SQLite data column)
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct OpenCodeMessage {
     #[serde(default)]
     pub id: Option<String>,
@@ -71,7 +70,6 @@ pub struct OpenCodeCache {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct OpenCodeTime {
     pub created: f64, // Unix timestamp in milliseconds (as float)
     pub completed: Option<f64>,

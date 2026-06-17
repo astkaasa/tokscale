@@ -32,13 +32,6 @@ impl DialogStack {
         self.stack.push(dialog);
     }
 
-    /// Replace all dialogs with a new one
-    #[allow(dead_code)]
-    pub fn replace(&mut self, dialog: Box<dyn DialogContent>) {
-        self.stack.clear();
-        self.stack.push(dialog);
-    }
-
     /// Close the topmost dialog
     pub fn close(&mut self) {
         self.stack.pop();
@@ -47,22 +40,9 @@ impl DialogStack {
         }
     }
 
-    /// Clear all dialogs
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.stack.clear();
-        self.top_rect = None;
-    }
-
     /// Check if any dialog is open
     pub fn is_active(&self) -> bool {
         !self.stack.is_empty()
-    }
-
-    /// Get the number of dialogs in the stack
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.stack.len()
     }
 
     /// Render the dialog stack (backdrop + topmost dialog)
@@ -139,10 +119,6 @@ impl DialogStack {
         match result {
             DialogResult::None => {}
             DialogResult::Close => self.close(),
-            DialogResult::Replace(next) => {
-                self.stack.clear();
-                self.stack.push(next);
-            }
         }
     }
 }

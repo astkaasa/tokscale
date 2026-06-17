@@ -6,9 +6,8 @@
 workspace = true
 all-features = true
 
-# Coverage threshold - CI fails if below this percentage
-# Current baseline: 22.11% - Set to 20% to prevent regression
-fail-under = 20.0
+# Coverage threshold. Keep this aligned with .github/workflows/test_coverage.yml.
+fail-under = 45.0
 
 # Timeout for test execution (5 minutes)
 timeout = "300s"
@@ -25,6 +24,6 @@ exclude-files = [
 ]
 
 [report]
-# Generate multiple output formats
-out = ["Html", "Xml", "Lcov"]
-output-dir = "target/coverage"
+# Generate the same machine-readable formats CI uploads.
+out = ["Xml", "Json"]
+output-dir = "coverage"

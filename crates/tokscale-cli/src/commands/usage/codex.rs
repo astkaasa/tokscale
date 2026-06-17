@@ -53,8 +53,6 @@ struct Window {
 struct Refresh {
     access_token: Option<String>,
     refresh_token: Option<String>,
-    #[allow(dead_code)]
-    expires_in: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

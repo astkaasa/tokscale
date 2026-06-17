@@ -610,8 +610,8 @@ mod tests {
         );
         assert_eq!(normalize_agent_name("git-committer"), "Git Committer");
         assert_eq!(
-            normalize_agent_name("frontend-ui-ux-engineer"),
-            "Frontend UI UX Engineer"
+            normalize_agent_name("product-ui-ux-engineer"),
+            "Product UI UX Engineer"
         );
         assert_eq!(
             normalize_agent_name("astrape:executor-high"),

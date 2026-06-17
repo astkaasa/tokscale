@@ -6,24 +6,15 @@ SCRIPT_UNDER_TEST="${ROOT_DIR}/scripts/check-version-coherence.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-write_release_manifests() {
+write_cargo_workspace() {
   local version="$1"
   local lock_version="${2:-${version}}"
 
-  mkdir -p \
-    packages/cli \
-    packages/cli-darwin-arm64 \
-    packages/cli-darwin-x64 \
-    packages/cli-linux-x64-gnu \
-    packages/cli-linux-x64-musl \
-    packages/cli-linux-arm64-gnu \
-    packages/cli-linux-arm64-musl \
-    packages/cli-win32-x64-msvc \
-    packages/cli-win32-arm64-msvc \
-    packages/tokscale
+  mkdir -p crates/tokscale-core crates/tokscale-cli
 
   cat > Cargo.toml <<EOF_MANIFEST
 [workspace]
+resolver = "2"
 members = [
   "crates/tokscale-core",
   "crates/tokscale-cli",
@@ -48,50 +39,6 @@ dependencies = [
 name = "tokscale-core"
 version = "${lock_version}"
 EOF_LOCK
-
-  cat > packages/cli/package.json <<EOF_MANIFEST
-{
-  "name": "@tokscale/cli",
-  "version": "${version}",
-  "optionalDependencies": {
-    "@tokscale/cli-darwin-arm64": "${version}",
-    "@tokscale/cli-darwin-x64": "${version}",
-    "@tokscale/cli-linux-x64-gnu": "${version}",
-    "@tokscale/cli-linux-x64-musl": "${version}",
-    "@tokscale/cli-linux-arm64-gnu": "${version}",
-    "@tokscale/cli-linux-arm64-musl": "${version}",
-    "@tokscale/cli-win32-x64-msvc": "${version}",
-    "@tokscale/cli-win32-arm64-msvc": "${version}"
-  }
-}
-EOF_MANIFEST
-
-  for pkg in \
-    cli-darwin-arm64 \
-    cli-darwin-x64 \
-    cli-linux-x64-gnu \
-    cli-linux-x64-musl \
-    cli-linux-arm64-gnu \
-    cli-linux-arm64-musl \
-    cli-win32-x64-msvc \
-    cli-win32-arm64-msvc; do
-    cat > "packages/${pkg}/package.json" <<EOF_MANIFEST
-{
-  "name": "@tokscale/${pkg}",
-  "version": "${version}"
-}
-EOF_MANIFEST
-  done
-
-  cat > packages/tokscale/package.json <<EOF_MANIFEST
-{
-  "name": "tokscale",
-  "version": "${version}",
-  "dependencies": {
-    "@tokscale/cli": "${version}"
-  }
-}
-EOF_MANIFEST
 }
 
 test_rejects_stale_workspace_versions_in_cargo_lock() {
@@ -100,7 +47,7 @@ test_rejects_stale_workspace_versions_in_cargo_lock() {
   cp "${SCRIPT_UNDER_TEST}" "${work}/scripts/check-version-coherence.sh"
   (
     cd "${work}"
-    write_release_manifests "3.0.0" "2.1.3"
+    write_cargo_workspace "3.0.0" "2.1.3"
 
     local output="${TMP_DIR}/stale-lock-output.txt"
     if bash scripts/check-version-coherence.sh --expect-version "3.0.0" >"${output}" 2>&1; then
@@ -119,7 +66,7 @@ test_accepts_matching_workspace_versions_in_cargo_lock() {
   cp "${SCRIPT_UNDER_TEST}" "${work}/scripts/check-version-coherence.sh"
   (
     cd "${work}"
-    write_release_manifests "3.0.0"
+    write_cargo_workspace "3.0.0"
     bash scripts/check-version-coherence.sh --expect-version "3.0.0" >"${TMP_DIR}/matching-lock-output.txt" 2>&1
   )
 }
@@ -130,7 +77,7 @@ test_ignores_registry_duplicate_names_in_cargo_lock() {
   cp "${SCRIPT_UNDER_TEST}" "${work}/scripts/check-version-coherence.sh"
   (
     cd "${work}"
-    write_release_manifests "3.0.0"
+    write_cargo_workspace "3.0.0"
     cat >> Cargo.lock <<'EOF_LOCK'
 
 [[package]]
@@ -143,67 +90,27 @@ EOF_LOCK
   )
 }
 
-test_accepts_new_platform_package_when_manifest_and_optional_dependency_match() {
-  local work="${TMP_DIR}/new-platform-package"
+test_rejects_expected_version_mismatch() {
+  local work="${TMP_DIR}/expected-version-mismatch"
   mkdir -p "${work}/scripts"
   cp "${SCRIPT_UNDER_TEST}" "${work}/scripts/check-version-coherence.sh"
   (
     cd "${work}"
-    write_release_manifests "3.0.0"
-    mkdir -p packages/cli-linux-riscv64-gnu
-    cat > packages/cli-linux-riscv64-gnu/package.json <<'EOF_MANIFEST'
-{
-  "name": "@tokscale/cli-linux-riscv64-gnu",
-  "version": "3.0.0"
-}
-EOF_MANIFEST
-    python3 - <<'PY'
-import json
-import pathlib
+    write_cargo_workspace "3.0.0"
 
-path = pathlib.Path("packages/cli/package.json")
-manifest = json.loads(path.read_text())
-manifest["optionalDependencies"]["@tokscale/cli-linux-riscv64-gnu"] = "3.0.0"
-path.write_text(json.dumps(manifest, indent=2) + "\n")
-PY
-
-    bash scripts/check-version-coherence.sh --expect-version "3.0.0" >"${TMP_DIR}/new-platform-package-output.txt" 2>&1
-  )
-}
-
-test_rejects_missing_canonical_platform_when_manifest_and_optional_dependency_are_removed() {
-  local work="${TMP_DIR}/missing-canonical-platform"
-  mkdir -p "${work}/scripts"
-  cp "${SCRIPT_UNDER_TEST}" "${work}/scripts/check-version-coherence.sh"
-  (
-    cd "${work}"
-    write_release_manifests "3.0.0"
-    rm -rf packages/cli-win32-arm64-msvc
-    python3 - <<'PY'
-import json
-import pathlib
-
-path = pathlib.Path("packages/cli/package.json")
-manifest = json.loads(path.read_text())
-manifest["optionalDependencies"].pop("@tokscale/cli-win32-arm64-msvc")
-path.write_text(json.dumps(manifest, indent=2) + "\n")
-PY
-
-    local output="${TMP_DIR}/missing-canonical-platform-output.txt"
-    if bash scripts/check-version-coherence.sh --expect-version "3.0.0" >"${output}" 2>&1; then
-      echo "Expected missing canonical platform to fail" >&2
+    local output="${TMP_DIR}/expected-version-mismatch-output.txt"
+    if bash scripts/check-version-coherence.sh --expect-version "3.1.0" >"${output}" 2>&1; then
+      echo "Expected mismatched expected version to fail" >&2
       return 1
     fi
 
-    grep -q "Missing required platform package manifests: \\['@tokscale/cli-win32-arm64-msvc'\\]" "${output}"
-    grep -q "Missing required platform optionalDependencies: \\['@tokscale/cli-win32-arm64-msvc'\\]" "${output}"
+    grep -q "Cargo workspace version mismatch: expected 3.1.0, found 3.0.0" "${output}"
   )
 }
 
 test_rejects_stale_workspace_versions_in_cargo_lock
 test_accepts_matching_workspace_versions_in_cargo_lock
 test_ignores_registry_duplicate_names_in_cargo_lock
-test_accepts_new_platform_package_when_manifest_and_optional_dependency_match
-test_rejects_missing_canonical_platform_when_manifest_and_optional_dependency_are_removed
+test_rejects_expected_version_mismatch
 
 echo "check-version-coherence tests passed"

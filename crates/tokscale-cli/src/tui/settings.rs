@@ -152,6 +152,7 @@ impl Default for Settings {
 /// invocation. Errors during load fall through to
 /// [`ScannerSettings::default`] — a missing or malformed settings.json
 /// should never break `tokscale` runs.
+#[cfg_attr(test, allow(dead_code))]
 pub fn load_scanner_settings() -> ScannerSettings {
     Settings::load().scanner
 }

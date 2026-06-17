@@ -1758,8 +1758,7 @@ mod tests {
         let data_dir = dir.path().join("opencode");
         fs::create_dir_all(&data_dir).unwrap();
 
-        // Real dbs for two channels running side by side — the case from
-        // junhoyeo/tokscale#387.
+        // Real dbs for two channels running side by side.
         File::create(data_dir.join("opencode.db")).unwrap();
         File::create(data_dir.join("opencode-stable.db")).unwrap();
         // SQLite WAL/SHM sidecars that must not be treated as dbs.
@@ -3245,7 +3244,7 @@ mod tests {
 
         let result = scan_all_clients(home_dir.path().to_str().unwrap(), &["gjc".to_string()]);
         assert!(
-            result.get(ClientId::Gjc).len() >= 1,
+            !result.get(ClientId::Gjc).is_empty(),
             "expected at least 1 file from GJC_CONFIG_DIR root, got {:?}",
             result.get(ClientId::Gjc)
         );
@@ -3290,7 +3289,7 @@ mod tests {
 
         let result = scan_all_clients(home_dir.path().to_str().unwrap(), &["gjc".to_string()]);
         assert!(
-            result.get(ClientId::Gjc).len() >= 1,
+            !result.get(ClientId::Gjc).is_empty(),
             "expected at least 1 file from PI_CONFIG_DIR root, got {:?}",
             result.get(ClientId::Gjc)
         );
@@ -3337,7 +3336,7 @@ mod tests {
 
         let result = scan_all_clients(home_dir.path().to_str().unwrap(), &["gjc".to_string()]);
         assert!(
-            result.get(ClientId::Gjc).len() >= 1,
+            !result.get(ClientId::Gjc).is_empty(),
             "expected at least 1 file from XDG_DATA_HOME/gjc/sessions, got {:?}",
             result.get(ClientId::Gjc)
         );

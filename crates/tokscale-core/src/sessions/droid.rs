@@ -43,8 +43,7 @@ fn normalize_model_name(model: &str) -> String {
     // Remove "custom:" prefix if present
     let mut normalized = model.strip_prefix("custom:").unwrap_or(model).to_string();
 
-    // Handle bracket notation like "Claude-Opus-4.5-Thinking-[Anthropic]-0"
-    // Remove [anything] patterns (like TypeScript's .replace(/\[.*?\]/g, ""))
+    // Handle bracket notation like "Claude-Opus-4.5-Thinking-[Anthropic]-0".
     let mut result = String::new();
     let mut in_bracket = false;
 
@@ -59,17 +58,16 @@ fn normalize_model_name(model: &str) -> String {
 
     normalized = result;
 
-    // Remove trailing hyphens only (like TypeScript's .replace(/-+$/, ""))
-    // NOTE: Do NOT remove trailing digits - TypeScript keeps them
+    // Remove trailing hyphens only; trailing digits are part of some model IDs.
     normalized = normalized.trim_end_matches('-').to_string();
 
-    // Convert to lowercase (like TypeScript's .toLowerCase())
+    // Convert to lowercase.
     normalized = normalized.to_lowercase();
 
-    // Replace dots with hyphens (like TypeScript's .replace(/\./g, "-"))
+    // Replace dots with hyphens.
     normalized = normalized.replace('.', "-");
 
-    // Collapse multiple consecutive hyphens into one (like TypeScript's .replace(/-+/g, "-"))
+    // Collapse multiple consecutive hyphens into one.
     let mut collapsed = String::new();
     let mut last_was_hyphen = false;
     for ch in normalized.chars() {
@@ -111,8 +109,8 @@ fn extract_model_from_jsonl(jsonl_path: &Path) -> Option<String> {
     let file = std::fs::File::open(jsonl_path).ok()?;
     let reader = BufReader::new(file);
 
-    // Scan more lines for parity with TypeScript which reads entire file
-    // Cap at 500 lines to avoid performance issues with very large files
+    // Scan enough of the header/body to catch model reminders while avoiding
+    // worst-case work on very large session files.
     for line in reader.lines().take(500) {
         let line = line.ok()?;
         // Look for Model: pattern in system-reminder
@@ -236,7 +234,6 @@ mod tests {
 
     #[test]
     fn test_normalize_model_name_custom_prefix() {
-        // TypeScript keeps trailing digits: "claude-opus-4-5-thinking-0"
         assert_eq!(
             normalize_model_name("custom:Claude-Opus-4.5-Thinking-[Anthropic]-0"),
             "claude-opus-4-5-thinking-0"
@@ -251,7 +248,6 @@ mod tests {
 
     #[test]
     fn test_normalize_model_name_brackets() {
-        // TypeScript keeps trailing digits: "claude-sonnet-4"
         assert_eq!(
             normalize_model_name("Claude-Sonnet-4-[Anthropic]"),
             "claude-sonnet-4"

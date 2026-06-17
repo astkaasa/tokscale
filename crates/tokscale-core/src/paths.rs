@@ -4,8 +4,8 @@
 //! and message/pricing caches read from related directories), so the
 //! resolver lives here and is re-exported from tokscale-cli for callers
 //! that already imported it from there. macOS users following the docs
-//! expect `~/.config/tokscale/` because that is what `auth.rs`,
-//! `cursor.rs`, and `antigravity.rs` already write to.
+//! expect `~/.config/tokscale/` because settings and connector caches
+//! already write there.
 //! `dirs::config_dir()` would instead return `~/Library/Application Support/`
 //! on macOS, splitting state across two roots and silently ignoring
 //! settings.json edits the user made via the documented path. This module
@@ -52,8 +52,8 @@ pub fn get_config_dir() -> PathBuf {
 
 /// Resolve the tokscale cache dir as `<config_dir>/cache`.
 ///
-/// Caches (TUI display data, source-message bincode, pricing JSON, the
-/// OpenCode migration record, Wrapped fonts/images) all live under this
+/// Caches (TUI display data, source-message bincode, pricing JSON, and
+/// connector cache metadata) all live under this
 /// single subdirectory so an isolated profile (`TOKSCALE_CONFIG_DIR=...`)
 /// covers everything in one shot, and so `rm -rf <cache_dir>` is always
 /// safe — no durable state mixed in.
@@ -91,9 +91,9 @@ pub fn legacy_dirs_cache_dir() -> Option<PathBuf> {
 
 /// Pre-#470 cache directory at `~/.cache/tokscale`.
 ///
-/// This is where the TUI display cache (`tui-data-cache.json`) and the
-/// Wrapped image / font caches lived before #470 consolidated everything
-/// under `<config_dir>/cache`. On Linux this typically equals
+/// This is where the TUI display cache (`tui-data-cache.json`) lived
+/// before #470 consolidated everything under `<config_dir>/cache`.
+/// On Linux this typically equals
 /// [`legacy_dirs_cache_dir`]; on macOS it does NOT (Library/Caches vs
 /// `.cache`), so both legacy probes need to run during migration.
 ///

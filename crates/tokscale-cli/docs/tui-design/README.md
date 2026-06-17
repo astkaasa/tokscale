@@ -13,6 +13,7 @@ Status labels:
 - Navigation and workspace strategy: [navigation.md](navigation.md) (`Design target`)
 - Overview dashboard strategy: [overview.md](overview.md) (`Implemented / Design target`)
 - Provider color identity rules: [provider-colors.md](provider-colors.md) (`Implemented`)
+- Mouse capture and terminal text selection: [mouse-selection.md](mouse-selection.md) (`Implemented`)
 
 ## Personal Pulse
 
@@ -26,9 +27,7 @@ Detailed WeRead-first plan: [personal-pulse.md](personal-pulse.md)
 
 Status: `Implemented / Design target`
 
-All-time/range dashboard target for the default Overview mode.
-
-![Overview all-time dashboard](assets/overview-all.png)
+All-time/range dashboard target for the default Overview mode. Keep this as a written layout contract rather than a stored bitmap mockup; verify implementation from actual TUI renders.
 
 ## Today Mode
 
@@ -38,17 +37,11 @@ Live-focused Overview mode entered with `t` or `--today`.
 
 ![Today live dashboard](assets/today-live.svg)
 
-Earlier Overview-style direction:
-
-![Overview today mode dashboard](assets/overview-today.png)
-
 ## Models
 
 Status: `Future`
 
 Future model-analysis workspace target: dense table plus selected-row inspector.
-
-![Models table with selected model inspector](assets/models.png)
 
 ## Timeline
 
@@ -56,17 +49,13 @@ Status: `Future`
 
 Future replacement for separate Daily, Hourly, and Minutely top-level tabs.
 
-![Timeline workspace with hourly granularity and detail panel](assets/timeline.png)
-
 ## Usage
 
 Status: `Implemented / Design target`
 
 Operational account/quota/sync status workspace with readiness, fallback, reset, and Codex multi-account controls.
 
-![Usage status and quota workspace](assets/usage.png)
-
-Source SVG: [assets/usage.svg](assets/usage.svg)
+![Usage status and quota workspace](assets/usage.svg)
 
 ## Drilldown
 
