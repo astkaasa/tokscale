@@ -6,8 +6,6 @@ use crate::tui::app::{App, ChartGranularity, ClickAction, OverviewMode, PeriodDe
 
 /// 8-level block characters for sub-cell precision.
 const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-const BAR_SEGMENT_ROWS: usize = 4;
-const BAR_SEGMENT_GLYPH: char = '▆';
 
 const MONTH_NAMES: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -192,8 +190,6 @@ pub fn render_stacked_bar_chart(
             );
             rows.push((ch != ' ').then_some(BarCell { ch, fg_color }));
         }
-        soften_bar_segments(&mut rows);
-
         for (row_from_top, cell) in rows.iter().enumerate() {
             let Some(cell) = cell else { continue };
             let y = plot_y + row_from_top as u16;
@@ -249,46 +245,6 @@ pub fn render_stacked_bar_chart(
 struct BarCell {
     ch: char,
     fg_color: Color,
-}
-
-fn soften_bar_segments(rows: &mut [Option<BarCell>]) {
-    let mut run_start = 0;
-    while run_start < rows.len() {
-        let Some(first) = rows[run_start] else {
-            run_start += 1;
-            continue;
-        };
-        if !is_segmentable_bar_cell(first) {
-            run_start += 1;
-            continue;
-        }
-
-        let mut run_end = run_start + 1;
-        while run_end < rows.len() {
-            let Some(next) = rows[run_end] else { break };
-            if !is_segmentable_bar_cell(next) || next.fg_color != first.fg_color {
-                break;
-            }
-            run_end += 1;
-        }
-
-        let run_len = run_end - run_start;
-        if run_len > BAR_SEGMENT_ROWS {
-            let mut offset = BAR_SEGMENT_ROWS;
-            while offset < run_len {
-                if let Some(cell) = &mut rows[run_start + offset] {
-                    cell.ch = BAR_SEGMENT_GLYPH;
-                }
-                offset += BAR_SEGMENT_ROWS;
-            }
-        }
-
-        run_start = run_end;
-    }
-}
-
-fn is_segmentable_bar_cell(cell: BarCell) -> bool {
-    matches!(cell.ch, '▆' | '▇' | '█')
 }
 
 fn chart_scale(data: &[StackedBarData]) -> ChartScale {
@@ -794,63 +750,6 @@ mod tests {
             get_stacked_bar_content(&bar, 100.0, 50.0, 0.0, 50.0, Color::Gray, Color::Cyan);
 
         assert_eq!(ch, '█');
-    }
-
-    #[test]
-    fn test_soften_bar_segments_keeps_short_runs_solid() {
-        let mut rows = vec![
-            Some(BarCell {
-                ch: '█',
-                fg_color: Color::Green,
-            });
-            4
-        ];
-
-        soften_bar_segments(&mut rows);
-
-        assert!(rows.iter().all(|cell| cell.unwrap().ch == '█'));
-    }
-
-    #[test]
-    fn test_soften_bar_segments_marks_every_fourth_row_from_top() {
-        let mut rows = vec![
-            Some(BarCell {
-                ch: '█',
-                fg_color: Color::Green,
-            });
-            9
-        ];
-
-        soften_bar_segments(&mut rows);
-
-        let chars = rows.iter().map(|cell| cell.unwrap().ch).collect::<Vec<_>>();
-        assert_eq!(chars, vec!['█', '█', '█', '█', '▆', '█', '█', '█', '▆']);
-    }
-
-    #[test]
-    fn test_soften_bar_segments_respects_color_boundaries() {
-        let mut rows = vec![
-            Some(BarCell {
-                ch: '█',
-                fg_color: Color::Green,
-            });
-            5
-        ];
-        rows.extend(vec![
-            Some(BarCell {
-                ch: '█',
-                fg_color: Color::Red,
-            });
-            5
-        ]);
-
-        soften_bar_segments(&mut rows);
-
-        let chars = rows.iter().map(|cell| cell.unwrap().ch).collect::<Vec<_>>();
-        assert_eq!(
-            chars,
-            vec!['█', '█', '█', '█', '▆', '█', '█', '█', '█', '▆']
-        );
     }
 
     #[test]

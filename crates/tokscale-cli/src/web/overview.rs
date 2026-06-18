@@ -191,9 +191,6 @@ fn render_buffer_html_with_region(
             html.push_str("</span>");
         }
         html.push_str("</span>");
-        if y + 1 < height {
-            html.push('\n');
-        }
     }
     html
 }
@@ -214,19 +211,25 @@ fn render_block_overlay_region(
     let mut html = String::new();
 
     for x in region.x_start..region.x_end.min(width) {
-        let mut y = region.y_start;
-        while y < region.y_end.min(height) {
+        let mut current: Option<BlockRect> = None;
+        for y in region.y_start..region.y_end.min(height) {
             let cell = &buffer[(x, y)];
-            let Some(level) = block_level(cell_symbol(cell)) else {
-                y += 1;
+            let Some(rect) = block_rect_for_cell(x, y, cell) else {
+                flush_block_rect(&mut html, &mut current);
                 continue;
             };
-            let style = HtmlCellStyle::from_cell(cell);
-            let fill = block_fill_fraction(level);
-            let top = f64::from(y) + (1.0 - fill);
-            html.push_str(&block_rect(x, top, fill, 1, &style));
-            y += 1;
+
+            if let Some(existing) = &mut current {
+                if existing.can_merge(&rect) {
+                    existing.bottom = existing.bottom.max(rect.bottom);
+                    continue;
+                }
+            }
+
+            flush_block_rect(&mut html, &mut current);
+            current = Some(rect);
         }
+        flush_block_rect(&mut html, &mut current);
     }
 
     html
@@ -296,14 +299,52 @@ fn find_col(row: &str, needle: &str) -> Option<u16> {
 }
 
 fn is_chart_axis_row(row: &str) -> bool {
-    row.contains('0') && row.chars().filter(|ch| *ch == '─').count() >= 8
+    let Some(axis_index) = row.find("0│") else {
+        return false;
+    };
+
+    row[axis_index..].chars().filter(|ch| *ch == '─').count() >= 8
 }
 
-fn block_rect(x: u16, top: f64, cell_height: f64, row_span: u16, style: &HtmlCellStyle) -> String {
-    let height = cell_height * f64::from(row_span);
+#[derive(Clone, Debug)]
+struct BlockRect {
+    x: u16,
+    top: f64,
+    bottom: f64,
+    style: HtmlCellStyle,
+}
+
+impl BlockRect {
+    fn can_merge(&self, next: &BlockRect) -> bool {
+        self.x == next.x && self.style == next.style && next.top <= self.bottom + f64::EPSILON
+    }
+}
+
+fn block_rect_for_cell(x: u16, y: u16, cell: &Cell) -> Option<BlockRect> {
+    let level = block_level(cell_symbol(cell))?;
+    let fill = block_fill_fraction(level);
+    let bottom = f64::from(y) + 1.0;
+    Some(BlockRect {
+        x,
+        top: bottom - fill,
+        bottom,
+        style: HtmlCellStyle::from_cell(cell),
+    })
+}
+
+fn flush_block_rect(html: &mut String, rect: &mut Option<BlockRect>) {
+    if let Some(rect) = rect.take() {
+        html.push_str(&block_rect_html(&rect));
+    }
+}
+
+fn block_rect_html(rect: &BlockRect) -> String {
+    let height = rect.bottom - rect.top;
     format!(
         r#"<span class="terminal-block-rect" style="left:{x}ch;top:calc({top:.3} * var(--terminal-line-height));height:calc({height:.3} * var(--terminal-line-height));background-color:{fg};"></span>"#,
-        fg = style.fg,
+        x = rect.x,
+        top = rect.top,
+        fg = rect.style.fg,
     )
 }
 
@@ -666,6 +707,7 @@ mod tests {
         assert!(html.contains(r#"data-cols="100""#));
         assert!(html.contains(r#"style="--terminal-cols:100;--terminal-rows:28;""#));
         assert!(html.contains("--terminal-width-denom: 61.00;"));
+        assert!(html.contains("terminal-overlay"));
         assert!(!html.contains("<script>"));
         assert!(!html.contains("overview-grid"));
         assert!(!html.contains("<table>"));
@@ -684,6 +726,18 @@ mod tests {
 
         assert!(html.contains("&lt;&amp;&gt;&quot;"));
         assert!(!html.contains("<&>\""));
+    }
+
+    #[test]
+    fn buffer_html_uses_block_rows_without_literal_line_breaks() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 2));
+        write_buffer_row(&mut buffer, 0, "ab");
+        write_buffer_row(&mut buffer, 1, "cd");
+
+        let html = render_buffer_html(&buffer, 2, 2);
+
+        assert!(!html.contains('\n'));
+        assert_eq!(html.matches(r#"class="terminal-row""#).count(), 2);
     }
 
     #[test]
@@ -708,52 +762,73 @@ mod tests {
     }
 
     #[test]
-    fn chart_overlay_region_uses_axis_row_without_date_labels() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 32, 6));
-        write_buffer_row(&mut buffer, 0, " Usage Trend (Today)");
-        write_buffer_row(&mut buffer, 1, "       █");
-        write_buffer_row(&mut buffer, 2, "       ▆");
-        write_buffer_row(&mut buffer, 3, "     0│────────────");
-        write_buffer_row(&mut buffer, 4, "       00 04 08");
+    fn chart_overlay_region_uses_left_chart_zero_axis() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 7));
+        write_buffer_row(&mut buffer, 0, " Usage Trend (Daily)");
+        write_buffer_row(&mut buffer, 1, "398.5M│     █");
+        write_buffer_row(
+            &mut buffer,
+            2,
+            "112.0M│     █        │┌ Provider Mix ─────────────────────┐",
+        );
+        write_buffer_row(&mut buffer, 3, "      │     █");
+        write_buffer_row(
+            &mut buffer,
+            4,
+            "     0│────────────────────────────────────────────",
+        );
+        write_buffer_row(&mut buffer, 5, "       Mar 22");
 
-        let region = chart_overlay_region(&buffer, 32, 6).expect("chart region");
+        let region = chart_overlay_region(&buffer, 80, 7).expect("chart region");
 
         assert_eq!(region.y_start, 1);
-        assert_eq!(region.y_end, 3);
+        assert_eq!(region.y_end, 4);
     }
 
     #[test]
-    fn block_overlay_uses_tui_block_glyph_levels() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 3));
-        buffer[(0, 0)].set_symbol("█");
-        buffer[(0, 1)].set_symbol("▆");
-        buffer[(0, 2)].set_symbol("█");
+    fn block_overlay_renders_partial_block_cell_height() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+        buffer[(0, 0)].set_symbol("▆");
 
         let html = render_block_overlay_region(
             &buffer,
             1,
-            3,
+            1,
             BlockOverlayRegion {
                 x_start: 0,
                 x_end: 1,
                 y_start: 0,
-                y_end: 3,
+                y_end: 1,
             },
         );
 
-        assert_eq!(html.matches("terminal-block-rect").count(), 3);
-        assert!(html.contains("top:calc(0.000 * var(--terminal-line-height));"));
-        assert!(html.contains("top:calc(1.250 * var(--terminal-line-height));"));
+        assert_eq!(html.matches("terminal-block-rect").count(), 1);
+        assert!(html.contains("top:calc(0.250 * var(--terminal-line-height));"));
         assert!(html.contains("height:calc(0.750 * var(--terminal-line-height));"));
-        assert!(html.contains("top:calc(2.000 * var(--terminal-line-height));"));
     }
 
     #[test]
-    fn block_fill_fraction_matches_eighth_block_glyphs() {
-        assert_eq!(block_fill_fraction(1), 0.125);
-        assert_eq!(block_fill_fraction(6), 0.75);
-        assert_eq!(block_fill_fraction(7), 0.875);
-        assert_eq!(block_fill_fraction(8), 1.0);
+    fn block_overlay_merges_contiguous_full_blocks() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 9));
+        for y in 0..9 {
+            buffer[(0, y)].set_symbol("█");
+        }
+
+        let html = render_block_overlay_region(
+            &buffer,
+            1,
+            9,
+            BlockOverlayRegion {
+                x_start: 0,
+                x_end: 1,
+                y_start: 0,
+                y_end: 9,
+            },
+        );
+
+        assert_eq!(html.matches("terminal-block-rect").count(), 1);
+        assert!(html.contains("top:calc(0.000 * var(--terminal-line-height));"));
+        assert!(html.contains("height:calc(9.000 * var(--terminal-line-height));"));
     }
 
     #[test]
