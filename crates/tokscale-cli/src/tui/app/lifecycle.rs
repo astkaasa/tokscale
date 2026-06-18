@@ -106,6 +106,7 @@ impl App {
             sort_direction,
             tab_sort_state: HashMap::new(),
             chart_granularity: ChartGranularity::default(),
+            overview_chart_scroll_offset: usize::MAX,
             timeline_granularity: TimelineGranularity::default(),
             overview_mode,
             scroll_offset: 0,

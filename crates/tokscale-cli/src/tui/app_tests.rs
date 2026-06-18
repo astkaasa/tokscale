@@ -65,10 +65,12 @@ fn test_reset_selection() {
 
     app.selected_index = 5;
     app.scroll_offset = 3;
+    app.overview_chart_scroll_offset = 24;
     app.reset_selection();
 
     assert_eq!(app.selected_index, 0);
     assert_eq!(app.scroll_offset, 0);
+    assert_eq!(app.overview_chart_scroll_offset, usize::MAX);
 }
 
 #[test]
@@ -616,6 +618,20 @@ fn test_handle_key_left_right_switch() {
 
     app.handle_key_event(key(KeyCode::Left));
     assert_eq!(app.current_tab, Tab::Models);
+}
+
+#[test]
+fn test_shift_left_right_scrolls_overview_chart_without_switching_tab() {
+    let mut app = make_app();
+    app.overview_chart_scroll_offset = 0;
+
+    app.handle_key_event(key_with_mod(KeyCode::Right, KeyModifiers::SHIFT));
+    assert_eq!(app.current_tab, Tab::Overview);
+    assert_eq!(app.overview_chart_scroll_offset, 8);
+
+    app.handle_key_event(key_with_mod(KeyCode::Left, KeyModifiers::SHIFT));
+    assert_eq!(app.current_tab, Tab::Overview);
+    assert_eq!(app.overview_chart_scroll_offset, 0);
 }
 
 #[test]

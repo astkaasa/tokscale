@@ -50,6 +50,7 @@ impl App {
         self.selected_daily_detail_date = None;
         self.daily_list_selected_index = 0;
         self.daily_list_scroll_offset = 0;
+        self.overview_chart_scroll_offset = usize::MAX;
         self.drilldown = None;
     }
 
@@ -293,10 +294,37 @@ impl App {
             return;
         }
         self.chart_granularity = granularity;
+        self.overview_chart_scroll_offset = usize::MAX;
         self.set_status(&format!(
             "Overview chart: {}",
             granularity.title_label().to_lowercase()
         ));
+    }
+
+    pub(crate) fn scroll_overview_chart_left(&mut self) {
+        if self.current_tab != Tab::Overview {
+            return;
+        }
+        self.overview_chart_scroll_offset = self.overview_chart_scroll_offset.saturating_sub(8);
+    }
+
+    pub(crate) fn scroll_overview_chart_right(&mut self) {
+        if self.current_tab != Tab::Overview {
+            return;
+        }
+        self.overview_chart_scroll_offset = self.overview_chart_scroll_offset.saturating_add(8);
+    }
+
+    pub(crate) fn scroll_overview_chart_to_start(&mut self) {
+        if self.current_tab == Tab::Overview {
+            self.overview_chart_scroll_offset = 0;
+        }
+    }
+
+    pub(crate) fn scroll_overview_chart_to_end(&mut self) {
+        if self.current_tab == Tab::Overview {
+            self.overview_chart_scroll_offset = usize::MAX;
+        }
     }
 
     pub(crate) fn set_timeline_granularity(&mut self, granularity: TimelineGranularity) {

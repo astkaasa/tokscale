@@ -421,6 +421,15 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
                 app.theme.muted,
                 width,
             );
+            push_key_fit(
+                &mut spans,
+                "⇧←→",
+                "Scroll",
+                Some("Scr"),
+                Color::White,
+                app.theme.muted,
+                width,
+            );
         }
     }
     if app.current_tab == Tab::Daily && !app.is_daily_detail_active() {

@@ -36,6 +36,18 @@ impl App {
                 self.switch_tab(prev);
                 self.reset_selection();
             }
+            KeyCode::Left
+                if self.current_tab == Tab::Overview
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.scroll_overview_chart_left();
+            }
+            KeyCode::Right
+                if self.current_tab == Tab::Overview
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.scroll_overview_chart_right();
+            }
             KeyCode::Left => {
                 let prev = self.prev_visible_tab();
                 self.switch_tab(prev);
@@ -57,6 +69,18 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.move_page_down();
+            }
+            KeyCode::Home
+                if self.current_tab == Tab::Overview
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.scroll_overview_chart_to_start();
+            }
+            KeyCode::End
+                if self.current_tab == Tab::Overview
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.scroll_overview_chart_to_end();
             }
             KeyCode::Home => {
                 self.move_to_top();

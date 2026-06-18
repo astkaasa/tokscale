@@ -1,11 +1,12 @@
 use ratatui::prelude::*;
-use std::collections::BTreeMap;
 
 use super::widgets::format_tokens;
 use crate::tui::app::{App, ChartGranularity, ClickAction, OverviewMode, PeriodDetailKey};
 
 /// 8-level block characters for sub-cell precision.
 const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const BAR_WIDTH: usize = 1;
+const BAR_GAP: usize = 1;
 
 const MONTH_NAMES: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -57,12 +58,7 @@ pub fn render_stacked_bar_chart(
         return;
     }
 
-    let data = compressed_bars(data, plot_width as usize);
-    if data.is_empty() {
-        return;
-    }
-
-    let scale = chart_scale(&data);
+    let scale = chart_scale(data);
     let display_data: Vec<StackedBarData> = data
         .iter()
         .map(|bar| scaled_bar_for_display(bar, &scale))
@@ -70,6 +66,12 @@ pub fn render_stacked_bar_chart(
 
     let buf = frame.buffer_mut();
     let bar_count = data.len();
+    let chart_layout = chart_layout(
+        plot_width as usize,
+        bar_count,
+        app.overview_chart_scroll_offset,
+    );
+    app.overview_chart_scroll_offset = chart_layout.scroll_offset;
 
     // Title
     let title = chart_title(app, is_very_narrow);
@@ -93,6 +95,7 @@ pub fn render_stacked_bar_chart(
             app.theme.subtle_text_style(),
         );
     }
+    render_horizontal_scroll_indicator(buf, app, plot_x, title_y, plot_width, &chart_layout);
 
     let mid_row_from_top = plot_height / 2;
     let focus_row_from_top = if scale.compressed {
@@ -147,13 +150,11 @@ pub fn render_stacked_bar_chart(
         }
     }
 
-    let bar_width = target_bar_width(app, plot_width as usize, bar_count);
-    let bar_positions = bar_positions(plot_width as usize, bar_count, bar_width);
     for (bar_index, bar_data) in data.iter().enumerate() {
         let Some(period) = bar_data.period.clone() else {
             continue;
         };
-        let Some((offset, width)) = bar_positions.get(bar_index).copied() else {
+        let Some((offset, width)) = chart_layout.positions.get(bar_index).copied().flatten() else {
             continue;
         };
         app.add_click_area(
@@ -167,7 +168,7 @@ pub fn render_stacked_bar_chart(
         );
     }
     for (bar_index, bar_data) in display_data.iter().enumerate() {
-        let Some((offset, width)) = bar_positions.get(bar_index).copied() else {
+        let Some((offset, width)) = chart_layout.positions.get(bar_index).copied().flatten() else {
             continue;
         };
         let x_start = plot_x.saturating_add(offset as u16);
@@ -224,9 +225,16 @@ pub fn render_stacked_bar_chart(
     if label_y < area.y + area.height && !data.is_empty() {
         let label_all_months = app.overview_mode == OverviewMode::All
             && app.chart_granularity == ChartGranularity::Monthly;
-        for index in label_indices(bar_count, is_very_narrow, label_all_months) {
+        for index in label_indices(
+            bar_count,
+            is_very_narrow,
+            label_all_months,
+            &chart_layout.positions,
+        ) {
             let label = format_axis_label(&data[index].date, is_very_narrow);
-            let (bar_x, width) = bar_positions.get(index).copied().unwrap_or((0, 1));
+            let Some((bar_x, width)) = chart_layout.positions.get(index).copied().flatten() else {
+                continue;
+            };
             let label_width = label.chars().count() as u16;
             let label_x = centered_label_x(plot_x, plot_width, bar_x, width, label_width);
             for (j, ch) in label.chars().enumerate() {
@@ -444,116 +452,177 @@ fn centered_label_x(
     center.saturating_sub(label_width / 2).clamp(min_x, max_x)
 }
 
-fn compressed_bars(data: &[StackedBarData], max_bars: usize) -> Vec<StackedBarData> {
-    if max_bars == 0 {
-        return Vec::new();
-    }
-    if data.len() <= max_bars {
-        return data.to_vec();
-    }
-
-    let mut bars = Vec::with_capacity(max_bars);
-    for index in 0..max_bars {
-        let start = index * data.len() / max_bars;
-        let end = ((index + 1) * data.len() / max_bars)
-            .max(start + 1)
-            .min(data.len());
-        let mut models: BTreeMap<String, ModelSegment> = BTreeMap::new();
-        let mut total = 0u64;
-        for bar in &data[start..end] {
-            total = total.saturating_add(bar.total);
-            for segment in &bar.models {
-                let entry =
-                    models
-                        .entry(segment.model_id.clone())
-                        .or_insert_with(|| ModelSegment {
-                            model_id: segment.model_id.clone(),
-                            tokens: 0,
-                            color: segment.color,
-                        });
-                entry.tokens = entry.tokens.saturating_add(segment.tokens);
-            }
-        }
-        bars.push(StackedBarData {
-            date: data[end - 1].date.clone(),
-            period: if end == start + 1 {
-                data[end - 1].period.clone()
-            } else {
-                None
-            },
-            models: models.into_values().collect(),
-            total,
-        });
-    }
-    bars
+#[derive(Debug, Clone)]
+struct ChartLayout {
+    positions: Vec<Option<(usize, usize)>>,
+    scroll_offset: usize,
+    max_scroll: usize,
+    virtual_width: usize,
 }
 
-fn target_bar_width(app: &App, plot_width: usize, bar_count: usize) -> usize {
+impl ChartLayout {
+    fn is_scrollable(&self) -> bool {
+        self.max_scroll > 0
+    }
+}
+
+fn chart_layout(
+    plot_width: usize,
+    bar_count: usize,
+    requested_scroll_offset: usize,
+) -> ChartLayout {
     if plot_width == 0 || bar_count == 0 {
-        return 0;
+        return ChartLayout {
+            positions: Vec::new(),
+            scroll_offset: 0,
+            max_scroll: 0,
+            virtual_width: 0,
+        };
     }
 
-    let ideal_width = ideal_bar_width(app.overview_mode, app.chart_granularity);
+    let spaced_width = spaced_chart_width(bar_count);
+    if spaced_width > plot_width {
+        let max_scroll = spaced_width.saturating_sub(plot_width);
+        let scroll_offset = requested_scroll_offset.min(max_scroll);
+        let viewport_end = scroll_offset.saturating_add(plot_width);
+        let positions = (0..bar_count)
+            .map(|index| {
+                let virtual_x = index.saturating_mul(BAR_WIDTH + BAR_GAP);
+                if virtual_x >= scroll_offset && virtual_x < viewport_end {
+                    Some((virtual_x - scroll_offset, BAR_WIDTH))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-    let min_slot_width = (0..bar_count)
-        .map(|index| {
-            let slot_start = index * plot_width / bar_count;
-            let slot_end = ((index + 1) * plot_width / bar_count).max(slot_start + 1);
-            slot_end.saturating_sub(slot_start).max(1)
-        })
-        .min()
-        .unwrap_or(1);
+        return ChartLayout {
+            positions,
+            scroll_offset,
+            max_scroll,
+            virtual_width: spaced_width,
+        };
+    }
 
-    ideal_width.min(min_slot_width).max(1)
+    ChartLayout {
+        positions: distributed_bar_positions(plot_width, bar_count),
+        scroll_offset: 0,
+        max_scroll: 0,
+        virtual_width: plot_width,
+    }
 }
 
-fn ideal_bar_width(_overview_mode: OverviewMode, _granularity: ChartGranularity) -> usize {
-    1
+fn spaced_chart_width(bar_count: usize) -> usize {
+    bar_count
+        .saturating_mul(BAR_WIDTH)
+        .saturating_add(bar_count.saturating_sub(1).saturating_mul(BAR_GAP))
 }
 
-fn bar_positions(plot_width: usize, bar_count: usize, bar_width: usize) -> Vec<(usize, usize)> {
-    if plot_width == 0 || bar_count == 0 || bar_width == 0 {
+fn distributed_bar_positions(plot_width: usize, bar_count: usize) -> Vec<Option<(usize, usize)>> {
+    if plot_width == 0 || bar_count == 0 {
         return Vec::new();
     }
-
-    let min_slot_width = (0..bar_count)
-        .map(|index| {
-            let slot_start = index * plot_width / bar_count;
-            let slot_end = ((index + 1) * plot_width / bar_count).max(slot_start + 1);
-            slot_end.saturating_sub(slot_start).max(1)
-        })
-        .min()
-        .unwrap_or(1);
-    let bar_width = bar_width.min(min_slot_width).max(1);
 
     (0..bar_count)
         .map(|index| {
             let slot_start = index * plot_width / bar_count;
             let slot_end = ((index + 1) * plot_width / bar_count).max(slot_start + 1);
             let slot_width = slot_end.saturating_sub(slot_start).max(1);
-            let bar_start = slot_start + slot_width.saturating_sub(bar_width) / 2;
-            (bar_start, bar_width)
+            let bar_start = slot_start + slot_width.saturating_sub(BAR_WIDTH) / 2;
+            Some((bar_start, BAR_WIDTH))
         })
         .collect()
 }
 
-fn label_indices(bar_count: usize, is_very_narrow: bool, label_all: bool) -> Vec<usize> {
+fn label_indices(
+    bar_count: usize,
+    is_very_narrow: bool,
+    label_all: bool,
+    positions: &[Option<(usize, usize)>],
+) -> Vec<usize> {
     if bar_count == 0 {
+        return Vec::new();
+    }
+    let visible_indices = positions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, position)| position.is_some().then_some(index))
+        .collect::<Vec<_>>();
+    if visible_indices.is_empty() {
         return Vec::new();
     }
     if bar_count == 1 {
         return vec![0];
     }
     if label_all {
-        return (0..bar_count).collect();
+        return visible_indices;
     }
     if is_very_narrow {
-        return vec![0, bar_count - 1];
+        return vec![
+            *visible_indices.first().unwrap(),
+            *visible_indices.last().unwrap(),
+        ];
     }
-    let mid = bar_count / 2;
-    let mut indices = vec![0, mid, bar_count - 1];
+    let mid = visible_indices[visible_indices.len() / 2];
+    let mut indices = vec![
+        *visible_indices.first().unwrap(),
+        mid,
+        *visible_indices.last().unwrap(),
+    ];
     indices.dedup();
     indices
+}
+
+fn render_horizontal_scroll_indicator(
+    buf: &mut Buffer,
+    app: &App,
+    plot_x: u16,
+    y: u16,
+    plot_width: u16,
+    layout: &ChartLayout,
+) {
+    if !layout.is_scrollable() || plot_width < 14 || layout.virtual_width == 0 {
+        return;
+    }
+
+    let width = plot_width.min(if plot_width >= 80 { 24 } else { 14 });
+    let x_start = plot_x.saturating_add(plot_width.saturating_sub(width));
+    let inner_width = usize::from(width.saturating_sub(2)).max(1);
+    let thumb_width =
+        ((inner_width * usize::from(plot_width)) / layout.virtual_width).clamp(1, inner_width);
+    let thumb_range = inner_width.saturating_sub(thumb_width);
+    let thumb_start = if layout.max_scroll == 0 {
+        0
+    } else {
+        layout.scroll_offset.saturating_mul(thumb_range) / layout.max_scroll
+    };
+
+    let left = if layout.scroll_offset > 0 { '◀' } else { ' ' };
+    let right = if layout.scroll_offset < layout.max_scroll {
+        '▶'
+    } else {
+        ' '
+    };
+    buf[(x_start, y)]
+        .set_char(left)
+        .set_style(Style::default().fg(app.theme.muted));
+    for i in 0..inner_width {
+        let ch = if i >= thumb_start && i < thumb_start + thumb_width {
+            '━'
+        } else {
+            '─'
+        };
+        let style = if ch == '━' {
+            Style::default().fg(app.theme.foreground)
+        } else {
+            Style::default().fg(app.theme.muted)
+        };
+        let x = x_start.saturating_add(1 + i as u16);
+        buf[(x, y)].set_char(ch).set_style(style);
+    }
+    buf[(x_start.saturating_add(width.saturating_sub(1)), y)]
+        .set_char(right)
+        .set_style(Style::default().fg(app.theme.muted));
 }
 
 fn format_axis_label(date_str: &str, is_very_narrow: bool) -> String {
@@ -659,88 +728,47 @@ mod tests {
     }
 
     #[test]
-    fn test_compressed_bars_sums_bucket_segments() {
-        let data = vec![
-            test_bar("1", "a", 10),
-            test_bar("2", "a", 20),
-            test_bar("3", "b", 30),
-            test_bar("4", "b", 40),
-        ];
+    fn test_label_indices_can_label_every_visible_month() {
+        let positions = vec![Some((0, 1)), Some((2, 1)), Some((4, 1)), Some((6, 1))];
 
-        let bars = compressed_bars(&data, 2);
-
-        assert_eq!(bars.len(), 2);
-        assert_eq!(bars[0].date, "2");
-        assert_eq!(bars[0].total, 30);
-        assert_eq!(bars[0].models[0].tokens, 30);
-        assert_eq!(bars[1].date, "4");
-        assert_eq!(bars[1].total, 70);
-        assert_eq!(bars[1].models[0].tokens, 70);
+        assert_eq!(label_indices(4, false, true, &positions), vec![0, 1, 2, 3]);
+        assert_eq!(label_indices(4, false, false, &positions), vec![0, 2, 3]);
     }
 
     #[test]
-    fn test_compressed_bars_drop_ambiguous_period_click_target() {
-        let mut data = vec![
-            test_bar("1", "a", 10),
-            test_bar("2", "a", 20),
-            test_bar("3", "a", 30),
-            test_bar("4", "a", 40),
-        ];
-        data[0].period = Some(PeriodDetailKey::day(
-            chrono::NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
-        ));
-        data[1].period = Some(PeriodDetailKey::day(
-            chrono::NaiveDate::from_ymd_opt(2026, 5, 2).unwrap(),
-        ));
+    fn test_chart_layout_distributes_when_spacing_fits() {
+        let layout = chart_layout(14, 3, 0);
 
-        let bars = compressed_bars(&data, 2);
-
-        assert_eq!(bars.len(), 2);
-        assert!(bars[0].period.is_none());
+        assert!(!layout.is_scrollable());
+        assert_eq!(
+            layout.positions,
+            vec![Some((1, 1)), Some((6, 1)), Some((11, 1))]
+        );
     }
 
     #[test]
-    fn test_label_indices_can_label_every_month() {
-        assert_eq!(label_indices(4, false, true), vec![0, 1, 2, 3]);
-        assert_eq!(label_indices(4, false, false), vec![0, 2, 3]);
+    fn test_chart_layout_scrolls_without_compressing_bars() {
+        let layout = chart_layout(5, 5, 2);
+
+        assert!(layout.is_scrollable());
+        assert_eq!(layout.virtual_width, 9);
+        assert_eq!(layout.max_scroll, 4);
+        assert_eq!(layout.scroll_offset, 2);
+        assert_eq!(
+            layout.positions,
+            vec![None, Some((0, 1)), Some((2, 1)), Some((4, 1)), None]
+        );
     }
 
     #[test]
-    fn test_bar_positions_keep_uniform_width_across_uneven_slots() {
-        let positions = bar_positions(14, 3, 3);
-        let widths = positions
-            .iter()
-            .map(|(_, width)| *width)
-            .collect::<Vec<_>>();
+    fn test_chart_layout_clamps_scroll_to_end() {
+        let layout = chart_layout(5, 5, usize::MAX);
 
-        assert_eq!(widths, vec![3, 3, 3]);
-    }
-
-    #[test]
-    fn test_bar_positions_shrink_uniformly_when_slots_are_too_narrow() {
-        let positions = bar_positions(5, 3, 3);
-        let widths = positions
-            .iter()
-            .map(|(_, width)| *width)
-            .collect::<Vec<_>>();
-
-        assert_eq!(widths, vec![1, 1, 1]);
-    }
-
-    #[test]
-    fn test_ideal_bar_width_is_stable_across_overview_granularities() {
-        let modes = [OverviewMode::All, OverviewMode::Today];
-        let granularities = [
-            ChartGranularity::Daily,
-            ChartGranularity::Weekly,
-            ChartGranularity::Monthly,
-        ];
-
-        for mode in modes {
-            for granularity in granularities {
-                assert_eq!(ideal_bar_width(mode, granularity), 1);
-            }
-        }
+        assert_eq!(layout.scroll_offset, 4);
+        assert_eq!(
+            layout.positions,
+            vec![None, None, Some((0, 1)), Some((2, 1)), Some((4, 1))]
+        );
     }
 
     #[test]

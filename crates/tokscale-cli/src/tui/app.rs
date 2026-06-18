@@ -74,6 +74,9 @@ pub struct App {
     pub sort_direction: SortDirection,
     tab_sort_state: HashMap<Tab, (SortField, SortDirection)>,
     pub chart_granularity: ChartGranularity,
+    /// `usize::MAX` means "pin to the newest visible point"; the chart renderer
+    /// clamps it once the terminal width and data length are known.
+    pub overview_chart_scroll_offset: usize,
     pub timeline_granularity: TimelineGranularity,
     pub overview_mode: OverviewMode,
 
