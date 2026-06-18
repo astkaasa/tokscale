@@ -264,7 +264,7 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
             app,
             hint_area,
             (
-                "u",
+                "r",
                 if app.is_fetching_usage() {
                     "Syncing"
                 } else {

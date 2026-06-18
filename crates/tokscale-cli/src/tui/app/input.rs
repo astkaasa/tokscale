@@ -92,7 +92,9 @@ impl App {
                 self.cycle_theme();
             }
             KeyCode::Char('r') => {
-                if self.current_tab == Tab::Pulse {
+                if self.current_tab == Tab::Usage {
+                    self.refresh_usage();
+                } else if self.current_tab == Tab::Pulse {
                     self.refresh_weread();
                 } else if self.background_loading {
                     self.set_status("Refresh already in progress");
@@ -142,9 +144,6 @@ impl App {
             }
             KeyCode::Char('g') => {
                 self.open_group_by_picker();
-            }
-            KeyCode::Char('u') if self.current_tab == Tab::Usage => {
-                self.refresh_usage();
             }
             KeyCode::Char('a') if self.current_tab == Tab::Usage => {
                 self.start_codex_login();

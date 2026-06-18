@@ -1378,6 +1378,29 @@ fn test_handle_key_r_does_not_refresh_subscription_usage() {
 }
 
 #[test]
+fn test_handle_key_r_on_usage_refreshes_subscription_usage() {
+    let mut app = make_app();
+    app.usage_fetcher = sample_usage_fetcher;
+    app.current_tab = Tab::Usage;
+
+    app.handle_key_event(key(KeyCode::Char('r')));
+
+    assert!(!app.needs_reload);
+    assert!(app.is_fetching_usage());
+    for _ in 0..20 {
+        app.on_tick();
+        if !app.is_fetching_usage() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(app.subscription_usage.len(), 1);
+    assert_eq!(app.subscription_usage[0].provider, "Codex");
+    assert_eq!(app.status_message.as_deref(), Some("Usage data loaded"));
+}
+
+#[test]
 fn test_switching_to_usage_starts_initial_usage_fetch() {
     let mut app = make_app();
     app.usage_fetcher = sample_usage_fetcher;
@@ -1393,7 +1416,7 @@ fn test_switching_to_usage_starts_initial_usage_fetch() {
 }
 
 #[test]
-fn test_handle_key_u_on_usage_refreshes_subscription_usage() {
+fn test_handle_key_u_on_usage_is_unassigned() {
     let mut app = make_app();
     app.usage_fetcher = sample_usage_fetcher;
     app.current_tab = Tab::Usage;
@@ -1401,18 +1424,8 @@ fn test_handle_key_u_on_usage_refreshes_subscription_usage() {
     app.handle_key_event(key(KeyCode::Char('u')));
 
     assert!(!app.needs_reload);
-    assert!(app.is_fetching_usage());
-    for _ in 0..20 {
-        app.on_tick();
-        if !app.is_fetching_usage() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-
-    assert_eq!(app.subscription_usage.len(), 1);
-    assert_eq!(app.subscription_usage[0].provider, "Codex");
-    assert_eq!(app.status_message.as_deref(), Some("Usage data loaded"));
+    assert!(!app.is_fetching_usage());
+    assert!(app.subscription_usage.is_empty());
 }
 
 // ── handle_key_event: misc keys ─────────────────────────────────

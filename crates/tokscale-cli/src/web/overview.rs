@@ -10,8 +10,8 @@ use tokscale_core::GroupBy;
 use crate::report_format::format_currency;
 use crate::tui::{surface::render_app_buffer, App, TuiConfig, UsageData};
 
-const DEFAULT_WIDTH: u16 = 160;
-const DEFAULT_HEIGHT: u16 = 48;
+const DEFAULT_WIDTH: u16 = 220;
+const DEFAULT_HEIGHT: u16 = 69;
 const DEFAULT_FG: &str = "#c9d1d9";
 const DEFAULT_BG: &str = "#0d1117";
 
@@ -126,19 +126,31 @@ fn render_buffer_page(buffer: &Buffer, width: u16, height: u16) -> String {
 </head>
 <body>
   <main class="viewport" aria-label="Tokscale terminal overview">
-    <pre class="terminal-screen" role="img" aria-label="Tokscale Overview rendered from the TUI buffer" data-cols="{width}" data-rows="{height}">{surface}</pre>
+    <pre class="terminal-screen" role="img" aria-label="Tokscale Overview rendered from the TUI buffer" data-cols="{width}" data-rows="{height}" style="{terminal_style}">{surface}<span class="terminal-overlay" aria-hidden="true">{overlay}</span></pre>
   </main>
 </body>
 </html>
 "#,
-        css = terminal_css(),
+        css = terminal_css(width, height),
         width = width,
         height = height,
+        terminal_style = terminal_style(width, height),
         surface = render_buffer_html(buffer, width, height),
+        overlay = render_block_overlay(buffer, width, height),
     )
 }
 
 fn render_buffer_html(buffer: &Buffer, width: u16, height: u16) -> String {
+    let overlay_region = chart_overlay_region(buffer, width, height);
+    render_buffer_html_with_region(buffer, width, height, overlay_region)
+}
+
+fn render_buffer_html_with_region(
+    buffer: &Buffer,
+    width: u16,
+    height: u16,
+    overlay_region: Option<BlockOverlayRegion>,
+) -> String {
     let mut html = String::new();
     for y in 0..height {
         html.push_str(r#"<span class="terminal-row">"#);
@@ -146,13 +158,28 @@ fn render_buffer_html(buffer: &Buffer, width: u16, height: u16) -> String {
         while x < width {
             let cell = &buffer[(x, y)];
             let style = HtmlCellStyle::from_cell(cell);
+            let symbol = cell_symbol(cell);
+            if block_level(symbol).is_some()
+                && overlay_region.is_some_and(|region| region.contains(x, y))
+            {
+                html.push_str(&style.open_span());
+                html.push(' ');
+                html.push_str("</span>");
+                x += 1;
+                continue;
+            }
+
             let mut text = cell_text(cell);
             x += 1;
 
             while x < width {
                 let next = &buffer[(x, y)];
                 let next_style = HtmlCellStyle::from_cell(next);
-                if next_style != style {
+                let next_symbol = cell_symbol(next);
+                if next_style != style
+                    || (block_level(next_symbol).is_some()
+                        && overlay_region.is_some_and(|region| region.contains(x, y)))
+                {
                     break;
                 }
                 text.push_str(&cell_text(next));
@@ -169,6 +196,115 @@ fn render_buffer_html(buffer: &Buffer, width: u16, height: u16) -> String {
         }
     }
     html
+}
+
+fn render_block_overlay(buffer: &Buffer, width: u16, height: u16) -> String {
+    let Some(region) = chart_overlay_region(buffer, width, height) else {
+        return String::new();
+    };
+    render_block_overlay_region(buffer, width, height, region)
+}
+
+fn render_block_overlay_region(
+    buffer: &Buffer,
+    width: u16,
+    height: u16,
+    region: BlockOverlayRegion,
+) -> String {
+    let mut html = String::new();
+
+    for x in region.x_start..region.x_end.min(width) {
+        let mut y = region.y_start;
+        while y < region.y_end.min(height) {
+            let cell = &buffer[(x, y)];
+            let Some(level) = block_level(cell_symbol(cell)) else {
+                y += 1;
+                continue;
+            };
+            let style = HtmlCellStyle::from_cell(cell);
+            let fill = block_fill_fraction(level);
+            let top = f64::from(y) + (1.0 - fill);
+            html.push_str(&block_rect(x, top, fill, 1, &style));
+            y += 1;
+        }
+    }
+
+    html
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BlockOverlayRegion {
+    x_start: u16,
+    x_end: u16,
+    y_start: u16,
+    y_end: u16,
+}
+
+impl BlockOverlayRegion {
+    fn contains(self, x: u16, y: u16) -> bool {
+        x >= self.x_start && x < self.x_end && y >= self.y_start && y < self.y_end
+    }
+}
+
+fn chart_overlay_region(buffer: &Buffer, width: u16, height: u16) -> Option<BlockOverlayRegion> {
+    let mut summary_x = width;
+    for y in 0..height {
+        let row = row_text(buffer, width, y);
+        if let Some(x) = find_col(&row, "Summary") {
+            summary_x = x;
+            break;
+        }
+    }
+
+    let mut title_y = None;
+    for y in 0..height {
+        if row_text(buffer, width, y).contains("Usage Trend") {
+            title_y = Some(y);
+            break;
+        }
+    }
+    let title_y = title_y?;
+
+    let mut axis_y = None;
+    for y in title_y.saturating_add(1)..height {
+        let row = row_text(buffer, width, y);
+        if is_chart_axis_row(&row) {
+            axis_y = Some(y);
+            break;
+        }
+    }
+
+    Some(BlockOverlayRegion {
+        x_start: 0,
+        x_end: summary_x.saturating_sub(3).max(1),
+        y_start: title_y.saturating_add(1),
+        y_end: axis_y.unwrap_or_else(|| title_y.saturating_add(22).min(height)),
+    })
+}
+
+fn row_text(buffer: &Buffer, width: u16, y: u16) -> String {
+    let mut text = String::new();
+    for x in 0..width {
+        text.push_str(cell_symbol(&buffer[(x, y)]));
+    }
+    text
+}
+
+fn find_col(row: &str, needle: &str) -> Option<u16> {
+    let byte_index = row.find(needle)?;
+    Some(row[..byte_index].chars().count() as u16)
+}
+
+fn is_chart_axis_row(row: &str) -> bool {
+    row.contains('0') && row.chars().filter(|ch| *ch == '─').count() >= 8
+}
+
+fn block_rect(x: u16, top: f64, cell_height: f64, row_span: u16, style: &HtmlCellStyle) -> String {
+    let height = cell_height * f64::from(row_span);
+    format!(
+        r#"<span class="terminal-block-rect" style="left:{x}ch;top:calc({top:.3} * var(--terminal-line-height));height:calc({height:.3} * var(--terminal-line-height));background-color:{fg};"></span>"#,
+        fg = style.fg,
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,12 +369,43 @@ impl HtmlCellStyle {
     }
 }
 
+fn cell_symbol(cell: &Cell) -> &str {
+    cell.symbol()
+}
+
 fn cell_text(cell: &Cell) -> String {
-    let symbol = cell.symbol();
+    let symbol = cell_symbol(cell);
     if symbol.is_empty() {
         " ".to_string()
     } else {
         symbol.to_string()
+    }
+}
+
+fn block_level(symbol: &str) -> Option<u8> {
+    match symbol {
+        "▁" => Some(1),
+        "▂" => Some(2),
+        "▃" => Some(3),
+        "▄" => Some(4),
+        "▅" => Some(5),
+        "▆" => Some(6),
+        "▇" => Some(7),
+        "█" => Some(8),
+        _ => None,
+    }
+}
+
+fn block_fill_fraction(level: u8) -> f64 {
+    match level {
+        1 => 0.125,
+        2 => 0.25,
+        3 => 0.375,
+        4 => 0.5,
+        5 => 0.625,
+        6 => 0.75,
+        7 => 0.875,
+        _ => 1.0,
     }
 }
 
@@ -289,67 +456,108 @@ fn indexed_color_hex(index: u8) -> String {
     .to_string()
 }
 
-fn terminal_css() -> &'static str {
-    r#"    :root {
+fn terminal_style(width: u16, height: u16) -> String {
+    format!("--terminal-cols:{width};--terminal-rows:{height};")
+}
+
+fn terminal_css(width: u16, height: u16) -> String {
+    const TERMINAL_LINE_HEIGHT: f64 = 1.0;
+    let width_denom = f64::from(width.max(1)) * 0.61;
+    let height_denom = f64::from(height.max(1)) * TERMINAL_LINE_HEIGHT;
+    format!(
+        r#"    :root {{
       color-scheme: dark;
       --bg: #0d1117;
       --fg: #c9d1d9;
-    }
+      --pad: 8px;
+      --terminal-line-height: {TERMINAL_LINE_HEIGHT:.2}em;
+      --terminal-width-denom: {width_denom:.2};
+      --terminal-height-denom: {height_denom:.2};
+    }}
 
-    * {
+    * {{
       box-sizing: border-box;
-    }
+    }}
 
     html,
-    body {
+    body {{
       width: 100%;
       height: 100%;
-    }
+      background: var(--bg);
+    }}
 
-    body {
+    body {{
       margin: 0;
       overflow: hidden;
       background: var(--bg);
       color: var(--fg);
-      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-family: Menlo, Monaco, "SF Mono", SFMono-Regular, Consolas, "Liberation Mono", monospace;
       font-variant-ligatures: none;
       font-variant-numeric: tabular-nums;
+      font-feature-settings: "liga" 0, "calt" 0, "kern" 0;
       letter-spacing: 0;
-    }
+      -webkit-font-smoothing: antialiased;
+      text-rendering: geometricPrecision;
+    }}
 
-    .viewport {
+    .viewport {{
+      position: fixed;
+      inset: 0;
       width: 100vw;
       height: 100vh;
       margin: 0;
       overflow: auto;
       background: var(--bg);
-    }
+    }}
 
-    .terminal-screen {
-      display: inline-block;
+    .terminal-screen {{
+      display: block;
+      position: relative;
+      width: max-content;
       min-width: 100vw;
       min-height: 100vh;
       margin: 0;
-      padding: 8px;
+      padding: var(--pad);
       background: var(--bg);
       color: var(--fg);
       font: inherit;
-      font-size: clamp(10px, min(calc((100vw - 16px) / 96), calc((100vh - 16px) / 48)), 16px);
-      line-height: 1;
+      font-size: clamp(
+        9px,
+        min(
+          calc((100vw - (var(--pad) * 2)) / var(--terminal-width-denom)),
+          calc((100vh - (var(--pad) * 2)) / var(--terminal-height-denom))
+        ),
+        16px
+      );
+      line-height: var(--terminal-line-height);
       white-space: pre;
-      text-rendering: geometricPrecision;
-    }
+      tab-size: 1;
+    }}
 
-    .terminal-row {
+    .terminal-row {{
       display: block;
-      height: 1em;
+      height: var(--terminal-line-height);
       white-space: pre;
-    }
+    }}
 
-    .terminal-row > span {
+    .terminal-row > span {{
       white-space: pre;
-    }
+    }}
+
+    .terminal-overlay {{
+      position: absolute;
+      left: var(--pad);
+      top: var(--pad);
+      z-index: 2;
+      pointer-events: none;
+    }}
+
+    .terminal-block-rect {{
+      position: absolute;
+      width: 1ch;
+    }}
 "#
+    )
 }
 
 fn generated_at() -> String {
@@ -455,9 +663,13 @@ mod tests {
         assert!(html.contains("Tokscale"));
         assert!(html.contains("Overview"));
         assert!(html.contains("Top Models"));
+        assert!(html.contains(r#"data-cols="100""#));
+        assert!(html.contains(r#"style="--terminal-cols:100;--terminal-rows:28;""#));
+        assert!(html.contains("--terminal-width-denom: 61.00;"));
         assert!(!html.contains("<script>"));
         assert!(!html.contains("overview-grid"));
         assert!(!html.contains("<table>"));
+        assert!(!html.contains("/ 96"));
     }
 
     #[test]
@@ -475,6 +687,76 @@ mod tests {
     }
 
     #[test]
+    fn buffer_html_replaces_block_glyphs_with_spaces() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+        buffer[(0, 0)].set_symbol("▆");
+
+        let html = render_buffer_html_with_region(
+            &buffer,
+            1,
+            1,
+            Some(BlockOverlayRegion {
+                x_start: 0,
+                x_end: 1,
+                y_start: 0,
+                y_end: 1,
+            }),
+        );
+
+        assert!(html.contains("> </span>"));
+        assert!(!html.contains("▆"));
+    }
+
+    #[test]
+    fn chart_overlay_region_uses_axis_row_without_date_labels() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 32, 6));
+        write_buffer_row(&mut buffer, 0, " Usage Trend (Today)");
+        write_buffer_row(&mut buffer, 1, "       █");
+        write_buffer_row(&mut buffer, 2, "       ▆");
+        write_buffer_row(&mut buffer, 3, "     0│────────────");
+        write_buffer_row(&mut buffer, 4, "       00 04 08");
+
+        let region = chart_overlay_region(&buffer, 32, 6).expect("chart region");
+
+        assert_eq!(region.y_start, 1);
+        assert_eq!(region.y_end, 3);
+    }
+
+    #[test]
+    fn block_overlay_uses_tui_block_glyph_levels() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 3));
+        buffer[(0, 0)].set_symbol("█");
+        buffer[(0, 1)].set_symbol("▆");
+        buffer[(0, 2)].set_symbol("█");
+
+        let html = render_block_overlay_region(
+            &buffer,
+            1,
+            3,
+            BlockOverlayRegion {
+                x_start: 0,
+                x_end: 1,
+                y_start: 0,
+                y_end: 3,
+            },
+        );
+
+        assert_eq!(html.matches("terminal-block-rect").count(), 3);
+        assert!(html.contains("top:calc(0.000 * var(--terminal-line-height));"));
+        assert!(html.contains("top:calc(1.250 * var(--terminal-line-height));"));
+        assert!(html.contains("height:calc(0.750 * var(--terminal-line-height));"));
+        assert!(html.contains("top:calc(2.000 * var(--terminal-line-height));"));
+    }
+
+    #[test]
+    fn block_fill_fraction_matches_eighth_block_glyphs() {
+        assert_eq!(block_fill_fraction(1), 0.125);
+        assert_eq!(block_fill_fraction(6), 0.75);
+        assert_eq!(block_fill_fraction(7), 0.875);
+        assert_eq!(block_fill_fraction(8), 1.0);
+    }
+
+    #[test]
     fn overview_json_summarizes_core_data() {
         let json = build_overview_json(&usage_fixture(), "All time".to_string(), 160, 48);
 
@@ -485,5 +767,11 @@ mod tests {
         assert_eq!(json.total_cost_label, "$1.25");
         assert_eq!(json.active_days, 1);
         assert_eq!(json.model_count, 1);
+    }
+
+    fn write_buffer_row(buffer: &mut Buffer, y: u16, text: &str) {
+        for (x, ch) in text.chars().enumerate() {
+            buffer[(x as u16, y)].set_char(ch);
+        }
     }
 }

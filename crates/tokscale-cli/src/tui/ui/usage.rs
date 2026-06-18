@@ -170,9 +170,9 @@ fn render_action_bar(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
     let show_prefix = area.width >= 36;
 
     let refresh_label = if app.is_fetching_usage() {
-        if compact { "u Sync" } else { "u Syncing" }.to_string()
+        if compact { "r Sync" } else { "r Syncing" }.to_string()
     } else {
-        "u Refresh".to_string()
+        "r Refresh".to_string()
     };
     let refresh_style = if app.is_fetching_usage() {
         ButtonKind::Disabled
@@ -2322,7 +2322,7 @@ mod tests {
         let mut app = make_app();
         let body = render_body(&mut app, 28, 20);
 
-        assert!(body.contains("u Refresh"), "{body}");
+        assert!(body.contains("r Refresh"), "{body}");
         assert!(body.contains("a Add"), "{body}");
         assert!(body.contains("No usage data"), "{body}");
         assert!(!body.contains("Add Codex"), "{body}");
@@ -2334,7 +2334,7 @@ mod tests {
         let mut app = make_app();
         let body = render_body(&mut app, 150, 20);
 
-        assert!(body.contains("u Refresh"), "{body}");
+        assert!(body.contains("r Refresh"), "{body}");
         assert!(body.contains("a Add Codex"), "{body}");
         assert!(!body.contains("Show Emails"), "{body}");
         assert!(!body.contains("Hide Emails"), "{body}");
