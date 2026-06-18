@@ -93,11 +93,12 @@ Near-term surfaces:
 
 - Markdown weekly digest.
 - JSON summary for scripts and agents.
+- Local read-only Overview HTML report.
 
 Later surfaces:
 
 - MCP resources/tools.
-- Local web report.
+- Richer local web reports.
 - Raycast or launcher entry.
 - Menubar summary.
 - Obsidian export.

@@ -32,6 +32,7 @@ Current priorities:
 - Local AI usage parsing across supported coding clients. Run `tokscale clients` to see detected local sources and paths on your machine.
 - Subscription quota/status view via `tokscale usage` and the Usage TUI workspace.
 - WeRead Pulse in the TUI, backed by a WeRead API key stored in settings or provided through the environment.
+- Local read-only Overview HTML surface via `tokscale serve`.
 - Personal Pulse digest export:
 
 ```bash
@@ -60,6 +61,7 @@ Useful commands:
 ./target/debug/tokscale --no-spinner usage
 ./target/debug/tokscale pulse --weekly
 ./target/debug/tokscale pulse --json
+./target/debug/tokscale serve
 ./target/debug/tokscale clients
 ```
 

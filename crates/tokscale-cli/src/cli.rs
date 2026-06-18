@@ -162,6 +162,24 @@ pub(crate) enum Commands {
         #[command(flatten)]
         date: DateRangeFlags,
     },
+    #[command(about = "Serve a local read-only HTML overview")]
+    Serve {
+        #[arg(long, default_value_t = 8765, help = "Localhost port to bind")]
+        port: u16,
+        #[command(flatten)]
+        clients: ClientFlags,
+        #[command(flatten)]
+        date: DateRangeFlags,
+        #[arg(
+            long,
+            value_name = "STRATEGY",
+            default_value = "model",
+            help = "Grouping strategy for the overview: model, client,model, client,provider,model, workspace,model, session,model, client,session,model"
+        )]
+        group_by: String,
+        #[arg(long, help = "Disable startup spinner")]
+        no_spinner: bool,
+    },
     #[command(about = "Capture subprocess output for token usage tracking")]
     Headless {
         #[arg(help = "Source CLI (currently only 'codex' supported)")]
@@ -358,6 +376,22 @@ mod tests {
     #[test]
     fn clap_accepts_models_light_write_cache_after_subcommand() {
         assert!(Cli::try_parse_from(["tokscale", "models", "--light", "--write-cache"]).is_ok());
+    }
+
+    #[test]
+    fn clap_accepts_serve_command() {
+        assert!(Cli::try_parse_from(["tokscale", "serve"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "tokscale",
+            "serve",
+            "--port",
+            "0",
+            "--client",
+            "codex,claude",
+            "--week",
+            "--no-spinner",
+        ])
+        .is_ok());
     }
 
     #[test]

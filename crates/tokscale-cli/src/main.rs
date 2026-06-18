@@ -9,6 +9,7 @@ mod report_format;
 mod report_support;
 mod spinner;
 mod tui;
+mod web;
 
 use crate::cli::{Cli, Commands};
 use crate::commands::reports::{ModelsReportArgs, PeriodReportArgs, TimeMetricsReportArgs};
@@ -198,6 +199,37 @@ fn main() -> Result<()> {
                 year,
                 None,
             )
+        }
+        Some(Commands::Serve {
+            port,
+            clients,
+            date,
+            group_by,
+            no_spinner,
+        }) => {
+            reject_unsupported_home_override(&cli.home, "serve")?;
+            let today = date.today;
+            let week = date.week;
+            let month = date.month;
+            let (since, until) = build_date_filter(today, week, month, date.since, date.until);
+            let year = normalize_year_filter(today, week, month, date.year);
+            let clients = build_client_filter(clients, &cli.home);
+            let group_by: tokscale_core::GroupBy = group_by.parse().unwrap_or_else(|e| {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            });
+            commands::serve::run(commands::serve::ServeArgs {
+                port,
+                clients,
+                since,
+                until,
+                year,
+                today,
+                week,
+                month,
+                group_by,
+                no_spinner,
+            })
         }
         Some(Commands::Headless {
             source,

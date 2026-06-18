@@ -12,6 +12,7 @@ Status labels:
 
 - Navigation and workspace strategy: [navigation.md](navigation.md) (`Design target`)
 - Overview dashboard strategy: [overview.md](overview.md) (`Implemented / Design target`)
+- Local web surface strategy: [local-web-surface.md](local-web-surface.md) (`Implemented / Design target`)
 - Provider color identity rules: [provider-colors.md](provider-colors.md) (`Implemented`)
 - Mouse capture and terminal text selection: [mouse-selection.md](mouse-selection.md) (`Implemented`)
 

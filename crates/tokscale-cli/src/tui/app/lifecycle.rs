@@ -24,6 +24,21 @@ use super::{App, TuiConfig};
 
 impl App {
     pub fn new_with_cached_data(config: TuiConfig, cached_data: Option<UsageData>) -> Result<Self> {
+        Self::build_with_cached_data(config, cached_data, true)
+    }
+
+    pub(crate) fn new_surface_with_cached_data(
+        config: TuiConfig,
+        cached_data: Option<UsageData>,
+    ) -> Result<Self> {
+        Self::build_with_cached_data(config, cached_data, false)
+    }
+
+    fn build_with_cached_data(
+        config: TuiConfig,
+        cached_data: Option<UsageData>,
+        fetch_on_entry: bool,
+    ) -> Result<Self> {
         let settings = Settings::load();
         let theme_name: ThemeName = config
             .theme
@@ -144,8 +159,10 @@ impl App {
             minutely_sort_cache: RefCell::new(None),
         };
         app.build_model_shade_map();
-        app.maybe_fetch_usage_on_entry();
-        app.maybe_fetch_weread_on_entry();
+        if fetch_on_entry {
+            app.maybe_fetch_usage_on_entry();
+            app.maybe_fetch_weread_on_entry();
+        }
         Ok(app)
     }
 

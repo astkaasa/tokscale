@@ -13,6 +13,7 @@ mod navigation;
 pub(crate) mod privacy;
 mod pulse_state;
 pub(crate) mod settings;
+pub(crate) mod surface;
 mod themes;
 mod ui;
 
