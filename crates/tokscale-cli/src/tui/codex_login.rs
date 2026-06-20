@@ -12,8 +12,11 @@ pub(crate) enum CodexLoginEvent {
     Finished(CodexLoginOutcome),
 }
 
-pub(crate) fn run_codex_login_worker(tx: std::sync::mpsc::Sender<CodexLoginEvent>) {
-    let result = run_codex_login_worker_inner(tx.clone());
+pub(crate) fn run_codex_login_worker(
+    tx: std::sync::mpsc::Sender<CodexLoginEvent>,
+    cancel_rx: std::sync::mpsc::Receiver<()>,
+) {
+    let result = run_codex_login_worker_inner(tx.clone(), cancel_rx);
     let outcome = match result {
         Ok(info) => CodexLoginOutcome::Imported(info),
         Err(e) => CodexLoginOutcome::Failed(e.to_string()),
@@ -23,20 +26,33 @@ pub(crate) fn run_codex_login_worker(tx: std::sync::mpsc::Sender<CodexLoginEvent
 
 fn run_codex_login_worker_inner(
     tx: std::sync::mpsc::Sender<CodexLoginEvent>,
+    cancel_rx: std::sync::mpsc::Receiver<()>,
 ) -> Result<crate::commands::usage::codex::CodexAccountInfo> {
     let codex_home =
         std::env::temp_dir().join(format!("tokscale-codex-login-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&codex_home)
         .map_err(|e| anyhow::anyhow!("failed to create temporary Codex home: {e}"))?;
+    initialize_codex_login_home(&codex_home)?;
 
-    let result = run_codex_login_in_home(&codex_home, tx);
+    let result = run_codex_login_in_home(&codex_home, tx, cancel_rx);
     let _ = std::fs::remove_dir_all(&codex_home);
     result
+}
+
+fn initialize_codex_login_home(codex_home: &std::path::Path) -> Result<()> {
+    let config_path = codex_home.join("config.toml");
+    if config_path.exists() {
+        return Ok(());
+    }
+
+    std::fs::write(&config_path, b"")
+        .map_err(|e| anyhow::anyhow!("failed to initialize temporary Codex config: {e}"))
 }
 
 fn run_codex_login_in_home(
     codex_home: &std::path::Path,
     tx: std::sync::mpsc::Sender<CodexLoginEvent>,
+    cancel_rx: std::sync::mpsc::Receiver<()>,
 ) -> Result<crate::commands::usage::codex::CodexAccountInfo> {
     let _ = tx.send(CodexLoginEvent::Output(
         "Starting Codex browser login".to_string(),
@@ -68,9 +84,25 @@ fn run_codex_login_in_home(
         ));
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| anyhow::anyhow!("failed to wait for codex login: {e}"))?;
+    let status = loop {
+        if cancel_rx.try_recv().is_ok() {
+            let _ = child.kill();
+            let _ = child.wait();
+            for reader in readers {
+                let _ = reader.join();
+            }
+            anyhow::bail!("Codex login cancelled");
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| anyhow::anyhow!("failed to wait for codex login: {e}"))?
+        {
+            break status;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
     for reader in readers {
         let _ = reader.join();
     }
@@ -171,4 +203,33 @@ fn sanitize_codex_login_line(line: &str) -> String {
     }
 
     sanitized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initializes_temporary_codex_config() {
+        let temp = tempfile::tempdir().unwrap();
+        initialize_codex_login_home(temp.path()).unwrap();
+
+        let config = temp.path().join("config.toml");
+        assert!(config.exists());
+        assert_eq!(std::fs::read_to_string(config).unwrap(), "");
+    }
+
+    #[test]
+    fn keeps_existing_temporary_codex_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.toml");
+        std::fs::write(&config, "model = \"gpt-5\"\n").unwrap();
+
+        initialize_codex_login_home(temp.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(config).unwrap(),
+            "model = \"gpt-5\"\n"
+        );
+    }
 }

@@ -24,4 +24,5 @@ pub(crate) enum ClickAction {
     WeReadRefresh,
     CodexUseAccount { account_id: String },
     CodexRemoveAccount { account_id: String },
+    CodexResetAccount { account_id: String },
 }

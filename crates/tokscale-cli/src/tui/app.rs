@@ -120,14 +120,18 @@ pub struct App {
     pub(crate) codex_login_outcome: Option<CodexLoginOutcome>,
     confirmed_codex_use_account_id: Rc<RefCell<Option<String>>>,
     confirmed_codex_remove_account_id: Rc<RefCell<Option<String>>>,
+    confirmed_codex_reset_account_id: Rc<RefCell<Option<String>>>,
     pub hide_usage_emails: bool,
 
     pub usage_fetch_attempted: bool,
     usage_job: BackgroundJob<Vec<crate::commands::usage::UsageOutput>>,
+    codex_reset_job:
+        BackgroundJob<Result<crate::commands::usage::codex::RateLimitResetConsumeResult, String>>,
     pub pulse: PulseState,
     #[cfg(test)]
     usage_fetcher: UsageFetcher,
     codex_login_rx: Option<std::sync::mpsc::Receiver<CodexLoginEvent>>,
+    codex_login_cancel_tx: Option<std::sync::mpsc::Sender<()>>,
 
     data_version: u64,
     minutely_sort_cache: RefCell<Option<MinutelySortCache>>,

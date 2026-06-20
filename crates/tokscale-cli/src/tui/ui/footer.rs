@@ -88,7 +88,13 @@ fn push_background_refresh_hint_fit(
 ) {
     let used = Line::from(spans.clone()).width() as u16;
     let separator = "  · ";
-    let candidates = if available_width < COMPACT_HINT_WIDTH {
+    let candidates = if app.current_tab == Tab::Usage {
+        if available_width < COMPACT_HINT_WIDTH {
+            ["Scan", "Data scan"]
+        } else {
+            ["Data scan", "Scanning"]
+        }
+    } else if available_width < COMPACT_HINT_WIDTH {
         ["Syncing", "Refreshing"]
     } else {
         ["Refreshing", "Syncing"]
@@ -331,6 +337,16 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
             },
             ClickAction::UsageToggleEmailPrivacy,
         );
+        if let Some(action) = selected_usage_reset_action(app) {
+            push_action_key_fit(
+                &mut spans,
+                app,
+                hint_area,
+                ("x", "Reset", Some("Reset")),
+                Color::Yellow,
+                action,
+            );
+        }
         push_key_fit(
             &mut spans,
             "R",
@@ -729,6 +745,25 @@ fn scope_summary_line(app: &App, width: u16) -> Line<'static> {
     )
 }
 
+fn selected_usage_reset_action(app: &App) -> Option<ClickAction> {
+    let output = app.subscription_usage.get(app.selected_index)?;
+    if output.provider != "Codex" {
+        return None;
+    }
+
+    let available_count = output
+        .reset_credits
+        .as_ref()
+        .map(|credits| credits.available_count)
+        .unwrap_or(0);
+    if available_count == 0 {
+        return None;
+    }
+
+    let account_id = output.account.as_ref()?.id.clone();
+    Some(ClickAction::CodexResetAccount { account_id })
+}
+
 fn usage_summary_line(app: &App, width: u16) -> Line<'static> {
     let provider_count = app
         .subscription_usage
@@ -950,6 +985,9 @@ mod tests {
                 remaining_label: Some("90% left".to_string()),
                 resets_at: None,
             }],
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
         }
     }
 

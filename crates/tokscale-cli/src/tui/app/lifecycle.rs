@@ -84,6 +84,7 @@ impl App {
         let dialog_needs_reload = Rc::new(RefCell::new(false));
         let confirmed_codex_use_account_id = Rc::new(RefCell::new(None));
         let confirmed_codex_remove_account_id = Rc::new(RefCell::new(None));
+        let confirmed_codex_reset_account_id = Rc::new(RefCell::new(None));
         let requested_tab = config.initial_tab.unwrap_or(Tab::Overview);
         let current_tab = if Self::tab_visible(&settings, requested_tab) {
             requested_tab
@@ -149,13 +150,16 @@ impl App {
             codex_login_outcome: None,
             confirmed_codex_use_account_id,
             confirmed_codex_remove_account_id,
+            confirmed_codex_reset_account_id,
             hide_usage_emails: true,
             usage_fetch_attempted: false,
             usage_job: BackgroundJob::default(),
+            codex_reset_job: BackgroundJob::default(),
             pulse,
             #[cfg(test)]
             usage_fetcher: test_usage_fetcher,
             codex_login_rx: None,
+            codex_login_cancel_tx: None,
             data_version: 0,
             minutely_sort_cache: RefCell::new(None),
         };
@@ -262,6 +266,26 @@ impl App {
             None => {}
         }
 
+        match self.codex_reset_job.poll() {
+            Some(BackgroundJobPoll::Ready(Ok(result))) => {
+                self.status_message = Some(format!(
+                    "Codex reset credit: {}",
+                    crate::tui::app::usage::codex_reset_outcome_label(&result)
+                ));
+                self.status_message_time = Some(std::time::Instant::now());
+                self.fetch_subscription_usage();
+            }
+            Some(BackgroundJobPoll::Ready(Err(error))) => {
+                self.status_message = Some(format!("Codex reset failed: {error}"));
+                self.status_message_time = Some(std::time::Instant::now());
+            }
+            Some(BackgroundJobPoll::Disconnected) => {
+                self.status_message = Some("Codex reset failed".into());
+                self.status_message_time = Some(std::time::Instant::now());
+            }
+            None => {}
+        }
+
         self.poll_weread_fetch();
         self.poll_codex_login();
     }
@@ -320,6 +344,7 @@ impl App {
 
         if finished {
             self.codex_login_rx = None;
+            self.codex_login_cancel_tx = None;
             if matches!(
                 self.codex_login_outcome,
                 Some(CodexLoginOutcome::Imported(_))

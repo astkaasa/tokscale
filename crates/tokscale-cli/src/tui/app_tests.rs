@@ -3,7 +3,7 @@ use super::{
     App, ChartGranularity, ClickAction, DrilldownView, HourlyViewMode, ModelDetailKey,
     OverviewMode, PeriodDetailKey, SortDirection, SortField, Tab, TimelineGranularity, TuiConfig,
 };
-use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput};
+use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput, UsageResetCredits};
 use crate::tui::data::{
     DailyModelInfo, DailySourceInfo, DailyUsage, MinutelyUsage, ModelUsage, TokenBreakdown,
     UsageData,
@@ -326,6 +326,9 @@ fn sample_subscription_usage() -> Vec<UsageOutput> {
             remaining_label: Some("60% left".to_string()),
             resets_at: None,
         }],
+        reset_credits: None,
+        credit_status: None,
+        spend_control: None,
     }]
 }
 
@@ -1653,6 +1656,71 @@ fn test_handle_mouse_click_codex_remove_opens_confirmation_dialog() {
     assert_eq!(
         app.status_message.as_deref(),
         Some("Confirm Codex account removal")
+    );
+}
+
+#[test]
+fn test_handle_mouse_click_codex_reset_opens_confirmation_dialog() {
+    let mut app = make_app();
+    app.current_tab = Tab::Usage;
+    app.subscription_usage = sample_subscription_usage();
+    app.subscription_usage[0].reset_credits = Some(UsageResetCredits {
+        available_count: 2,
+        credits: Vec::new(),
+    });
+    app.add_click_area(
+        Rect::new(0, 0, 10, 2),
+        ClickAction::CodexResetAccount {
+            account_id: "acct_work".to_string(),
+        },
+    );
+
+    let event = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 5,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse_event(event);
+
+    assert!(app.dialog_stack.is_active());
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Confirm Codex reset credit use")
+    );
+}
+
+#[test]
+fn test_handle_key_x_on_usage_opens_codex_reset_confirmation_dialog() {
+    let mut app = make_app();
+    app.current_tab = Tab::Usage;
+    app.subscription_usage = sample_subscription_usage();
+    app.subscription_usage[0].reset_credits = Some(UsageResetCredits {
+        available_count: 1,
+        credits: Vec::new(),
+    });
+
+    app.handle_key_event(key(KeyCode::Char('x')));
+
+    assert!(app.dialog_stack.is_active());
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Confirm Codex reset credit use")
+    );
+}
+
+#[test]
+fn test_handle_key_x_on_usage_requires_available_codex_reset_credit() {
+    let mut app = make_app();
+    app.current_tab = Tab::Usage;
+    app.subscription_usage = sample_subscription_usage();
+
+    app.handle_key_event(key(KeyCode::Char('x')));
+
+    assert!(!app.dialog_stack.is_active());
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("No Codex reset credits available")
     );
 }
 

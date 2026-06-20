@@ -21,6 +21,14 @@ impl App {
             return false;
         }
 
+        if key.code == KeyCode::Esc
+            && self.current_tab == Tab::Usage
+            && self.should_show_codex_login_panel()
+        {
+            self.dismiss_codex_login();
+            return false;
+        }
+
         match key.code {
             KeyCode::Char('q') => {
                 self.should_quit = true;
@@ -175,6 +183,9 @@ impl App {
             KeyCode::Char('m') if self.current_tab == Tab::Usage => {
                 self.toggle_usage_email_privacy();
             }
+            KeyCode::Char('x') if self.current_tab == Tab::Usage => {
+                self.confirm_selected_codex_rate_limit_reset();
+            }
             KeyCode::Enter if self.is_drilldown_active() => {
                 self.open_selected_drilldown_child();
             }
@@ -262,6 +273,9 @@ impl App {
                         }
                         ClickAction::CodexRemoveAccount { account_id } => {
                             self.confirm_codex_account_removal(&account_id);
+                        }
+                        ClickAction::CodexResetAccount { account_id } => {
+                            self.confirm_codex_rate_limit_reset(&account_id);
                         }
                     }
                 }

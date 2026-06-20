@@ -1,5 +1,6 @@
+use ratatui::layout::Flex;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState};
 
 use crate::commands::usage::{helpers, UsageMetric, UsageOutput};
 use crate::tui::app::{App, ClickAction};
@@ -19,6 +20,7 @@ struct ButtonSpec {
 enum ButtonKind {
     Primary,
     Secondary,
+    Warning,
     Danger,
     Disabled,
 }
@@ -32,30 +34,6 @@ struct UsageInventory {
     providers: usize,
     saved: usize,
     managed: usize,
-}
-
-#[derive(Clone, Copy)]
-struct AccountTableColumns {
-    marker: usize,
-    provider: usize,
-    account: usize,
-    plan: usize,
-    auth: usize,
-    health: usize,
-    limit: usize,
-    reset: usize,
-}
-
-#[derive(Clone, Copy)]
-struct AccountTableRects {
-    marker: Rect,
-    provider: Rect,
-    account: Rect,
-    plan: Rect,
-    auth: Rect,
-    health: Rect,
-    limit: Rect,
-    reset: Rect,
 }
 
 struct UsageRowView<'a> {
@@ -219,6 +197,9 @@ fn render_action_bar(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
             action: ClickAction::UsageToggleEmailPrivacy,
         });
     }
+    if let Some(button) = selected_reset_action_button(app) {
+        buttons.push(button);
+    }
 
     let mut spans = Vec::new();
     if show_prefix {
@@ -237,6 +218,20 @@ fn render_action_bar(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
     } else {
         Rect::new(area.x, area.y, area.width, 0)
     }
+}
+
+fn selected_reset_action_button(app: &App) -> Option<ButtonSpec> {
+    let output = app.subscription_usage.get(app.selected_index)?;
+    if !has_available_reset_credit(output) {
+        return None;
+    }
+
+    let account_id = output.account.as_ref()?.id.clone();
+    Some(ButtonSpec {
+        label: "x Reset".to_string(),
+        kind: ButtonKind::Warning,
+        action: ClickAction::CodexResetAccount { account_id },
+    })
 }
 
 fn push_click_buttons(
@@ -291,6 +286,7 @@ fn button_style(app: &App, kind: ButtonKind, selected: bool) -> Style {
             .bg(app.theme.accent)
             .add_modifier(Modifier::BOLD),
         ButtonKind::Secondary => Style::default().fg(app.theme.accent).bg(app.theme.border),
+        ButtonKind::Warning => Style::default().fg(Color::Black).bg(Color::Yellow),
         ButtonKind::Danger => Style::default().fg(Color::Red).bg(app.theme.border),
         ButtonKind::Disabled => Style::default().fg(app.theme.muted).bg(app.theme.border),
     }
@@ -327,18 +323,25 @@ fn render_codex_login_panel(frame: &mut Frame, app: &mut App, area: Rect) -> Rec
         ),
         Span::styled(status.to_string(), app.theme.subtle_text_style()),
     ];
-    if app.codex_login_outcome.is_some() {
-        let dismiss = "[Dismiss]";
-        let dismiss_width = dismiss.chars().count() as u16;
+    if app.is_codex_login_running() || app.codex_login_outcome.is_some() {
+        let action_label = if app.is_codex_login_running() {
+            "[Cancel]"
+        } else {
+            "[Dismiss]"
+        };
+        let action_width = action_label.chars().count() as u16;
         let used_width = Line::from(header_spans.clone()).width();
-        let padding = (area.width as usize).saturating_sub(used_width + dismiss_width as usize);
+        let padding = (area.width as usize).saturating_sub(used_width + action_width as usize);
         header_spans.push(Span::raw(" ".repeat(padding)));
-        header_spans.push(Span::styled(dismiss, Style::default().fg(app.theme.accent)));
+        header_spans.push(Span::styled(
+            action_label,
+            Style::default().fg(app.theme.accent),
+        ));
         let x = area
             .x
-            .saturating_add(area.width.saturating_sub(dismiss_width));
+            .saturating_add(area.width.saturating_sub(action_width));
         app.add_click_area(
-            Rect::new(x, area.y, dismiss_width.min(area.width), 1),
+            Rect::new(x, area.y, action_width.min(area.width), 1),
             ClickAction::CodexDismissLogin,
         );
     }
@@ -466,10 +469,17 @@ fn render_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[UsageO
         return;
     }
 
-    let top_height = if area.height >= 31 {
-        12
+    if area.width < 132 {
+        render_medium_loaded(frame, app, area, outputs);
+        return;
+    }
+
+    let top_height = if area.height >= 36 {
+        19
+    } else if area.height >= 31 {
+        17
     } else {
-        (area.height / 2).clamp(8, 11)
+        (area.height / 2).clamp(9, 13)
     };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -489,6 +499,25 @@ fn render_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[UsageO
     let selected_index = app.selected_index;
     render_selected_account(frame, app, top[1], &outputs[selected_index], outputs);
     render_accounts_table(frame, app, chunks[1], outputs);
+}
+
+fn render_medium_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[UsageOutput]) {
+    let summary_height = if area.height >= 36 { 8 } else { 6 }.min(area.height);
+    let selected_height =
+        if area.height >= 36 { 11 } else { 9 }.min(area.height.saturating_sub(summary_height));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(summary_height),
+            Constraint::Length(selected_height),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    render_usage_status(frame, app, chunks[0], outputs);
+    let selected_index = app.selected_index;
+    render_selected_account(frame, app, chunks[1], &outputs[selected_index], outputs);
+    render_accounts_table(frame, app, chunks[2], outputs);
 }
 
 fn usage_top_column_percentages(width: u16) -> (u16, u16) {
@@ -527,17 +556,22 @@ fn render_usage_status(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[
         return;
     }
 
-    let mut lines = usage_status_summary_lines(app, outputs, inner.width as usize);
+    let mut lines =
+        usage_status_summary_lines(app, outputs, inner.width as usize, inner.height as usize);
+
+    push_section_spacing(&mut lines, inner.height as usize);
+    append_credit_bank_summary_lines(
+        &mut lines,
+        app,
+        outputs,
+        inner.width as usize,
+        inner.height as usize,
+    );
 
     let attention_outputs = attention_outputs(outputs);
+    push_section_spacing(&mut lines, inner.height as usize);
     if lines.len() + 1 < inner.height as usize {
-        lines.push(Line::from(Span::styled(
-            " Attention",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )));
-
+        lines.push(section_heading("Attention", app));
         if attention_outputs.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  No accounts need attention",
@@ -566,21 +600,14 @@ fn render_usage_status(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[
         }
     }
 
-    if lines.len() + 2 < inner.height as usize {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " Providers",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for group in group_outputs_by_provider(outputs) {
-            if lines.len() >= inner.height as usize {
-                break;
-            }
-            lines.push(provider_summary_line(app, &group, inner.width as usize));
-        }
-    }
+    push_section_spacing(&mut lines, inner.height as usize);
+    append_provider_summary_lines(
+        &mut lines,
+        app,
+        outputs,
+        inner.width as usize,
+        inner.height as usize,
+    );
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -589,6 +616,7 @@ fn usage_status_summary_lines(
     app: &App,
     outputs: &[UsageOutput],
     width: usize,
+    height: usize,
 ) -> Vec<Line<'static>> {
     let ready_count = outputs
         .iter()
@@ -633,62 +661,148 @@ fn usage_status_summary_lines(
     );
 
     let mut lines = Vec::new();
-    push_kv_styled(
-        &mut lines,
-        app,
-        "State",
-        overall_state_label(outputs),
-        Style::default()
-            .fg(readiness_color(app, overall))
-            .add_modifier(Modifier::BOLD),
-        width,
-    );
-    push_kv_styled(
-        &mut lines,
-        app,
-        "Active",
-        &active,
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-        width,
-    );
-    push_kv_styled(
-        &mut lines,
-        app,
-        "Capacity",
-        &capacity,
-        app.theme.secondary_text_style(),
-        width,
-    );
-    push_kv_styled(
-        &mut lines,
-        app,
-        "Fallback",
-        &fallback,
-        app.theme.secondary_text_style(),
-        width,
-    );
-    push_kv_styled(
-        &mut lines,
-        app,
-        "Next Reset",
-        &next_reset,
-        app.theme.secondary_text_style(),
-        width,
-    );
-    push_kv_styled(
-        &mut lines,
-        app,
-        "Action",
-        &action,
-        Style::default()
-            .fg(readiness_color(app, overall))
-            .add_modifier(Modifier::BOLD),
-        width,
-    );
+    let push_state = |lines: &mut Vec<Line<'static>>| {
+        push_kv_styled(
+            lines,
+            app,
+            "State",
+            overall_state_label(outputs),
+            Style::default()
+                .fg(readiness_color(app, overall))
+                .add_modifier(Modifier::BOLD),
+            width,
+        );
+    };
+    let push_active = |lines: &mut Vec<Line<'static>>| {
+        push_kv_styled(
+            lines,
+            app,
+            "Active",
+            &active,
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            width,
+        );
+    };
+    let push_capacity = |lines: &mut Vec<Line<'static>>| {
+        push_kv_styled(
+            lines,
+            app,
+            "Capacity",
+            &capacity,
+            app.theme.secondary_text_style(),
+            width,
+        );
+    };
+    let push_fallback = |lines: &mut Vec<Line<'static>>| {
+        push_kv_styled(
+            lines,
+            app,
+            "Fallback",
+            &fallback,
+            app.theme.secondary_text_style(),
+            width,
+        );
+    };
+    let push_next_reset = |lines: &mut Vec<Line<'static>>| {
+        push_kv_styled(
+            lines,
+            app,
+            "Next Reset",
+            &next_reset,
+            app.theme.secondary_text_style(),
+            width,
+        );
+    };
+    let push_action = |lines: &mut Vec<Line<'static>>| {
+        push_kv_styled(
+            lines,
+            app,
+            "Action",
+            &action,
+            Style::default()
+                .fg(readiness_color(app, overall))
+                .add_modifier(Modifier::BOLD),
+            width,
+        );
+    };
 
+    match height {
+        0 => {}
+        1 => push_state(&mut lines),
+        2 => {
+            push_state(&mut lines);
+            push_action(&mut lines);
+        }
+        3 => {
+            push_state(&mut lines);
+            push_active(&mut lines);
+            push_action(&mut lines);
+        }
+        4 => {
+            push_state(&mut lines);
+            push_active(&mut lines);
+            push_capacity(&mut lines);
+            push_action(&mut lines);
+        }
+        5 => {
+            push_state(&mut lines);
+            push_active(&mut lines);
+            push_capacity(&mut lines);
+            push_next_reset(&mut lines);
+            push_action(&mut lines);
+        }
+        _ => {
+            push_state(&mut lines);
+            push_active(&mut lines);
+            push_capacity(&mut lines);
+            push_fallback(&mut lines);
+            push_next_reset(&mut lines);
+            push_action(&mut lines);
+        }
+    }
     lines
+}
+
+fn push_section_spacing(lines: &mut Vec<Line<'static>>, max_lines: usize) {
+    if !lines.is_empty() && lines.len().saturating_add(1) < max_lines {
+        lines.push(Line::from(""));
+    }
+}
+
+fn append_provider_summary_lines(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    outputs: &[UsageOutput],
+    width: usize,
+    max_lines: usize,
+) {
+    if lines.len().saturating_add(1) >= max_lines {
+        return;
+    }
+
+    lines.push(section_heading("Providers", app));
+
+    for group in group_outputs_by_provider(outputs) {
+        if lines.len() >= max_lines {
+            break;
+        }
+        lines.push(provider_summary_line(app, &group, width));
+    }
+}
+
+fn section_heading(label: &'static str, app: &App) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {label}"),
+        section_heading_style(app),
+    ))
+}
+
+fn section_heading_style(app: &App) -> Style {
+    app.theme
+        .secondary_text_style()
+        .add_modifier(Modifier::BOLD)
 }
 
 fn push_kv_styled(
@@ -699,9 +813,9 @@ fn push_kv_styled(
     value_style: Style,
     width: usize,
 ) {
-    let max_value = width.saturating_sub(15);
+    let max_value = width.saturating_sub(16);
     lines.push(Line::from(vec![
-        Span::styled(format!(" {:<12}", key), app.theme.subtle_text_style()),
+        Span::styled(format!("  {:<12}", key), app.theme.subtle_text_style()),
         Span::styled(truncate_string(value, max_value), value_style),
     ]));
 }
@@ -751,7 +865,12 @@ fn attention_line(app: &App, output: &UsageOutput, width: usize) -> Line<'static
                 .as_ref()
                 .map(|reset| format!(" · {}", helpers::format_reset_time(reset)))
                 .unwrap_or_default();
-            format!("{} {}{}", metric.label, remaining_label(metric), reset)
+            format!(
+                "{} {}{}",
+                compact_metric_label(&metric.label),
+                remaining_label(metric),
+                reset
+            )
         })
         .unwrap_or_else(|| "No quota metrics".to_string());
     let account_width: usize = if width >= 52 { 24 } else { 18 };
@@ -793,7 +912,11 @@ fn attention_more_line(hidden_count: usize, width: usize) -> Line<'static> {
     ))
 }
 
-fn provider_summary_line(app: &App, group: &UsageProviderGroup<'_>, width: usize) -> Line<'static> {
+fn provider_summary_line(
+    app: &App,
+    group: &UsageProviderGroup<'_>,
+    _width: usize,
+) -> Line<'static> {
     let saved = group
         .outputs
         .iter()
@@ -811,43 +934,20 @@ fn provider_summary_line(app: &App, group: &UsageProviderGroup<'_>, width: usize
         .iter()
         .filter(|(_, output)| readiness_status(output).is_at_risk())
         .count();
-    let active = group.outputs.iter().find_map(|(_, output)| {
-        output
-            .account
-            .as_ref()
-            .filter(|a| a.is_active)
-            .map(|_| account_name(app, output))
-    });
-
     let summary = if risk > 0 {
         format!("{count_label} · {ready} ready · {risk} at risk")
     } else {
         format!("{count_label} · {ready} ready")
     };
-    let mut spans = vec![
+    Line::from(vec![
         Span::styled(
-            format!(" {}", truncate_string(group.provider, 18)),
+            format!("  {}", truncate_string(group.provider, 18)),
             Style::default()
                 .fg(get_provider_shade(group.provider, 0))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {summary}"), app.theme.subtle_text_style()),
-    ];
-
-    if let Some(active) = active {
-        let used = Line::from(spans.clone()).width();
-        let suffix = format!("Active: {}", truncate_string(&active, 20));
-        let padding = width.saturating_sub(used + suffix.chars().count());
-        spans.push(Span::raw(" ".repeat(padding)));
-        spans.push(Span::styled(
-            suffix,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-
-    Line::from(spans)
+    ])
 }
 
 fn render_selected_account(
@@ -927,12 +1027,38 @@ fn render_selected_account(
         }
     }
     if lines.len() < detail_limit {
-        lines.push(Line::from(Span::styled(
-            " Limits",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )));
+        if let Some(label) = credits_status_line(selected) {
+            push_kv_styled(
+                &mut lines,
+                app,
+                "Credits",
+                &label,
+                app.theme.secondary_text_style(),
+                inner.width as usize,
+            );
+        }
+    }
+    if lines.len() < detail_limit {
+        if let Some(label) = reset_credits_line(selected) {
+            push_kv_styled(
+                &mut lines,
+                app,
+                "Reset Bank",
+                &label,
+                if has_available_reset_credit(selected) {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    app.theme.secondary_text_style()
+                },
+                inner.width as usize,
+            );
+        }
+    }
+    push_section_spacing(&mut lines, detail_limit);
+    if lines.len() < detail_limit {
+        lines.push(section_heading("Limits", app));
     }
     let mut metric_index = 0usize;
     while lines.len() < detail_limit {
@@ -953,13 +1079,9 @@ fn render_selected_account(
     if lines.len() < detail_limit {
         lines.push(snapshot_line(app, outputs, inner.width as usize));
     }
+    push_section_spacing(&mut lines, max_lines);
     if lines.len() + 1 < max_lines {
-        lines.push(Line::from(Span::styled(
-            " Actions",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )));
+        lines.push(section_heading("Actions", app));
     }
     if lines.len() < max_lines {
         let y = inner.y.saturating_add(lines.len() as u16);
@@ -967,6 +1089,123 @@ fn render_selected_account(
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn append_credit_bank_summary_lines(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    outputs: &[UsageOutput],
+    width: usize,
+    max_lines: usize,
+) {
+    if !outputs.iter().any(has_available_reset_credit) || lines.len() >= max_lines {
+        return;
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("  Credit Bank  ", section_heading_style(app)),
+        Span::styled(
+            truncate_string(&reset_bank_summary(outputs), width.saturating_sub(15)),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    for output in outputs.iter().filter(|output| output.provider == "Codex") {
+        if lines.len() >= max_lines {
+            break;
+        }
+        let Some(credits) = output.reset_credits.as_ref() else {
+            continue;
+        };
+        if credits.available_count == 0 {
+            continue;
+        }
+        lines.push(reset_credit_account_line(
+            app,
+            output,
+            credits,
+            output
+                .account
+                .as_ref()
+                .is_some_and(|account| account.is_active),
+            width,
+        ));
+    }
+}
+
+fn reset_credit_account_line(
+    app: &App,
+    output: &UsageOutput,
+    credits: &crate::commands::usage::UsageResetCredits,
+    selected: bool,
+    width: usize,
+) -> Line<'static> {
+    let account = account_name(app, output);
+    let count = if credits.available_count == 1 {
+        "1 credit".to_string()
+    } else {
+        format!("{} credits", credits.available_count)
+    };
+    let expiry = credit_expiry_summary(credits);
+    let label_width: usize = if width >= 72 { 28 } else { 18 };
+    let count_width: usize = if width >= 72 { 12 } else { 10 };
+    let used = 2 + label_width + count_width + 2;
+    let marker = if selected { "> " } else { "  " };
+    Line::from(vec![
+        Span::raw(marker),
+        Span::styled(
+            format!(
+                "{:<width$}",
+                truncate_string(&account, label_width.saturating_sub(1)),
+                width = label_width
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<width$}", count, width = count_width),
+            app.theme.secondary_text_style(),
+        ),
+        Span::styled(
+            truncate_string(&expiry, width.saturating_sub(used)),
+            app.theme.secondary_text_style(),
+        ),
+    ])
+}
+
+fn credit_expiry_summary(credits: &crate::commands::usage::UsageResetCredits) -> String {
+    let mut expiries: Vec<String> = credits
+        .credits
+        .iter()
+        .filter_map(|credit| credit.expires_at.as_deref())
+        .map(format_credit_expiry_label)
+        .collect();
+    expiries.sort();
+    expiries.dedup();
+
+    if expiries.is_empty() {
+        return "expiry unknown".to_string();
+    }
+
+    let visible: Vec<String> = expiries.iter().take(2).cloned().collect();
+    let hidden = expiries.len().saturating_sub(visible.len());
+    if hidden > 0 {
+        format!("expires {} +{hidden}", visible.join(", "))
+    } else {
+        format!("expires {}", visible.join(", "))
+    }
+}
+
+fn format_credit_expiry_label(value: &str) -> String {
+    let label = format_expiry_time(value);
+    label
+        .strip_prefix("expires ")
+        .or_else(|| label.strip_prefix("resets "))
+        .unwrap_or(&label)
+        .to_string()
 }
 
 fn selected_status_line(output: &UsageOutput) -> String {
@@ -986,6 +1225,10 @@ fn selected_account_actions_line(
 ) -> Line<'static> {
     if let Some(account) = &selected.account {
         let mut spans = Vec::new();
+        let mut buttons = Vec::new();
+        if has_available_reset_credit(selected) {
+            buttons.push(reset_account_button(&account.id));
+        }
         if account.is_active {
             spans.push(Span::styled(
                 "  Current account  ",
@@ -994,28 +1237,15 @@ fn selected_account_actions_line(
             let x = area
                 .x
                 .saturating_add(Line::from(spans.clone()).width() as u16);
-            push_click_buttons(
-                &mut spans,
-                app,
-                vec![remove_account_button(&account.id)],
-                x,
-                y,
-                area.right(),
-            );
+            buttons.push(remove_account_button(&account.id));
+            push_click_buttons(&mut spans, app, buttons, x, y, area.right());
         } else {
             spans.push(Span::raw("  "));
             let x = area.x.saturating_add(2);
-            push_click_buttons(
-                &mut spans,
-                app,
-                vec![
-                    use_account_button(&account.id),
-                    remove_account_button(&account.id),
-                ],
-                x,
-                y,
-                area.right(),
-            );
+            let mut all_buttons = vec![use_account_button(&account.id)];
+            all_buttons.extend(buttons);
+            all_buttons.push(remove_account_button(&account.id));
+            push_click_buttons(&mut spans, app, all_buttons, x, y, area.right());
         }
         return Line::from(spans);
     }
@@ -1054,7 +1284,7 @@ fn snapshot_line(app: &App, outputs: &[UsageOutput], width: usize) -> Line<'stat
         .count();
     let inventory = usage_inventory(outputs);
     let summary = format!(
-        " Snapshot  {ready} ready · {at_risk} at risk · {}{}",
+        "  Snapshot  {ready} ready · {at_risk} at risk · {}{}",
         identity_count_label(inventory.saved, inventory.managed),
         if app.hide_usage_emails {
             " · emails hidden"
@@ -1070,7 +1300,9 @@ fn snapshot_line(app: &App, outputs: &[UsageOutput], width: usize) -> Line<'stat
 
 fn metric_detail_line(app: &App, metric: &UsageMetric, width: usize) -> Line<'static> {
     let remaining = remaining_label(metric);
-    let bar_width = width.saturating_sub(34).clamp(10, 32);
+    let label_width = metric_label_width(width);
+    let bar_width = width.saturating_sub(label_width + 25).clamp(10, 34);
+    let reset_width = width.saturating_sub(label_width + bar_width + 14);
     let reset = metric
         .resets_at
         .as_ref()
@@ -1078,7 +1310,14 @@ fn metric_detail_line(app: &App, metric: &UsageMetric, width: usize) -> Line<'st
         .unwrap_or_default();
     let color = metric_color(app, metric);
     let mut spans = vec![Span::styled(
-        format!(" {:<10}", truncate_string(&metric.label, 10)),
+        format!(
+            "  {:<width$}",
+            truncate_string(
+                &compact_metric_label(&metric.label),
+                label_width.saturating_sub(1),
+            ),
+            width = label_width
+        ),
         app.theme.subtle_text_style(),
     )];
     spans.extend(quota_bar_spans(
@@ -1093,9 +1332,22 @@ fn metric_detail_line(app: &App, metric: &UsageMetric, width: usize) -> Line<'st
             format!("{:<11}", truncate_string(&remaining, 11)),
             Style::default().fg(color),
         ),
-        Span::styled(reset, app.theme.subtle_text_style()),
+        Span::styled(
+            truncate_string(&reset, reset_width),
+            app.theme.subtle_text_style(),
+        ),
     ]);
     Line::from(spans)
+}
+
+fn metric_label_width(width: usize) -> usize {
+    if width >= 96 {
+        18
+    } else if width >= 78 {
+        14
+    } else {
+        10
+    }
 }
 
 fn render_accounts_table(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[UsageOutput]) {
@@ -1114,35 +1366,46 @@ fn render_accounts_table(frame: &mut Frame, app: &mut App, area: Rect, outputs: 
         return;
     }
 
-    if account_table_columns(inner.width).is_none() {
+    if inner.width < 132 {
         render_narrow_accounts_table(frame, app, inner, outputs);
         return;
     }
 
     let max_rows = inner.height.saturating_sub(1) as usize;
     app.set_max_visible_items(max_rows.max(1));
-    render_account_table_header(frame, app, inner);
     let start = app
         .scroll_offset
         .min(outputs.len().saturating_sub(max_rows));
-    for (visible_row, (index, output)) in outputs
+    let visible_rows = outputs
         .iter()
         .enumerate()
         .skip(start)
         .take(max_rows)
-        .enumerate()
-    {
+        .collect::<Vec<_>>();
+
+    let rows = visible_rows
+        .iter()
+        .map(|(index, output)| account_table_row(app, output, *index))
+        .collect::<Vec<_>>();
+
+    let selected_visible = app
+        .selected_index
+        .checked_sub(start)
+        .filter(|index| *index < visible_rows.len());
+    let mut table_state = TableState::default().with_selected(selected_visible);
+    let table = Table::new(rows, account_table_widths(inner.width))
+        .header(account_table_header(app))
+        .column_spacing(1)
+        .highlight_spacing(HighlightSpacing::Never)
+        .row_highlight_style(Style::default().bg(app.theme.selection))
+        .flex(Flex::Start);
+    frame.render_stateful_widget(table, inner, &mut table_state);
+
+    for (visible_row, (index, _)) in visible_rows.into_iter().enumerate() {
         let y = inner.y.saturating_add(1 + visible_row as u16);
         app.add_click_area(
             Rect::new(inner.x, y, inner.width, 1),
             ClickAction::UsageSelect { index },
-        );
-        render_account_table_row(
-            frame,
-            app,
-            Rect::new(inner.x, y, inner.width, 1),
-            output,
-            index,
         );
     }
 }
@@ -1187,27 +1450,18 @@ fn render_narrow_accounts_table(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_account_table_header(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(rects) = account_table_rects(area) else {
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                " #  Provider       Account                 Auth     Health      Limits / Reset",
-                app.theme.subtle_text_style(),
-            )])),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
-        return;
-    };
-
+fn account_table_header(app: &App) -> Row<'static> {
     let style = app.theme.subtle_text_style();
-    render_table_cell(frame, "#", rects.marker, style, CellAlign::Right);
-    render_table_cell(frame, "Provider", rects.provider, style, CellAlign::Left);
-    render_table_cell(frame, "Account", rects.account, style, CellAlign::Left);
-    render_table_cell(frame, "Plan", rects.plan, style, CellAlign::Left);
-    render_table_cell(frame, "Auth", rects.auth, style, CellAlign::Left);
-    render_table_cell(frame, "Health", rects.health, style, CellAlign::Left);
-    render_table_cell(frame, "Limit", rects.limit, style, CellAlign::Left);
-    render_table_cell(frame, "Reset", rects.reset, style, CellAlign::Left);
+    Row::new([
+        table_right_cell("#", style),
+        table_text_cell("Provider", style),
+        table_text_cell("Account", style),
+        table_text_cell("Plan", style),
+        table_text_cell("Auth", style),
+        table_text_cell("Health", style),
+        table_text_cell("Limit", style),
+        table_text_cell("Reset", style),
+    ])
 }
 
 fn narrow_table_header(app: &App, width: u16) -> Line<'static> {
@@ -1217,75 +1471,30 @@ fn narrow_table_header(app: &App, width: u16) -> Line<'static> {
     ))
 }
 
-fn account_table_columns(width: u16) -> Option<AccountTableColumns> {
-    if width < 132 {
-        return None;
-    }
-
-    let width = width as usize;
-    let marker = 4;
-    let provider = if width >= 170 { 14 } else { 12 };
-    let plan = if width >= 170 { 12 } else { 10 };
-    let auth = if width >= 170 { 9 } else { 8 };
-    let health = if width >= 170 { 12 } else { 10 };
-    let limit = if width >= 170 { 22 } else { 20 };
-    let column_count = 8;
-    let separators = column_count;
-    let fixed = marker + provider + plan + auth + health + limit + separators;
-    let remaining = width.saturating_sub(fixed);
-    let min_account = if width >= 170 { 28 } else { 22 };
-    let min_reset = 14;
-    if remaining < min_account + min_reset {
-        None
+fn account_table_widths(width: u16) -> [Constraint; 8] {
+    if width >= 170 {
+        [
+            Constraint::Length(3),
+            Constraint::Length(10),
+            Constraint::Length(30),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Min(30),
+            Constraint::Length(22),
+        ]
     } else {
-        let preferred_account = if width >= 190 {
-            36
-        } else if width >= 170 {
-            32
-        } else {
-            26
-        };
-        let account = preferred_account.min(remaining.saturating_sub(min_reset));
-        let reset = remaining
-            .saturating_sub(account)
-            .min(if width >= 170 { 28 } else { 22 });
-        Some(AccountTableColumns {
-            marker,
-            provider,
-            account,
-            plan,
-            auth,
-            health,
-            limit,
-            reset,
-        })
+        [
+            Constraint::Length(3),
+            Constraint::Length(8),
+            Constraint::Length(24),
+            Constraint::Length(8),
+            Constraint::Length(7),
+            Constraint::Length(8),
+            Constraint::Min(24),
+            Constraint::Length(16),
+        ]
     }
-}
-
-fn account_table_rects(area: Rect) -> Option<AccountTableRects> {
-    let columns = account_table_columns(area.width)?;
-    let mut x = area.x;
-    let y = area.y;
-    let right = area.right();
-
-    fn take_cell(x: &mut u16, y: u16, right: u16, width: usize) -> Rect {
-        let available = right.saturating_sub(*x);
-        let width = (width as u16).min(available);
-        let rect = Rect::new(*x, y, width, 1);
-        *x = x.saturating_add(width).saturating_add(1);
-        rect
-    }
-
-    Some(AccountTableRects {
-        marker: take_cell(&mut x, y, right, columns.marker),
-        provider: take_cell(&mut x, y, right, columns.provider),
-        account: take_cell(&mut x, y, right, columns.account),
-        plan: take_cell(&mut x, y, right, columns.plan),
-        auth: take_cell(&mut x, y, right, columns.auth),
-        health: take_cell(&mut x, y, right, columns.health),
-        limit: take_cell(&mut x, y, right, columns.limit),
-        reset: take_cell(&mut x, y, right, columns.reset),
-    })
 }
 
 fn narrow_table_row(
@@ -1386,13 +1595,8 @@ fn usage_row_view<'a>(app: &App, output: &'a UsageOutput) -> UsageRowView<'a> {
         .filter(|plan| !plan.is_empty())
         .unwrap_or("Unknown")
         .to_string();
-    let limit = metric
-        .map(|metric| format!("{} {}", metric.label, remaining_label(metric)))
-        .unwrap_or_else(|| "No limits".to_string());
-    let reset = metric
-        .and_then(|metric| metric.resets_at.as_ref())
-        .map(|reset| helpers::format_reset_time(reset))
-        .unwrap_or_default();
+    let limit = metric_summary(output);
+    let reset = metric.and_then(display_metric_reset).unwrap_or_default();
     let account_summary = account_plan_label(&account, output.plan.as_deref());
 
     UsageRowView {
@@ -1406,92 +1610,94 @@ fn usage_row_view<'a>(app: &App, output: &'a UsageOutput) -> UsageRowView<'a> {
     }
 }
 
-fn render_account_table_row(
-    frame: &mut Frame,
-    app: &App,
-    area: Rect,
-    output: &UsageOutput,
-    index: usize,
-) {
-    let selected = app.selected_index == index;
+fn metric_summary(output: &UsageOutput) -> String {
+    if output.metrics.is_empty() {
+        return "No limits".to_string();
+    }
+
+    let parts = output
+        .metrics
+        .iter()
+        .map(|metric| {
+            let label = compact_metric_label(&metric.label);
+            let label = truncate_string(&label, 14);
+            format!("{label} {:.0}%", metric.remaining_percent)
+        })
+        .collect::<Vec<_>>();
+    parts.join(" · ")
+}
+
+fn compact_metric_label(label: &str) -> String {
+    let mut value = label.trim().to_string();
+    for prefix in [
+        "GPT-5.3-Codex-",
+        "GPT-5.3-",
+        "Codex-",
+        "codex-",
+        "gpt-5.3-codex-",
+        "gpt-5.3-",
+    ] {
+        if let Some(stripped) = value.strip_prefix(prefix) {
+            value = stripped.to_string();
+            break;
+        }
+    }
+
+    value = value
+        .replace("Codex Spark", "Spark")
+        .replace("Codex-Spark", "Spark")
+        .replace("codex-spark", "Spark");
+
+    if value.eq_ignore_ascii_case("session") {
+        return "5h".to_string();
+    }
+    if value.eq_ignore_ascii_case("spark") {
+        return "Spark".to_string();
+    }
+    if value.eq_ignore_ascii_case("spark week") {
+        return "Spark weekly".to_string();
+    }
+    value
+}
+
+fn display_metric_reset(metric: &UsageMetric) -> Option<String> {
+    metric
+        .resets_at
+        .as_ref()
+        .map(|reset| helpers::format_reset_time(reset))
+}
+
+fn account_table_row(app: &App, output: &UsageOutput, index: usize) -> Row<'static> {
     let row = usage_row_view(app, output);
-    let Some(rects) = account_table_rects(area) else {
-        return;
-    };
 
     let auth = account_auth_label(output);
     let health = readiness_label(row.readiness);
-    let row_style = usage_table_row_style(app, index, selected);
-    frame.render_widget(Paragraph::new("").style(row_style), area);
-
-    let provider_style = if selected {
-        usage_table_text_style(app, selected).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(get_provider_shade(&output.provider, 0))
-            .add_modifier(Modifier::BOLD)
-    };
     let auth_color = account_auth_color(output);
     let health_color = readiness_color(app, row.readiness);
     let metric_color = row.metric.map(|metric| metric_color(app, metric));
-    render_table_cell(
-        frame,
-        &usage_row_marker(index),
-        rects.marker,
-        usage_table_text_style(app, selected),
-        CellAlign::Right,
-    );
-    render_table_cell(
-        frame,
-        &output.provider,
-        rects.provider,
-        provider_style,
-        CellAlign::Left,
-    );
-    render_table_cell(
-        frame,
-        &row.account,
-        rects.account,
-        usage_table_text_style(app, selected),
-        CellAlign::Left,
-    );
-    render_table_cell(
-        frame,
-        &row.plan,
-        rects.plan,
-        usage_table_text_style(app, selected),
-        CellAlign::Left,
-    );
-    render_table_cell(
-        frame,
-        auth,
-        rects.auth,
-        usage_table_color_style(app, selected, auth_color),
-        CellAlign::Left,
-    );
-    render_table_cell(
-        frame,
-        health,
-        rects.health,
-        usage_table_color_style(app, selected, health_color),
-        CellAlign::Left,
-    );
-    render_table_cell(
-        frame,
-        &row.limit,
-        rects.limit,
-        metric_color
-            .map(|color| usage_table_color_style(app, selected, color))
-            .unwrap_or_else(|| usage_table_text_style(app, selected)),
-        CellAlign::Left,
-    );
-    render_table_cell(
-        frame,
-        &row.reset,
-        rects.reset,
-        usage_table_subtle_style(app, selected),
-        CellAlign::Left,
-    );
+
+    Row::new([
+        table_right_cell((index + 1).to_string(), app.theme.secondary_text_style()),
+        table_text_cell(
+            output.provider.clone(),
+            Style::default()
+                .fg(get_provider_shade(&output.provider, 0))
+                .add_modifier(Modifier::BOLD),
+        ),
+        table_text_cell(row.account, app.theme.secondary_text_style()),
+        table_text_cell(row.plan, app.theme.secondary_text_style()),
+        table_text_cell(auth, Style::default().fg(auth_color)),
+        table_text_cell(health, Style::default().fg(health_color)),
+        table_text_cell(
+            row.limit,
+            metric_color
+                .map(|color| Style::default().fg(color))
+                .unwrap_or_else(|| app.theme.secondary_text_style()),
+        ),
+        table_text_cell(row.reset, app.theme.subtle_text_style()),
+    ])
+    .style(account_table_row_style(app, index))
+    .height(1)
 }
 
 fn pad_selected_row(spans: &mut Vec<Span<'static>>, width: usize, selected: bool) {
@@ -1501,71 +1707,19 @@ fn pad_selected_row(spans: &mut Vec<Span<'static>>, width: usize, selected: bool
     }
 }
 
-fn fit_cell(text: &str, width: usize) -> String {
-    let mut value = truncate_string(text, width);
-    while Line::from(value.as_str()).width() > width {
-        value.pop();
-    }
-    value
+fn table_text_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
+    Cell::from(Span::styled(text.into(), style))
 }
 
-#[derive(Clone, Copy)]
-enum CellAlign {
-    Left,
-    Right,
+fn table_right_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
+    Cell::from(Line::from(Span::styled(text.into(), style)).right_aligned())
 }
 
-fn render_table_cell(frame: &mut Frame, text: &str, area: Rect, style: Style, align: CellAlign) {
-    if area.width == 0 {
-        return;
-    }
-    let text = fit_cell(text, area.width as usize);
-    let content = match align {
-        CellAlign::Left => text,
-        CellAlign::Right => {
-            let used = Line::from(text.as_str()).width();
-            let width = area.width as usize;
-            format!("{}{}", " ".repeat(width.saturating_sub(used)), text)
-        }
-    };
-    frame.render_widget(Paragraph::new(Span::styled(content, style)), area);
-}
-
-fn usage_row_marker(index: usize) -> String {
-    (index + 1).to_string()
-}
-
-fn usage_table_row_style(app: &App, index: usize, selected: bool) -> Style {
-    if selected {
-        Style::default().bg(app.theme.selection)
-    } else if index % 2 == 1 {
+fn account_table_row_style(app: &App, index: usize) -> Style {
+    if index % 2 == 1 {
         app.theme.striped_row_style()
     } else {
         Style::default()
-    }
-}
-
-fn usage_table_text_style(app: &App, selected: bool) -> Style {
-    if selected {
-        Style::default().fg(app.theme.foreground)
-    } else {
-        app.theme.secondary_text_style()
-    }
-}
-
-fn usage_table_subtle_style(app: &App, selected: bool) -> Style {
-    if selected {
-        Style::default().fg(app.theme.foreground)
-    } else {
-        app.theme.subtle_text_style()
-    }
-}
-
-fn usage_table_color_style(app: &App, selected: bool, color: Color) -> Style {
-    if selected {
-        Style::default().fg(app.theme.foreground)
-    } else {
-        Style::default().fg(color)
     }
 }
 
@@ -1584,6 +1738,16 @@ fn remove_account_button(account_id: &str) -> ButtonSpec {
         label: "Remove".to_string(),
         kind: ButtonKind::Danger,
         action: ClickAction::CodexRemoveAccount {
+            account_id: account_id.to_string(),
+        },
+    }
+}
+
+fn reset_account_button(account_id: &str) -> ButtonSpec {
+    ButtonSpec {
+        label: "Reset".to_string(),
+        kind: ButtonKind::Warning,
+        action: ClickAction::CodexResetAccount {
             account_id: account_id.to_string(),
         },
     }
@@ -1880,6 +2044,101 @@ fn remaining_label(metric: &UsageMetric) -> String {
         .unwrap_or_else(|| format!("{:.0}% left", metric.remaining_percent))
 }
 
+fn has_available_reset_credit(output: &UsageOutput) -> bool {
+    output.provider == "Codex"
+        && output
+            .reset_credits
+            .as_ref()
+            .is_some_and(|credits| credits.available_count > 0)
+}
+
+fn reset_bank_summary(outputs: &[UsageOutput]) -> String {
+    let available: u32 = outputs
+        .iter()
+        .filter(|output| output.provider == "Codex")
+        .filter_map(|output| output.reset_credits.as_ref())
+        .map(|credits| credits.available_count)
+        .sum();
+    if available == 0 {
+        return "No reset credits".to_string();
+    }
+
+    let nearest_expiry = outputs
+        .iter()
+        .filter_map(|output| output.reset_credits.as_ref())
+        .flat_map(|credits| credits.credits.iter())
+        .filter_map(|credit| credit.expires_at.as_deref())
+        .min()
+        .map(format_expiry_time);
+
+    let count = if available == 1 {
+        "1 available".to_string()
+    } else {
+        format!("{available} available across accounts")
+    };
+    match nearest_expiry {
+        Some(expiry) => format!("{count} · nearest {expiry}"),
+        None => count,
+    }
+}
+
+fn reset_credits_line(output: &UsageOutput) -> Option<String> {
+    let credits = output.reset_credits.as_ref()?;
+    let count = credits.available_count;
+    let mut label = if count == 1 {
+        "1 available".to_string()
+    } else {
+        format!("{count} available")
+    };
+    if let Some(expiry) = credits
+        .credits
+        .iter()
+        .filter_map(|credit| credit.expires_at.as_deref())
+        .min()
+    {
+        label.push_str(" · ");
+        label.push_str(&format_expiry_time(expiry));
+    }
+    Some(label)
+}
+
+fn credits_status_line(output: &UsageOutput) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(credits) = &output.credit_status {
+        if let Some(balance) = credits.balance.as_deref() {
+            parts.push(format!("API credits {balance}"));
+        }
+        if credits.unlimited == Some(true) {
+            parts.push("unlimited".to_string());
+        }
+        if credits.has_credits == Some(false) {
+            parts.push("no API credits".to_string());
+        }
+        if credits.overage_limit_reached == Some(true) {
+            parts.push("API overage reached".to_string());
+        }
+    }
+    if let Some(control) = &output.spend_control {
+        if control.reached == Some(true) {
+            parts.push("spend limit reached".to_string());
+        } else if control.reached == Some(false) {
+            parts.push("spend OK".to_string());
+        }
+        if let Some(limit) = control.individual_limit.as_deref() {
+            parts.push(format!("spend limit {limit}"));
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn format_expiry_time(value: &str) -> String {
+    helpers::format_reset_time(value).replace("resets", "expires")
+}
+
 fn metric_color(app: &App, metric: &UsageMetric) -> Color {
     if metric.remaining_percent < 10.0 {
         Color::Red
@@ -1916,7 +2175,9 @@ fn styled<T: Into<String>>(text: T, style: Style, selected: bool) -> Span<'stati
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::usage::UsageAccount;
+    use crate::commands::usage::{
+        UsageAccount, UsageCreditStatus, UsageResetCredit, UsageResetCredits, UsageSpendControl,
+    };
     use crate::tui::app::{Tab, TuiConfig};
     use crate::tui::data::UsageData;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1935,6 +2196,9 @@ mod tests {
                 remaining_label: Some("90% left".to_string()),
                 resets_at: None,
             }],
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
         }
     }
 
@@ -1946,6 +2210,26 @@ mod tests {
         let mut output = output(provider, account);
         output.metrics[0].remaining_percent = remaining_percent;
         output.metrics[0].remaining_label = Some(format!("{remaining_percent:.0}% left"));
+        output
+    }
+
+    fn output_with_reset_credits(
+        provider: &str,
+        account: Option<UsageAccount>,
+        available_count: u32,
+    ) -> UsageOutput {
+        let mut output = output(provider, account);
+        output.reset_credits = Some(UsageResetCredits {
+            available_count,
+            credits: vec![UsageResetCredit {
+                id: Some("credit_1".to_string()),
+                status: Some("available".to_string()),
+                reset_type: Some("codex_rate_limits".to_string()),
+                expires_at: Some("2026-07-12T01:31:33Z".to_string()),
+                title: Some("One free rate limit reset".to_string()),
+                description: None,
+            }],
+        });
         output
     }
 
@@ -2036,6 +2320,54 @@ mod tests {
 
         app.usage_fetch_attempted = true;
         assert_eq!(status_label(&app), "No data");
+    }
+
+    #[test]
+    fn usage_summary_lines_fit_available_height() {
+        let app = make_app();
+        let outputs = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+
+        let lines = usage_status_summary_lines(&app, &outputs, 80, 4);
+        let body = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+
+        assert_eq!(lines.len(), 4);
+        assert!(body.contains("State"), "{body}");
+        assert!(body.contains("Active"), "{body}");
+        assert!(body.contains("Capacity"), "{body}");
+        assert!(body.contains("Action"), "{body}");
+        assert!(!body.contains("Fallback"), "{body}");
+        assert!(!body.contains("Next Reset"), "{body}");
+    }
+
+    #[test]
+    fn usage_credit_status_uses_user_facing_copy() {
+        let mut output = output("Codex", None);
+        output.credit_status = Some(UsageCreditStatus {
+            balance: Some("0".to_string()),
+            has_credits: Some(false),
+            unlimited: Some(false),
+            overage_limit_reached: Some(true),
+        });
+        output.spend_control = Some(UsageSpendControl {
+            individual_limit: Some("$10".to_string()),
+            reached: Some(false),
+        });
+
+        let label = credits_status_line(&output).expect("missing credit status");
+
+        assert!(label.contains("API credits 0"), "{label}");
+        assert!(label.contains("no API credits"), "{label}");
+        assert!(label.contains("API overage reached"), "{label}");
+        assert!(label.contains("spend OK"), "{label}");
+        assert!(label.contains("spend limit $10"), "{label}");
+        assert!(!label.contains("billing"), "{label}");
     }
 
     #[test]
@@ -2195,7 +2527,7 @@ mod tests {
         let body = render_body(&mut app, 210, 30);
         let saved_row = body
             .lines()
-            .find(|line| line.contains("personal") && line.contains("Session"))
+            .find(|line| line.contains("personal") && line.contains("5h"))
             .expect("missing saved account table row");
         let actions_line = body
             .lines()
@@ -2208,6 +2540,101 @@ mod tests {
             visual_col(actions_line, "Use Account").is_some(),
             "{actions_line}"
         );
+    }
+
+    #[test]
+    fn usage_reset_button_renders_when_credit_available() {
+        let mut app = make_app();
+        app.subscription_usage = vec![output_with_reset_credits(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+            2,
+        )];
+
+        let body = render_body(&mut app, 180, 32);
+
+        assert!(body.contains("Reset Bank"), "{body}");
+        assert!(body.contains("2 available"), "{body}");
+        assert!(body.contains("x Reset"), "{body}");
+        assert!(body.contains(" Reset "), "{body}");
+        assert!(body.contains("Credit Bank"), "{body}");
+        assert!(body.contains("2 credits"), "{body}");
+        assert!(body.contains("expires Jul 12"), "{body}");
+        let state_line = body
+            .lines()
+            .find(|line| line.contains("State"))
+            .expect("missing state line");
+        let credit_heading = body
+            .lines()
+            .find(|line| line.contains("Credit Bank"))
+            .expect("missing credit bank heading");
+        let credit_account = body
+            .lines()
+            .find(|line| line.contains("2 credits"))
+            .expect("missing selected credit account");
+        assert_eq!(
+            visual_col(state_line, "State"),
+            visual_col(credit_heading, "Credit Bank"),
+            "{state_line}\n{credit_heading}"
+        );
+        assert_eq!(
+            visual_col(credit_heading, "Credit Bank"),
+            visual_col(credit_account, "work"),
+            "{credit_heading}\n{credit_account}"
+        );
+        assert!(!body.contains("Active:"), "{body}");
+        assert!(!body.contains("Quota Recovery"), "{body}");
+        assert!(app.click_areas.iter().any(|area| matches!(
+            &area.action,
+            ClickAction::CodexResetAccount { account_id } if account_id == "acct_work"
+        )));
+    }
+
+    #[test]
+    fn selected_account_panel_aligns_detail_sections() {
+        let mut app = make_app();
+        app.subscription_usage = vec![output_with_reset_credits(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+            2,
+        )];
+
+        let body = render_body(&mut app, 180, 32);
+        let status_line = body
+            .lines()
+            .find(|line| line.contains("Status") && line.contains("Ready"))
+            .expect("missing selected account status line");
+        let limits_line = body
+            .lines()
+            .find(|line| line.contains("Limits") && !line.contains("Limits / Reset"))
+            .expect("missing selected account limits heading");
+        let metric_line = body
+            .lines()
+            .find(|line| {
+                line.contains("5h") && line.contains("90% left") && !line.contains("Codex")
+            })
+            .expect("missing selected account metric row");
+        let actions_line = body
+            .lines()
+            .find(|line| line.contains("Actions") && !line.contains("Add Codex"))
+            .expect("missing selected account actions heading");
+        let current_line = body
+            .lines()
+            .find(|line| line.contains("Current account"))
+            .expect("missing selected account action row");
+        let selected_col = visual_col(status_line, "Status");
+        assert_eq!(selected_col, visual_col(limits_line, "Limits"));
+        assert_eq!(selected_col, visual_col(metric_line, "5h"));
+        assert_eq!(selected_col, visual_col(actions_line, "Actions"));
+        assert_eq!(selected_col, visual_col(current_line, "Current account"));
     }
 
     #[test]
@@ -2243,9 +2670,7 @@ mod tests {
             .expect("missing account table header");
         let active_row = body
             .lines()
-            .find(|line| {
-                line.contains("Codex") && line.contains("work") && line.contains("Session")
-            })
+            .find(|line| line.contains("Codex") && line.contains("work") && line.contains("5h"))
             .expect("missing active account table row");
 
         assert_eq!(
@@ -2275,7 +2700,7 @@ mod tests {
         );
         assert_eq!(
             visual_col(header, "Limit"),
-            visual_col(active_row, "Session"),
+            visual_col(active_row, "5h"),
             "{header}\n{active_row}"
         );
         assert_eq!(
@@ -2286,6 +2711,100 @@ mod tests {
         assert!(!header.contains("Use"), "{header}");
         assert!(!header.contains("Remove"), "{header}");
         assert!(!active_row.contains("Remove"), "{active_row}");
+    }
+
+    #[test]
+    fn usage_account_table_allocates_space_to_long_limit_summaries() {
+        let mut app = make_app();
+        let mut output = output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        );
+        output.metrics = vec![
+            UsageMetric {
+                label: "5h".to_string(),
+                used_percent: 8.0,
+                remaining_percent: 92.0,
+                remaining_label: Some("92% left".to_string()),
+                resets_at: Some("resets in 4h 24m".to_string()),
+            },
+            UsageMetric {
+                label: "Weekly".to_string(),
+                used_percent: 49.0,
+                remaining_percent: 51.0,
+                remaining_label: Some("51% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark 5h".to_string(),
+                used_percent: 0.0,
+                remaining_percent: 100.0,
+                remaining_label: Some("100% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark weekly".to_string(),
+                used_percent: 12.0,
+                remaining_percent: 88.0,
+                remaining_label: Some("88% left".to_string()),
+                resets_at: None,
+            },
+        ];
+        app.subscription_usage = vec![output];
+
+        let body = render_body(&mut app, 180, 24);
+        let row = body
+            .lines()
+            .find(|line| line.contains("Codex") && line.contains("5h 92%"))
+            .expect("missing account table row");
+
+        assert!(row.contains("Weekly 51%"), "{row}");
+        assert!(row.contains("Spark 5h 100%"), "{row}");
+        assert!(row.contains("Spark weekly 88%"), "{row}");
+        assert!(row.contains("resets in 4h 24m"), "{row}");
+    }
+
+    #[test]
+    fn usage_account_table_reset_follows_display_metric() {
+        let mut app = make_app();
+        let mut output = output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        );
+        output.metrics = vec![
+            UsageMetric {
+                label: "Weekly".to_string(),
+                used_percent: 8.0,
+                remaining_percent: 92.0,
+                remaining_label: Some("92% left".to_string()),
+                resets_at: Some("resets next week".to_string()),
+            },
+            UsageMetric {
+                label: "Session".to_string(),
+                used_percent: 96.0,
+                remaining_percent: 4.0,
+                remaining_label: Some("4% left".to_string()),
+                resets_at: Some("resets soon".to_string()),
+            },
+        ];
+        app.subscription_usage = vec![output];
+
+        let body = render_body(&mut app, 180, 24);
+        let row = body
+            .lines()
+            .find(|line| line.contains("Codex") && line.contains("Weekly 92%"))
+            .expect("missing account table row");
+
+        assert!(row.contains("resets soon"), "{row}");
+        assert!(!row.contains("resets next week"), "{row}");
     }
 
     #[test]
@@ -2452,6 +2971,9 @@ mod tests {
                 remaining_label: Some("95% left".to_string()),
                 resets_at: None,
             }],
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
         }];
 
         let body = render_body(&mut app, 170, 28);

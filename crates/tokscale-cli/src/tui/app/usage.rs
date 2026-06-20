@@ -90,17 +90,28 @@ impl App {
         self.codex_login_outcome = None;
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
         self.codex_login_rx = Some(rx);
+        self.codex_login_cancel_tx = Some(cancel_tx);
         self.set_status("Starting Codex login...");
-        std::thread::spawn(move || run_codex_login_worker(tx));
+        std::thread::spawn(move || run_codex_login_worker(tx, cancel_rx));
     }
 
     pub fn dismiss_codex_login(&mut self) {
-        if self.codex_login_rx.is_none() {
+        if self.codex_login_rx.is_some() {
+            if let Some(cancel_tx) = self.codex_login_cancel_tx.take() {
+                let _ = cancel_tx.send(());
+            }
+            self.codex_login_rx = None;
             self.codex_login_lines.clear();
             self.codex_login_outcome = None;
-            self.set_status("Codex login panel dismissed");
+            self.set_status("Codex login cancelled");
+            return;
         }
+
+        self.codex_login_lines.clear();
+        self.codex_login_outcome = None;
+        self.set_status("Codex login panel dismissed");
     }
 
     pub fn confirm_codex_account_switch(&mut self, account_id: &str) {
@@ -135,6 +146,74 @@ impl App {
         self.set_status("Confirm Codex account removal");
     }
 
+    pub fn confirm_codex_rate_limit_reset(&mut self, account_id: &str) {
+        let Some(output) = self.subscription_usage.iter().find(|usage| {
+            usage.provider == "Codex"
+                && usage
+                    .account
+                    .as_ref()
+                    .is_some_and(|account| account.id == account_id)
+        }) else {
+            self.set_status("Codex account not found");
+            return;
+        };
+
+        let available = output
+            .reset_credits
+            .as_ref()
+            .map(|credits| credits.available_count)
+            .unwrap_or(0);
+        if available == 0 {
+            self.set_status("No Codex reset credits available");
+            return;
+        }
+
+        let mut account_label = self.codex_account_label(account_id);
+        account_label.push_str(&format!(" · {available} reset"));
+        if available != 1 {
+            account_label.push('s');
+        }
+        if let Some(expiry) = output.reset_credits.as_ref().and_then(|credits| {
+            credits
+                .credits
+                .iter()
+                .find_map(|credit| credit.expires_at.as_ref())
+        }) {
+            account_label.push_str(&format!(
+                " · {}",
+                crate::commands::usage::helpers::format_reset_time(expiry)
+                    .replace("resets", "expires")
+            ));
+        }
+
+        let dialog = ConfirmDialog::codex_reset(
+            account_id.to_string(),
+            account_label,
+            self.confirmed_codex_reset_account_id.clone(),
+        );
+        self.dialog_stack.show(Box::new(dialog));
+        self.set_status("Confirm Codex reset credit use");
+    }
+
+    pub fn confirm_selected_codex_rate_limit_reset(&mut self) {
+        let Some(output) = self.subscription_usage.get(self.selected_index) else {
+            self.set_status("No usage account selected");
+            return;
+        };
+
+        if output.provider != "Codex" {
+            self.set_status("Codex reset only supports Codex accounts");
+            return;
+        }
+
+        let Some(account_id) = output.account.as_ref().map(|account| account.id.clone()) else {
+            self.set_status("Select a saved Codex account to reset");
+            return;
+        };
+
+        self.confirm_codex_rate_limit_reset(&account_id);
+    }
+
     pub(crate) fn consume_confirmed_codex_account_action(&mut self) {
         let account_id = self.confirmed_codex_use_account_id.borrow_mut().take();
         if let Some(account_id) = account_id {
@@ -145,6 +224,12 @@ impl App {
         let account_id = self.confirmed_codex_remove_account_id.borrow_mut().take();
         if let Some(account_id) = account_id {
             self.remove_codex_account(&account_id);
+            return;
+        }
+
+        let account_id = self.confirmed_codex_reset_account_id.borrow_mut().take();
+        if let Some(account_id) = account_id {
+            self.reset_codex_rate_limits(&account_id);
         }
     }
 
@@ -222,6 +307,20 @@ impl App {
         }
     }
 
+    pub fn reset_codex_rate_limits(&mut self, account_id: &str) {
+        if self.codex_reset_job.is_running() {
+            self.set_status("Codex reset already in progress");
+            return;
+        }
+
+        let account_id = account_id.to_string();
+        self.set_status("Resetting Codex limits...");
+        self.codex_reset_job.start(move || {
+            crate::commands::usage::codex::consume_rate_limit_reset_credit(&account_id)
+                .map_err(|error| error.to_string())
+        });
+    }
+
     pub(crate) fn persist_subscription_usage_cache(&self) {
         if self.subscription_usage.is_empty() {
             crate::commands::usage::clear_cache();
@@ -262,4 +361,21 @@ fn short_account_id(account_id: &str) -> String {
         .rev()
         .collect();
     format!("Account {head}...{tail}")
+}
+
+pub(crate) fn codex_reset_outcome_label(
+    result: &crate::commands::usage::codex::RateLimitResetConsumeResult,
+) -> String {
+    match result.code.as_str() {
+        "reset" => match result.windows_reset {
+            Some(1) => "reset 1 window".to_string(),
+            Some(count) => format!("reset {count} windows"),
+            None => "reset complete".to_string(),
+        },
+        "already_redeemed" => "credit already redeemed".to_string(),
+        "nothing_to_reset" => "nothing to reset".to_string(),
+        "no_credit" => "no credit available".to_string(),
+        "" => "unknown response".to_string(),
+        other => other.to_string(),
+    }
 }

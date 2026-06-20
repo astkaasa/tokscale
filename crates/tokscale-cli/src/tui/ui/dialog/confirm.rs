@@ -13,6 +13,7 @@ use super::{DialogContent, DialogResult};
 #[derive(Clone, Copy)]
 enum ConfirmTone {
     Accent,
+    Warning,
     Danger,
 }
 
@@ -70,6 +71,24 @@ impl ConfirmDialog {
         }
     }
 
+    pub fn codex_reset(
+        account_id: String,
+        account_label: String,
+        confirmed_value: Rc<RefCell<Option<String>>>,
+    ) -> Self {
+        Self {
+            value: account_id,
+            title: " Reset Codex Limits ",
+            message: "This will consume one available Codex reset credit.",
+            target_label: account_label,
+            effect: "Codex rate-limit windows reset for this account",
+            confirm_label: "Reset",
+            confirm_verb: "reset",
+            tone: ConfirmTone::Warning,
+            confirmed_value,
+        }
+    }
+
     fn confirm(&self) {
         *self.confirmed_value.borrow_mut() = Some(self.value.clone());
     }
@@ -77,6 +96,7 @@ impl ConfirmDialog {
     fn tone_color(&self, theme: &Theme) -> Color {
         match self.tone {
             ConfirmTone::Accent => theme.accent,
+            ConfirmTone::Warning => Color::Yellow,
             ConfirmTone::Danger => Color::Red,
         }
     }
@@ -84,6 +104,7 @@ impl ConfirmDialog {
     fn confirm_button_style(&self, theme: &Theme) -> Style {
         match self.tone {
             ConfirmTone::Accent => Style::default().fg(theme.background).bg(theme.accent),
+            ConfirmTone::Warning => Style::default().fg(Color::Black).bg(Color::Yellow),
             ConfirmTone::Danger => Style::default().fg(Color::Black).bg(Color::Red),
         }
         .add_modifier(Modifier::BOLD)
