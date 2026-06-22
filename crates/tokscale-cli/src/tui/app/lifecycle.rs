@@ -159,7 +159,7 @@ impl App {
             #[cfg(test)]
             usage_fetcher: test_usage_fetcher,
             codex_login_rx: None,
-            codex_login_cancel_tx: None,
+            codex_login_child: None,
             data_version: 0,
             minutely_sort_cache: RefCell::new(None),
         };
@@ -344,7 +344,7 @@ impl App {
 
         if finished {
             self.codex_login_rx = None;
-            self.codex_login_cancel_tx = None;
+            self.codex_login_child = None;
             if matches!(
                 self.codex_login_outcome,
                 Some(CodexLoginOutcome::Imported(_))

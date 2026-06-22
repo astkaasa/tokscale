@@ -6,7 +6,8 @@ use ratatui::widgets::{
 
 use super::hourly_profile;
 use super::widgets::{
-    format_cache_hit_rate, format_cost, format_cost_per_million, format_tokens, scrollbar_state,
+    format_cache_hit_rate_with_unit, format_cost, format_cost_per_million, format_tokens,
+    scrollbar_state,
 };
 use crate::tui::app::{App, HourlyViewMode, SortDirection, SortField};
 
@@ -78,13 +79,32 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     } else if has_turn_data {
         vec![
-            "Hour", "Source", "Turn", "Msgs", "Input", "Output", "Cache R", "Cache W", "Cache×",
-            "Total", "Cost", "Cost/1M",
+            "Hour",
+            "Source",
+            "Turn",
+            "Msgs",
+            "Input",
+            "Output",
+            "Cache R",
+            "Cache W",
+            "Cache hit",
+            "Total",
+            "Cost",
+            "Cost/1M",
         ]
     } else {
         vec![
-            "Hour", "Source", "Msgs", "Input", "Output", "Cache R", "Cache W", "Cache×", "Total",
-            "Cost", "Cost/1M",
+            "Hour",
+            "Source",
+            "Msgs",
+            "Input",
+            "Output",
+            "Cache R",
+            "Cache W",
+            "Cache hit",
+            "Total",
+            "Cost",
+            "Cost/1M",
         ]
     };
 
@@ -242,7 +262,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(format_tokens(hour.tokens.output)).style(metric_output_style),
                 Cell::from(format_tokens(hour.tokens.cache_read)).style(metric_cache_read_style),
                 Cell::from(format_tokens(hour.tokens.cache_write)).style(metric_cache_write_style),
-                Cell::from(format_cache_hit_rate(
+                Cell::from(format_cache_hit_rate_with_unit(
                     hour.tokens.cache_read,
                     hour.tokens.input,
                     hour.tokens.cache_write,
@@ -306,7 +326,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -320,7 +340,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),

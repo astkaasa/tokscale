@@ -7,7 +7,8 @@ use crate::tui::app::{App, ClickAction};
 use crate::tui::codex_login::CodexLoginOutcome;
 use crate::tui::privacy::looks_like_email;
 use crate::tui::ui::widgets::{
-    get_provider_shade, light_ratio_bar_spans, truncate_ellipsis as truncate_string,
+    get_provider_shade, light_ratio_bar_spans, table_right_cell, table_text_cell,
+    truncate_ellipsis as truncate_string,
 };
 
 struct ButtonSpec {
@@ -1416,21 +1417,36 @@ fn render_narrow_accounts_table(
     area: Rect,
     outputs: &[UsageOutput],
 ) {
-    let mut lines = vec![narrow_table_header(app, area.width)];
     let row_height = 2usize;
     let max_items = (area.height.saturating_sub(1) as usize / row_height).max(1);
     app.set_max_visible_items(max_items);
     let start = app
         .scroll_offset
         .min(outputs.len().saturating_sub(max_items));
-
-    for (visible_row, (index, output)) in outputs
+    let visible_rows = outputs
         .iter()
         .enumerate()
         .skip(start)
         .take(max_items)
-        .enumerate()
-    {
+        .collect::<Vec<_>>();
+
+    let rows = visible_rows
+        .iter()
+        .map(|(index, output)| narrow_table_row(app, output, *index, area))
+        .collect::<Vec<_>>();
+    let selected_visible = app
+        .selected_index
+        .checked_sub(start)
+        .filter(|index| *index < visible_rows.len());
+    let mut table_state = TableState::default().with_selected(selected_visible);
+    let table = Table::new(rows, [Constraint::Percentage(100)])
+        .header(Row::new([Cell::from(narrow_table_header(app, area.width))]))
+        .highlight_spacing(HighlightSpacing::Never)
+        .row_highlight_style(Style::default().bg(app.theme.selection))
+        .flex(Flex::Start);
+    frame.render_stateful_widget(table, area, &mut table_state);
+
+    for (visible_row, (index, _)) in visible_rows.into_iter().enumerate() {
         let y = area
             .y
             .saturating_add(1)
@@ -1444,10 +1460,7 @@ fn render_narrow_accounts_table(
             ),
             ClickAction::UsageSelect { index },
         );
-        lines.extend(narrow_table_row(app, output, index, area, y));
     }
-
-    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn account_table_header(app: &App) -> Row<'static> {
@@ -1497,13 +1510,7 @@ fn account_table_widths(width: u16) -> [Constraint; 8] {
     }
 }
 
-fn narrow_table_row(
-    app: &mut App,
-    output: &UsageOutput,
-    index: usize,
-    area: Rect,
-    _y: u16,
-) -> Vec<Line<'static>> {
+fn narrow_table_row(app: &mut App, output: &UsageOutput, index: usize, area: Rect) -> Row<'static> {
     let selected = app.selected_index == index;
     let width = area.width as usize;
     let row = usage_row_view(app, output);
@@ -1582,7 +1589,12 @@ fn narrow_table_row(
     }
     pad_selected_row(&mut second, area.width as usize, selected);
 
-    vec![Line::from(first), Line::from(second)]
+    Row::new([Cell::from(Text::from(vec![
+        Line::from(first),
+        Line::from(second),
+    ]))])
+    .style(account_table_row_style(app, index))
+    .height(2)
 }
 
 fn usage_row_view<'a>(app: &App, output: &'a UsageOutput) -> UsageRowView<'a> {
@@ -1705,14 +1717,6 @@ fn pad_selected_row(spans: &mut Vec<Span<'static>>, width: usize, selected: bool
     if used < width {
         spans.push(styled(" ".repeat(width - used), Style::default(), selected));
     }
-}
-
-fn table_text_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
-    Cell::from(Span::styled(text.into(), style))
-}
-
-fn table_right_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
-    Cell::from(Line::from(Span::styled(text.into(), style)).right_aligned())
 }
 
 fn account_table_row_style(app: &App, index: usize) -> Style {

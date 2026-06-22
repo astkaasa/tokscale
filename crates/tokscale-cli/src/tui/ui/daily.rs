@@ -10,8 +10,9 @@ use super::mix::{
     token_profile_lines, MixRow,
 };
 use super::widgets::{
-    format_cache_hit_rate, format_cost, format_cost_per_million, format_tokens,
+    format_cache_hit_rate_with_unit, format_cost, format_cost_per_million, format_tokens,
     get_client_display_name, get_provider_display_name, get_provider_shade, scrollbar_state,
+    table_area_with_scrollbar_gutter, table_right_cell, table_text_cell,
     truncate_ascii as truncate,
 };
 use crate::tui::app::{
@@ -22,6 +23,7 @@ use crate::tui::data::{DailyUsage, HourlyModelInfo, HourlyUsage, TokenBreakdown}
 const TIMELINE_INSPECTOR_MIN_WIDTH: u16 = 36;
 const TIMELINE_INSPECTOR_MAX_WIDTH: u16 = 52;
 const TIMELINE_WIDE_MIN_WIDTH: u16 = 104;
+const TIMELINE_CACHE_HIT_WIDTH: usize = 9;
 
 #[derive(Clone)]
 struct TimelineMixRow {
@@ -40,13 +42,21 @@ struct TimelineRowData {
     tokens: TokenBreakdown,
     message_count: u32,
     turn_count: u32,
-    source_count: usize,
-    source_label: &'static str,
+    source_labels: Vec<String>,
     is_current: bool,
     top_provider: String,
     top_model: String,
     provider_rows: Vec<TimelineMixRow>,
     model_rows: Vec<TimelineMixRow>,
+}
+
+#[derive(Clone, Copy)]
+struct TimelineTableLayout {
+    show_provider: bool,
+    show_messages: bool,
+    rank_width: usize,
+    time_width: usize,
+    model_width: usize,
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -119,7 +129,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
     // shrink the date column, freeing 5 columns. `full_layout_width` is the
     // ideal full-mode total (Length(12) date + spacing); keep it in sync with
     // the `widths` block below.
-    let full_layout_width: u16 = if has_turn_data { 112 } else { 105 };
+    let full_layout_width: u16 = if has_turn_data { 113 } else { 106 };
     let compact_full_date = !is_narrow && !is_very_narrow && inner.width < full_layout_width;
     let date_col_width: u16 = if compact_full_date { 7 } else { 12 };
     let date_fmt: &str = if is_very_narrow {
@@ -140,12 +150,29 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     } else if has_turn_data {
         vec![
-            "Date", "Turn", "Msgs", "Input", "Output", "Cache R", "Cache W", "Cache×", "Total",
-            "Cost", "Cost/1M",
+            "Date",
+            "Turn",
+            "Msgs",
+            "Input",
+            "Output",
+            "Cache R",
+            "Cache W",
+            "Cache hit",
+            "Total",
+            "Cost",
+            "Cost/1M",
         ]
     } else {
         vec![
-            "Date", "Msgs", "Input", "Output", "Cache R", "Cache W", "Cache×", "Total", "Cost",
+            "Date",
+            "Msgs",
+            "Input",
+            "Output",
+            "Cache R",
+            "Cache W",
+            "Cache hit",
+            "Total",
+            "Cost",
             "Cost/1M",
         ]
     };
@@ -269,7 +296,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
                     Cell::from(format_tokens(day.tokens.cache_read)).style(metric_cache_read_style),
                     Cell::from(format_tokens(day.tokens.cache_write))
                         .style(metric_cache_write_style),
-                    Cell::from(format_cache_hit_rate(
+                    Cell::from(format_cache_hit_rate_with_unit(
                         day.tokens.cache_read,
                         day.tokens.input,
                         day.tokens.cache_write,
@@ -338,7 +365,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -351,7 +378,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -430,108 +457,33 @@ fn render_timeline_list(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    render_timeline_header(frame, app, inner);
-
     let rows_len = rows_data.len();
     let start = app.scroll_offset.min(rows_len.saturating_sub(1));
     let end = (start + page_capacity).min(rows_len);
+    let table_area = table_area_with_scrollbar_gutter(inner, rows_len, page_capacity);
+    let layout = timeline_table_layout(app, table_area.width);
+    let table_rows = rows_data[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, row)| timeline_table_row(app, row, start + i, layout))
+        .collect::<Vec<_>>();
+    let table = Table::new(table_rows, timeline_table_widths(layout))
+        .header(timeline_table_header(app, layout))
+        .row_highlight_style(Style::default().bg(app.theme.selection));
+    frame.render_widget(table, table_area);
 
-    let mut y = inner.y.saturating_add(1);
-    for (i, row) in rows_data[start..end].iter().enumerate() {
-        if y >= inner.bottom() {
-            break;
-        }
-
-        let idx = i + start;
-        let is_selected = idx == app.selected_index;
-        let is_current = row.is_current;
-        let is_striped = idx % 2 == 1;
-        let row_area = Rect::new(inner.x, y, inner.width, 1);
+    for (offset, row) in rows_data[start..end].iter().enumerate() {
         if let Some(period) = row.period.clone() {
-            app.add_click_area(row_area, ClickAction::OpenPeriodDetail(period));
+            app.add_click_area(
+                Rect::new(
+                    inner.x,
+                    inner.y.saturating_add(1 + offset as u16),
+                    inner.width,
+                    1,
+                ),
+                ClickAction::OpenPeriodDetail(period),
+            );
         }
-        let row_style = if is_selected {
-            Style::default()
-                .bg(app.theme.selection)
-                .fg(app.theme.foreground)
-        } else if is_current {
-            app.theme.current_row_style()
-        } else if is_striped {
-            app.theme.striped_row_style()
-        } else {
-            Style::default()
-        };
-        frame.render_widget(Paragraph::new("").style(row_style), row_area);
-
-        let time_style = if is_selected {
-            Style::default()
-                .fg(app.theme.foreground)
-                .add_modifier(Modifier::BOLD)
-        } else if is_current {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            app.theme.secondary_text_style()
-        };
-
-        let mut spans = Vec::new();
-        let marker = if is_selected { "▶" } else { " " };
-        spans.push(Span::styled(
-            pad_right(&format!("{marker}{}", idx + 1), 4),
-            Style::default().fg(if is_selected {
-                app.theme.foreground
-            } else {
-                app.theme.muted
-            }),
-        ));
-        spans.push(Span::styled(
-            pad_left(&row.label, timeline_time_width(app)),
-            time_style,
-        ));
-        spans.push(Span::styled(
-            pad_right(&format_cost(row.cost), 10),
-            Style::default()
-                .fg(if is_selected {
-                    app.theme.foreground
-                } else {
-                    Color::Green
-                })
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            pad_right(&format_tokens(row.tokens.total()), 10),
-            app.theme.secondary_text_style(),
-        ));
-        if inner.width >= 76 {
-            spans.push(Span::styled(
-                pad_left(&row.top_provider, 14),
-                app.theme.secondary_text_style(),
-            ));
-        }
-        let reserved = if inner.width >= 94 { 21 } else { 13 };
-        let fixed = Line::from(spans.clone()).width();
-        let model_width = (inner.width as usize)
-            .saturating_sub(fixed)
-            .saturating_sub(reserved)
-            .max(8);
-        spans.push(Span::styled(
-            pad_left(&row.top_model, model_width),
-            app.theme.secondary_text_style(),
-        ));
-        if inner.width >= 94 {
-            spans.push(Span::styled(
-                pad_right(&row.message_count.to_string(), 7),
-                app.theme.secondary_text_style(),
-            ));
-        }
-        spans.push(Span::styled(
-            pad_right(&row.source_count.to_string(), 8),
-            app.theme.subtle_text_style(),
-        ));
-
-        frame.render_widget(Paragraph::new(Line::from(spans)).style(row_style), row_area);
-        y = y.saturating_add(1);
     }
 
     if rows_len > page_capacity {
@@ -545,64 +497,169 @@ fn render_timeline_list(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_timeline_header(frame: &mut Frame, app: &App, inner: Rect) {
-    if inner.height == 0 {
-        return;
-    }
-
+fn timeline_table_header(app: &App, layout: TimelineTableLayout) -> Row<'static> {
     let header_style = Style::default()
         .fg(app.theme.muted)
         .add_modifier(Modifier::BOLD);
-    let mut spans = vec![
-        Span::styled(pad_right("#", 4), header_style),
-        Span::styled(
-            pad_left(
-                &format!(
-                    "{}{}",
-                    app.timeline_granularity.title_label(),
-                    sort_indicator(app, SortField::Date)
-                ),
-                timeline_time_width(app),
+    let mut cells = vec![
+        table_right_cell("#", header_style),
+        table_text_cell(
+            format!(
+                "{}{}",
+                app.timeline_granularity.title_label(),
+                sort_indicator(app, SortField::Date)
             ),
             header_style,
         ),
-        Span::styled(
-            pad_right(&format!("Cost{}", sort_indicator(app, SortField::Cost)), 10),
+        table_right_cell(
+            format!("Cost{}", sort_indicator(app, SortField::Cost)),
             header_style,
         ),
-        Span::styled(
-            pad_right(
-                &format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
-                10,
-            ),
+        table_right_cell(
+            format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
             header_style,
         ),
     ];
-    if inner.width >= 76 {
-        spans.push(Span::styled(pad_left("Top Provider", 14), header_style));
+    if layout.show_provider {
+        cells.push(table_text_cell("Top Provider", header_style));
     }
-    let fixed = Line::from(spans.clone()).width();
-    let reserved = if inner.width >= 94 { 21 } else { 13 };
-    let model_width = (inner.width as usize)
-        .saturating_sub(fixed)
-        .saturating_sub(reserved)
-        .max(8);
-    spans.push(Span::styled(
-        pad_left("Top Model", model_width),
-        header_style,
-    ));
-    if inner.width >= 94 {
-        spans.push(Span::styled(pad_right("Msgs", 7), header_style));
+    cells.push(table_text_cell("Top Model", header_style));
+    if layout.show_messages {
+        cells.push(table_right_cell("Msgs", header_style));
     }
-    spans.push(Span::styled(
-        pad_right(timeline_source_label(app), 8),
-        header_style,
-    ));
+    cells.push(table_right_cell("Cache hit", header_style));
+    Row::new(cells).height(1)
+}
 
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+fn timeline_table_row(
+    app: &App,
+    row: &TimelineRowData,
+    index: usize,
+    layout: TimelineTableLayout,
+) -> Row<'static> {
+    let selected = index == app.selected_index;
+    let row_style = if selected {
+        Style::default()
+            .bg(app.theme.selection)
+            .fg(app.theme.foreground)
+    } else if row.is_current {
+        app.theme.current_row_style()
+    } else if index % 2 == 1 {
+        app.theme.striped_row_style()
+    } else {
+        Style::default()
+    };
+    let time_style = if selected {
+        Style::default()
+            .fg(app.theme.foreground)
+            .add_modifier(Modifier::BOLD)
+    } else if row.is_current {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        app.theme.secondary_text_style()
+    };
+    let marker = if selected { "▶" } else { " " };
+    let mut cells = vec![
+        table_right_cell(
+            format!("{marker}{}", index + 1),
+            Style::default().fg(if selected {
+                app.theme.foreground
+            } else {
+                app.theme.muted
+            }),
+        ),
+        table_text_cell(row.label.clone(), time_style),
+        table_right_cell(
+            format_cost(row.cost),
+            Style::default()
+                .fg(if selected {
+                    app.theme.foreground
+                } else {
+                    Color::Green
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        table_right_cell(
+            format_tokens(row.tokens.total()),
+            app.theme.secondary_text_style(),
+        ),
+    ];
+    if layout.show_provider {
+        cells.push(table_text_cell(
+            row.top_provider.clone(),
+            app.theme.secondary_text_style(),
+        ));
+    }
+    cells.push(table_text_cell(
+        row.top_model.clone(),
+        app.theme.secondary_text_style(),
+    ));
+    if layout.show_messages {
+        cells.push(table_right_cell(
+            row.message_count.to_string(),
+            app.theme.secondary_text_style(),
+        ));
+    }
+    cells.push(table_right_cell(
+        format_cache_hit_rate_with_unit(
+            row.tokens.cache_read,
+            row.tokens.input,
+            row.tokens.cache_write,
+        ),
+        Style::default().fg(Color::Cyan),
+    ));
+    Row::new(cells).style(row_style).height(1)
+}
+
+fn timeline_table_layout(app: &App, width: u16) -> TimelineTableLayout {
+    let show_provider = width >= 76;
+    let show_messages = width >= 94;
+    let rank_width = 4usize;
+    let time_width = timeline_time_width(app);
+    let cache_width = TIMELINE_CACHE_HIT_WIDTH;
+    let mut fixed_without_model = rank_width + time_width + 10 + 10 + cache_width;
+    let mut columns = 6usize;
+    if show_provider {
+        fixed_without_model += 14;
+        columns += 1;
+    }
+    if show_messages {
+        fixed_without_model += 7;
+        columns += 1;
+    }
+
+    let spacing = columns.saturating_sub(1);
+    let model_width = (width as usize)
+        .saturating_sub(fixed_without_model + spacing)
+        .max(8);
+
+    TimelineTableLayout {
+        show_provider,
+        show_messages,
+        rank_width,
+        time_width,
+        model_width,
+    }
+}
+
+fn timeline_table_widths(layout: TimelineTableLayout) -> Vec<Constraint> {
+    let mut widths = vec![
+        Constraint::Length(layout.rank_width as u16),
+        Constraint::Length(layout.time_width as u16),
+        Constraint::Length(10),
+        Constraint::Length(10),
+    ];
+    if layout.show_provider {
+        widths.push(Constraint::Length(14));
+    }
+    widths.push(Constraint::Length(layout.model_width as u16));
+    if layout.show_messages {
+        widths.push(Constraint::Length(7));
+    }
+    widths.push(Constraint::Length(TIMELINE_CACHE_HIT_WIDTH as u16));
+    widths
 }
 
 fn timeline_title_status(app: &mut App, area: Rect) -> Line<'static> {
@@ -694,11 +751,7 @@ fn render_timeline_inspector(frame: &mut Frame, app: &App, area: Rect) {
     if row.turn_count > 0 {
         lines.push(kv_line("Turns", &row.turn_count.to_string(), app));
     }
-    lines.push(kv_line(
-        row.source_label,
-        &row.source_count.to_string(),
-        app,
-    ));
+    append_timeline_sources(&mut lines, timeline_source_column_label(app), row, app);
 
     let provider_rows = row
         .provider_rows
@@ -868,6 +921,31 @@ fn append_ranking_section(
     lines.extend(body);
 }
 
+fn append_timeline_sources(
+    lines: &mut Vec<Line<'static>>,
+    title: &'static str,
+    row: &TimelineRowData,
+    app: &App,
+) {
+    if row.source_labels.is_empty() {
+        lines.push(kv_line(title, "—", app));
+        return;
+    }
+
+    if row.source_labels.len() == 1 {
+        lines.push(kv_line(title, &row.source_labels[0], app));
+        return;
+    }
+
+    lines.push(section_line(title, app));
+    for source in &row.source_labels {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(source.clone(), app.theme.secondary_text_style()),
+        ]));
+    }
+}
+
 fn section_body_slots(lines: &[Line<'static>], area: Rect) -> Option<usize> {
     let remaining = (area.height as usize).saturating_sub(lines.len());
     if remaining < 3 {
@@ -925,8 +1003,7 @@ fn timeline_day_row(day: &DailyUsage) -> TimelineRowData {
         tokens: day.tokens.clone(),
         message_count: day.message_count,
         turn_count: day.turn_count,
-        source_count: day.source_breakdown.len(),
-        source_label: "Sources",
+        source_labels: timeline_day_sources(day),
         is_current: day.date == Local::now().date_naive(),
         top_provider: provider_rows
             .first()
@@ -953,8 +1030,7 @@ fn timeline_hour_row(hour: &HourlyUsage) -> TimelineRowData {
         tokens: hour.tokens.clone(),
         message_count: hour.message_count,
         turn_count: hour.turn_count,
-        source_count: hour.clients.len(),
-        source_label: "Clients",
+        source_labels: timeline_hour_sources(hour),
         is_current: hour.datetime == current_hour,
         top_provider: provider_rows
             .first()
@@ -990,10 +1066,41 @@ fn timeline_time_width(app: &App) -> usize {
     }
 }
 
-fn timeline_source_label(app: &App) -> &'static str {
+fn timeline_source_column_label(app: &App) -> &'static str {
     match app.timeline_granularity {
         TimelineGranularity::Day => "Sources",
         TimelineGranularity::Hour => "Clients",
+    }
+}
+
+fn timeline_day_sources(day: &DailyUsage) -> Vec<String> {
+    let mut sources = day.source_breakdown.iter().collect::<Vec<_>>();
+    sources.sort_by(|(source_a, info_a), (source_b, info_b)| {
+        info_b
+            .cost
+            .total_cmp(&info_a.cost)
+            .then_with(|| info_b.tokens.total().cmp(&info_a.tokens.total()))
+            .then_with(|| source_a.cmp(source_b))
+    });
+
+    sources
+        .into_iter()
+        .map(|(source, _)| timeline_source_display_name(source))
+        .collect()
+}
+
+fn timeline_hour_sources(hour: &HourlyUsage) -> Vec<String> {
+    hour.clients
+        .iter()
+        .map(|source| timeline_source_display_name(source))
+        .collect()
+}
+
+fn timeline_source_display_name(source: &str) -> String {
+    if source.trim().is_empty() {
+        "Unknown".to_string()
+    } else {
+        get_client_display_name(source)
     }
 }
 
@@ -1128,16 +1235,6 @@ fn kv_line(label: &str, value: &str, app: &App) -> Line<'static> {
     ])
 }
 
-fn pad_left(text: &str, width: usize) -> String {
-    let text = truncate(text, width);
-    format!("{text:<width$} ")
-}
-
-fn pad_right(text: &str, width: usize) -> String {
-    let text = truncate(text, width);
-    format!("{text:>width$} ")
-}
-
 fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = app
         .daily_detail_date()
@@ -1192,8 +1289,18 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
         vec!["Model", "Source", "Msgs", "Tokens", "Cost"]
     } else {
         vec![
-            "#", "Model", "Provider", "Source", "Msgs", "Input", "Output", "Cache R", "Cache W",
-            "Cache×", "Total", "Cost",
+            "#",
+            "Model",
+            "Provider",
+            "Source",
+            "Msgs",
+            "Input",
+            "Output",
+            "Cache R",
+            "Cache W",
+            "Cache hit",
+            "Total",
+            "Cost",
         ]
     };
 
@@ -1288,7 +1395,7 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
                     Cell::from(format_tokens(row.tokens.cache_read)).style(metric_cache_read_style),
                     Cell::from(format_tokens(row.tokens.cache_write))
                         .style(metric_cache_write_style),
-                    Cell::from(format_cache_hit_rate(
+                    Cell::from(format_cache_hit_rate_with_unit(
                         row.tokens.cache_read,
                         row.tokens.input,
                         row.tokens.cache_write,
@@ -1332,7 +1439,7 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(10),
         ]
@@ -1493,6 +1600,17 @@ mod tests {
             .join("\n")
     }
 
+    fn visual_col(line: &str, needle: &str) -> usize {
+        let byte_index = line
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing `{needle}` in line `{line}`"));
+        line[..byte_index].chars().count()
+    }
+
+    fn visual_end_col(line: &str, needle: &str) -> usize {
+        visual_col(line, needle) + needle.chars().count()
+    }
+
     #[test]
     fn wide_terminal_keeps_year() {
         let mut app = make_app(130);
@@ -1526,6 +1644,54 @@ mod tests {
         assert!(body.contains("Summary"), "expected day summary\n{body}");
         assert!(body.contains("Token Mix"), "expected token mix\n{body}");
         assert!(body.contains("Cache hit"), "expected token profile\n{body}");
+    }
+
+    #[test]
+    fn wide_timeline_table_uses_cache_column_and_inspector_lists_sources() {
+        let mut app = make_app(104);
+        app.data.daily[0] = multi_provider_day(NaiveDate::from_ymd_opt(2026, 5, 29).unwrap());
+        let body = render_body(&mut app, 104, 24);
+        let header = body
+            .lines()
+            .find(|line| line.contains("#") && line.contains("Day"))
+            .expect("timeline table header");
+
+        assert!(
+            header.contains("Cache hit"),
+            "expected cache column\n{body}"
+        );
+        assert!(body.contains("3.0x"), "expected cache hit value\n{body}");
+        assert!(
+            !header.contains("Sources"),
+            "sources should not be a table column\n{body}"
+        );
+        assert!(body.contains("Sources"), "expected sources header\n{body}");
+        assert!(body.contains("  Codex"), "expected first source\n{body}");
+        assert!(body.contains("  Cursor"), "expected second source\n{body}");
+    }
+
+    #[test]
+    fn scrollable_wide_timeline_table_keeps_last_column_clear_of_scrollbar() {
+        let mut app = make_app(140);
+        let start_date = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        app.data.daily = (0..24)
+            .map(|index| day(start_date - chrono::Days::new(index), 30.0 - index as f64))
+            .collect();
+        let body = render_body(&mut app, 140, 12);
+        let header = body
+            .lines()
+            .find(|line| line.contains("Day") && line.contains("Cache hit") && line.contains("▲"))
+            .unwrap_or_else(|| panic!("missing scrollable timeline header\n{body}"));
+
+        assert!(
+            visual_end_col(header, "Cache hit") <= visual_col(header, "▲"),
+            "last table column should end before the scrollbar\n{body}"
+        );
+    }
+
+    #[test]
+    fn timeline_source_display_name_falls_back_for_empty_source() {
+        assert_eq!(timeline_source_display_name(""), "Unknown");
     }
 
     #[test]

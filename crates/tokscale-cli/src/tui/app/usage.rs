@@ -1,4 +1,6 @@
-use crate::tui::codex_login::run_codex_login_worker;
+use crate::tui::codex_login::{
+    cancel_codex_login_child, run_codex_login_worker, CodexLoginChildSlot,
+};
 use crate::tui::navigation::Tab;
 use crate::tui::privacy::looks_like_email;
 use crate::tui::ui::dialog::ConfirmDialog;
@@ -90,18 +92,16 @@ impl App {
         self.codex_login_outcome = None;
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
         self.codex_login_rx = Some(rx);
-        self.codex_login_cancel_tx = Some(cancel_tx);
+        let child_slot = CodexLoginChildSlot::default();
+        self.codex_login_child = Some(std::sync::Arc::clone(&child_slot));
         self.set_status("Starting Codex login...");
-        std::thread::spawn(move || run_codex_login_worker(tx, cancel_rx));
+        std::thread::spawn(move || run_codex_login_worker(tx, child_slot));
     }
 
     pub fn dismiss_codex_login(&mut self) {
         if self.codex_login_rx.is_some() {
-            if let Some(cancel_tx) = self.codex_login_cancel_tx.take() {
-                let _ = cancel_tx.send(());
-            }
+            self.kill_codex_login_child();
             self.codex_login_rx = None;
             self.codex_login_lines.clear();
             self.codex_login_outcome = None;
@@ -112,6 +112,15 @@ impl App {
         self.codex_login_lines.clear();
         self.codex_login_outcome = None;
         self.set_status("Codex login panel dismissed");
+    }
+
+    /// Kills any in-flight `codex login` child process. Called on dismiss and
+    /// on TUI exit so a dangling login cannot keep holding the OAuth port.
+    pub fn kill_codex_login_child(&mut self) {
+        let Some(slot) = self.codex_login_child.take() else {
+            return;
+        };
+        cancel_codex_login_child(&slot);
     }
 
     pub fn confirm_codex_account_switch(&mut self, account_id: &str) {
@@ -147,6 +156,11 @@ impl App {
     }
 
     pub fn confirm_codex_rate_limit_reset(&mut self, account_id: &str) {
+        if self.codex_reset_job.is_running() {
+            self.set_status("Codex reset already in progress");
+            return;
+        }
+
         let Some(output) = self.subscription_usage.iter().find(|usage| {
             usage.provider == "Codex"
                 && usage
@@ -169,7 +183,7 @@ impl App {
         }
 
         let mut account_label = self.codex_account_label(account_id);
-        account_label.push_str(&format!(" · {available} reset"));
+        account_label.push_str(&format!(" - {available} reset"));
         if available != 1 {
             account_label.push('s');
         }
@@ -180,7 +194,7 @@ impl App {
                 .find_map(|credit| credit.expires_at.as_ref())
         }) {
             account_label.push_str(&format!(
-                " · {}",
+                " - {}",
                 crate::commands::usage::helpers::format_reset_time(expiry)
                     .replace("resets", "expires")
             ));
@@ -296,10 +310,14 @@ impl App {
                     .find(|account| account.is_active)
                 {
                     self.mark_active_codex_account(&active.id);
+                } else {
+                    self.clear_active_codex_accounts();
                 }
                 self.persist_subscription_usage_cache();
                 let display = info.label.as_deref().unwrap_or(&info.id);
-                self.set_status(&format!("Removed Codex account: {display}"));
+                self.set_status(&format!(
+                    "Stopped tracking Codex account: {display} (codex CLI login unchanged)"
+                ));
             }
             Err(e) => {
                 self.set_status(&format!("Codex account removal failed: {e}"));
@@ -334,6 +352,16 @@ impl App {
             if usage.provider == "Codex" {
                 if let Some(account) = &mut usage.account {
                     account.is_active = account.id == active_account_id;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn clear_active_codex_accounts(&mut self) {
+        for usage in &mut self.subscription_usage {
+            if usage.provider == "Codex" {
+                if let Some(account) = &mut usage.account {
+                    account.is_active = false;
                 }
             }
         }

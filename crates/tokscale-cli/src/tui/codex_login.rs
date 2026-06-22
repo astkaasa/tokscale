@@ -12,11 +12,33 @@ pub(crate) enum CodexLoginEvent {
     Finished(CodexLoginOutcome),
 }
 
+/// Shared handle to the spawned `codex login` child process. The login worker
+/// polls it via `try_wait`; the TUI marks the slot cancelled and takes the
+/// child out to kill it on dismiss or exit.
+pub(crate) type CodexLoginChildSlot = std::sync::Arc<std::sync::Mutex<CodexLoginChildState>>;
+
+#[derive(Default)]
+pub(crate) struct CodexLoginChildState {
+    child: Option<std::process::Child>,
+    cancelled: bool,
+}
+
+pub(crate) fn cancel_codex_login_child(slot: &CodexLoginChildSlot) {
+    let child = slot.lock().ok().and_then(|mut state| {
+        state.cancelled = true;
+        state.child.take()
+    });
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 pub(crate) fn run_codex_login_worker(
     tx: std::sync::mpsc::Sender<CodexLoginEvent>,
-    cancel_rx: std::sync::mpsc::Receiver<()>,
+    child_slot: CodexLoginChildSlot,
 ) {
-    let result = run_codex_login_worker_inner(tx.clone(), cancel_rx);
+    let result = run_codex_login_worker_inner(tx.clone(), child_slot);
     let outcome = match result {
         Ok(info) => CodexLoginOutcome::Imported(info),
         Err(e) => CodexLoginOutcome::Failed(e.to_string()),
@@ -26,33 +48,22 @@ pub(crate) fn run_codex_login_worker(
 
 fn run_codex_login_worker_inner(
     tx: std::sync::mpsc::Sender<CodexLoginEvent>,
-    cancel_rx: std::sync::mpsc::Receiver<()>,
+    child_slot: CodexLoginChildSlot,
 ) -> Result<crate::commands::usage::codex::CodexAccountInfo> {
     let codex_home =
         std::env::temp_dir().join(format!("tokscale-codex-login-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&codex_home)
         .map_err(|e| anyhow::anyhow!("failed to create temporary Codex home: {e}"))?;
-    initialize_codex_login_home(&codex_home)?;
 
-    let result = run_codex_login_in_home(&codex_home, tx, cancel_rx);
+    let result = run_codex_login_in_home(&codex_home, tx, child_slot);
     let _ = std::fs::remove_dir_all(&codex_home);
     result
-}
-
-fn initialize_codex_login_home(codex_home: &std::path::Path) -> Result<()> {
-    let config_path = codex_home.join("config.toml");
-    if config_path.exists() {
-        return Ok(());
-    }
-
-    std::fs::write(&config_path, b"")
-        .map_err(|e| anyhow::anyhow!("failed to initialize temporary Codex config: {e}"))
 }
 
 fn run_codex_login_in_home(
     codex_home: &std::path::Path,
     tx: std::sync::mpsc::Sender<CodexLoginEvent>,
-    cancel_rx: std::sync::mpsc::Receiver<()>,
+    child_slot: CodexLoginChildSlot,
 ) -> Result<crate::commands::usage::codex::CodexAccountInfo> {
     let _ = tx.send(CodexLoginEvent::Output(
         "Starting Codex browser login".to_string(),
@@ -84,28 +95,23 @@ fn run_codex_login_in_home(
         ));
     }
 
-    let status = loop {
-        if cancel_rx.try_recv().is_ok() {
-            let _ = child.kill();
-            let _ = child.wait();
-            for reader in readers {
-                let _ = reader.join();
-            }
-            anyhow::bail!("Codex login cancelled");
+    if let Some(mut cancelled_child) = put_codex_login_child(&child_slot, child)? {
+        let _ = cancelled_child.kill();
+        let _ = cancelled_child.wait();
+        for reader in readers {
+            let _ = reader.join();
         }
+        anyhow::bail!("Codex login cancelled");
+    }
 
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| anyhow::anyhow!("failed to wait for codex login: {e}"))?
-        {
-            break status;
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    };
+    let status = wait_for_codex_login_child(&child_slot);
     for reader in readers {
         let _ = reader.join();
     }
+    let Some(status) = status? else {
+        // The TUI emptied the slot: the login was dismissed or the app exited.
+        anyhow::bail!("Codex login cancelled");
+    };
 
     if !status.success() {
         let output_lines = output_lines
@@ -116,8 +122,58 @@ fn run_codex_login_in_home(
     }
 
     let auth_path = codex_home.join("auth.json");
-    let _ = crate::commands::usage::codex::save_current_account_as_active(None);
-    crate::commands::usage::codex::import_auth_file_without_activating(&auth_path, None)
+    let import = crate::commands::usage::codex::import_login_auth_file(&auth_path)?;
+    if let Some(warning) = import.warning {
+        let _ = tx.send(CodexLoginEvent::Output(warning));
+    }
+    Ok(import.info)
+}
+
+fn put_codex_login_child(
+    child_slot: &CodexLoginChildSlot,
+    child: std::process::Child,
+) -> Result<Option<std::process::Child>> {
+    let mut state = child_slot
+        .lock()
+        .map_err(|_| anyhow::anyhow!("codex login state lock poisoned"))?;
+    if state.cancelled {
+        Ok(Some(child))
+    } else {
+        state.child = Some(child);
+        Ok(None)
+    }
+}
+
+/// Polls the login child until it exits. Returns `Ok(None)` when the TUI
+/// cancelled the login on dismiss or app exit.
+fn wait_for_codex_login_child(
+    child_slot: &CodexLoginChildSlot,
+) -> Result<Option<std::process::ExitStatus>> {
+    loop {
+        {
+            let mut state = child_slot
+                .lock()
+                .map_err(|_| anyhow::anyhow!("codex login state lock poisoned"))?;
+            if state.cancelled {
+                return Ok(None);
+            }
+            let Some(child) = state.child.as_mut() else {
+                return Ok(None);
+            };
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    state.child = None;
+                    return Ok(Some(status));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    state.child = None;
+                    return Err(anyhow::anyhow!("failed to wait for codex login: {e}"));
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
 }
 
 fn spawn_codex_login_output_reader<R>(
@@ -210,26 +266,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initializes_temporary_codex_config() {
-        let temp = tempfile::tempdir().unwrap();
-        initialize_codex_login_home(temp.path()).unwrap();
-
-        let config = temp.path().join("config.toml");
-        assert!(config.exists());
-        assert_eq!(std::fs::read_to_string(config).unwrap(), "");
+    fn wait_for_codex_login_child_returns_none_when_cancelled() {
+        let slot = CodexLoginChildSlot::default();
+        cancel_codex_login_child(&slot);
+        let status = wait_for_codex_login_child(&slot).unwrap();
+        assert!(status.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn keeps_existing_temporary_codex_config() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = temp.path().join("config.toml");
-        std::fs::write(&config, "model = \"gpt-5\"\n").unwrap();
+    fn put_codex_login_child_returns_child_when_already_cancelled() {
+        let slot = CodexLoginChildSlot::default();
+        cancel_codex_login_child(&slot);
+        let child = std::process::Command::new("true").spawn().unwrap();
 
-        initialize_codex_login_home(temp.path()).unwrap();
+        let mut child = put_codex_login_child(&slot, child)
+            .unwrap()
+            .expect("cancelled slot should return the child to be killed by caller");
 
-        assert_eq!(
-            std::fs::read_to_string(config).unwrap(),
-            "model = \"gpt-5\"\n"
-        );
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_codex_login_child_reports_exit_status() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let slot = CodexLoginChildSlot::default();
+        put_codex_login_child(&slot, child).unwrap();
+
+        let status = wait_for_codex_login_child(&slot).unwrap();
+
+        assert!(status.unwrap().success());
+        assert!(slot.lock().unwrap().child.is_none());
     }
 }

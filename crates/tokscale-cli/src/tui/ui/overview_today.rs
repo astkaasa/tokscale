@@ -1,12 +1,10 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table,
-};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table};
 use std::collections::BTreeMap;
 
 use super::widgets::{
     format_cost, format_tokens, get_provider_display_name, get_provider_shade, scrollbar_state,
-    truncate_ellipsis as truncate_string,
+    table_bullet_cell, table_right_cell, table_text_cell, truncate_ellipsis as truncate_string,
 };
 use crate::tui::app::{App, ClickAction, PeriodDetailKey, SortDirection, SortField};
 use chrono::{Local, NaiveDateTime, Timelike};
@@ -46,12 +44,28 @@ struct TodaySignal {
     value_style: Style,
 }
 
+#[derive(Clone, Copy)]
+struct TodaySignalLayout {
+    label: usize,
+    detail: usize,
+    value: usize,
+    context: usize,
+    show_header: bool,
+}
+
 struct TodayMomentumRow {
     label: String,
     detail: String,
     value: String,
     detail_style: Style,
     value_style: Style,
+}
+
+#[derive(Clone, Copy)]
+struct TodayMomentumLayout {
+    label: usize,
+    detail: usize,
+    value: usize,
 }
 
 struct TodayProviderMixRow {
@@ -1056,6 +1070,21 @@ fn render_today_signal_rows(frame: &mut Frame, app: &App, area: Rect, signals: &
         return;
     }
 
+    let layout = today_signal_layout(area, signals.len());
+    let row_limit = area.height.saturating_sub(u16::from(layout.show_header)) as usize;
+    let table_rows = signals
+        .iter()
+        .take(row_limit)
+        .map(|signal| today_signal_row(app, signal, layout))
+        .collect::<Vec<_>>();
+    let mut table = Table::new(table_rows, today_signal_widths(layout));
+    if layout.show_header {
+        table = table.header(today_signal_header(app, layout));
+    }
+    frame.render_widget(table, area);
+}
+
+fn today_signal_layout(area: Rect, signal_count: usize) -> TodaySignalLayout {
     let label_width = if area.width >= 72 { 14 } else { 12 };
     let value_width = if area.width >= 44 { 12 } else { 8 };
     let context_width = if area.width >= 96 {
@@ -1070,81 +1099,65 @@ fn render_today_signal_rows(frame: &mut Frame, app: &App, area: Rect, signals: &
     let fixed_width = label_width + value_width + context_width + 3;
     let available_name_width = (area.width as usize).saturating_sub(fixed_width).max(6);
     let detail_width = available_name_width.min(if area.width >= 96 { 42 } else { 30 });
-    let show_header = area.height as usize > signals.len();
-    let row_start = usize::from(show_header);
-
-    if show_header {
-        let header_style = app.theme.subtle_text_style().add_modifier(Modifier::BOLD);
-        let mut spans = vec![
-            Span::styled(
-                format!("{:<width$} ", "Signal", width = label_width),
-                header_style,
-            ),
-            Span::styled(
-                format!("{:<width$} ", "Detail", width = detail_width),
-                header_style,
-            ),
-            Span::styled(
-                format!("{:>width$} ", "Value", width = value_width),
-                header_style,
-            ),
-        ];
-        if context_width > 0 {
-            spans.push(Span::styled(
-                format!("{:<width$}", "Context", width = context_width),
-                header_style,
-            ));
-        }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    TodaySignalLayout {
+        label: label_width,
+        detail: detail_width,
+        value: value_width,
+        context: context_width,
+        show_header: area.height as usize > signal_count,
     }
+}
 
-    for (index, signal) in signals.iter().enumerate() {
-        let y_offset = index + row_start;
-        if y_offset as u16 >= area.height {
-            break;
-        }
-        let mut spans = Vec::new();
-        spans.push(Span::styled(
-            format!(
-                "{:<width$} ",
-                truncate_string(signal.label, label_width),
-                width = label_width
-            ),
+fn today_signal_widths(layout: TodaySignalLayout) -> Vec<Constraint> {
+    let mut widths = vec![
+        Constraint::Length(layout.label as u16),
+        Constraint::Length(layout.detail as u16),
+        Constraint::Length(layout.value as u16),
+    ];
+    if layout.context > 0 {
+        widths.push(Constraint::Length(layout.context as u16));
+    }
+    widths
+}
+
+fn today_signal_header(app: &App, layout: TodaySignalLayout) -> Row<'static> {
+    let header_style = app.theme.subtle_text_style().add_modifier(Modifier::BOLD);
+    let mut cells = vec![
+        table_text_cell(truncate_string("Signal", layout.label), header_style),
+        table_text_cell(truncate_string("Detail", layout.detail), header_style),
+        table_right_cell(truncate_string("Value", layout.value), header_style),
+    ];
+    if layout.context > 0 {
+        cells.push(table_text_cell(
+            truncate_string("Context", layout.context),
+            header_style,
+        ));
+    }
+    Row::new(cells).height(1)
+}
+
+fn today_signal_row(app: &App, signal: &TodaySignal, layout: TodaySignalLayout) -> Row<'static> {
+    let mut cells = vec![
+        table_text_cell(
+            truncate_string(signal.label, layout.label),
             app.theme.subtle_text_style(),
-        ));
-        spans.push(Span::styled(
-            format!(
-                "{:<width$} ",
-                truncate_string(&signal.detail, detail_width),
-                width = detail_width
-            ),
+        ),
+        table_text_cell(
+            truncate_string(&signal.detail, layout.detail),
             signal.detail_style,
-        ));
-        spans.push(Span::styled(
-            format!(
-                "{:>width$}",
-                truncate_string(&signal.value, value_width),
-                width = value_width
-            ),
+        ),
+        table_right_cell(
+            truncate_string(&signal.value, layout.value),
             signal.value_style,
+        ),
+    ];
+    if layout.context > 0 {
+        cells.push(table_text_cell(
+            truncate_string(&signal.context, layout.context),
+            app.theme.secondary_text_style(),
         ));
-        spans.push(Span::raw(" "));
-        if context_width > 0 {
-            spans.push(Span::styled(
-                format!(
-                    "{:<width$}",
-                    truncate_string(&signal.context, context_width),
-                    width = context_width
-                ),
-                app.theme.secondary_text_style(),
-            ));
-        }
-
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect::new(area.x, area.y + y_offset as u16, area.width, 1),
-        );
     }
+    Row::new(cells).height(1)
 }
 
 fn today_momentum_rows(app: &App, summary: &TodaySummary) -> Vec<TodayMomentumRow> {
@@ -1242,55 +1255,53 @@ fn render_today_momentum_rows(frame: &mut Frame, app: &App, area: Rect, rows: &[
         return;
     }
 
-    let label_width = if area.width >= 34 { 12 } else { 10 };
-    let value_width = if area.width >= 38 { 15 } else { 12 };
+    let layout = today_momentum_layout(area.width);
+    let table_rows = rows
+        .iter()
+        .take(area.height as usize)
+        .map(|row| today_momentum_row(app, row, layout))
+        .collect::<Vec<_>>();
+    let table = Table::new(table_rows, today_momentum_widths(layout));
+    frame.render_widget(table, area);
+}
+
+fn today_momentum_layout(width: u16) -> TodayMomentumLayout {
+    let label_width = if width >= 34 { 12 } else { 10 };
+    let value_width = if width >= 38 { 15 } else { 12 };
     let fixed_width = label_width + value_width + 2;
-    let detail_width = (area.width as usize).saturating_sub(fixed_width).max(6);
-
-    for (index, row) in rows.iter().enumerate() {
-        if index as u16 >= area.height {
-            break;
-        }
-
-        let mut spans = Vec::new();
-        spans.push(Span::styled(
-            format!(
-                "{:<width$} ",
-                truncate_string(&row.label, label_width),
-                width = label_width
-            ),
-            app.theme.subtle_text_style(),
-        ));
-        spans.push(Span::styled(
-            format!(
-                "{:<width$} ",
-                truncate_string(&row.detail, detail_width),
-                width = detail_width
-            ),
-            row.detail_style,
-        ));
-        spans.push(Span::styled(
-            format!(
-                "{:>width$}",
-                truncate_string(&row.value, value_width),
-                width = value_width
-            ),
-            row.value_style,
-        ));
-
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect::new(area.x, area.y + index as u16, area.width, 1),
-        );
+    let detail_width = (width as usize).saturating_sub(fixed_width).max(6);
+    TodayMomentumLayout {
+        label: label_width,
+        detail: detail_width,
+        value: value_width,
     }
 }
 
-fn table_text_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
-    Cell::from(Span::styled(text.into(), style))
+fn today_momentum_widths(layout: TodayMomentumLayout) -> [Constraint; 3] {
+    [
+        Constraint::Length(layout.label as u16),
+        Constraint::Length(layout.detail as u16),
+        Constraint::Length(layout.value as u16),
+    ]
 }
 
-fn table_right_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
-    Cell::from(Line::from(Span::styled(text.into(), style)).right_aligned())
+fn today_momentum_row(
+    app: &App,
+    row: &TodayMomentumRow,
+    layout: TodayMomentumLayout,
+) -> Row<'static> {
+    Row::new([
+        table_text_cell(
+            truncate_string(&row.label, layout.label),
+            app.theme.subtle_text_style(),
+        ),
+        table_text_cell(
+            truncate_string(&row.detail, layout.detail),
+            row.detail_style,
+        ),
+        table_right_cell(truncate_string(&row.value, layout.value), row.value_style),
+    ])
+    .height(1)
 }
 
 fn format_percent(ratio: f64) -> String {
@@ -1474,19 +1485,17 @@ fn render_today_models_table(frame: &mut Frame, app: &mut App, area: Rect, summa
                     }),
                 ));
             }
-            cells.push(Cell::from(Line::from(vec![
-                Span::styled("● ".to_string(), Style::default().fg(color)),
-                Span::styled(
-                    row.label.clone(),
-                    Style::default()
-                        .fg(if selected {
-                            app.theme.foreground
-                        } else {
-                            color
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])));
+            cells.push(table_bullet_cell(
+                color,
+                row.label.clone(),
+                Style::default()
+                    .fg(if selected {
+                        app.theme.foreground
+                    } else {
+                        color
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ));
             if show_provider {
                 let provider =
                     crate::tui::colors::provider_color_key(&row.provider, &row.color_key);

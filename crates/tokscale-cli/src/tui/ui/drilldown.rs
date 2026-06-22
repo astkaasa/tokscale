@@ -1,11 +1,12 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::mix::{ranking_bar_line, token_profile_lines};
 use super::widgets::{
     format_cost, format_cost_per_million, format_tokens, get_client_display_name,
-    get_provider_display_name, scrollbar_state, truncate_ascii as truncate,
+    get_provider_display_name, scrollbar_state, table_bullet_cell, table_right_cell,
+    table_text_cell, truncate_ascii as truncate,
 };
 use crate::tui::app::{
     App, ClickAction, DrilldownView, ModelDetailKey, ModelDetailPeriodRow, PeriodDetailKey,
@@ -295,12 +296,18 @@ fn render_period_summary(frame: &mut Frame, app: &App, area: Rect, key: &PeriodD
         cost += day.cost.max(0.0);
         messages = messages.saturating_add(day.message_count as u64);
         turns = turns.saturating_add(day.turn_count as u64);
-        sources.extend(day.source_breakdown.keys().cloned());
+        sources.extend(
+            day.source_breakdown
+                .keys()
+                .map(|source| source_display_name(source)),
+        );
     }
 
     let range = format!("{}..{}", key.start.format("%m-%d"), key.end.format("%m-%d"));
     let compact_period = compact_period_label(key);
     let compact_range = compact_period_range(key);
+    let source_list = source_list_summary(&sources);
+    let compact_sources = source_list.clone();
     let lines = summary_lines(
         app,
         inner.width,
@@ -311,10 +318,26 @@ fn render_period_summary(frame: &mut Frame, app: &App, area: Rect, key: &PeriodD
             summary_item("Tokens", "Tok", format_tokens(tokens.total()), None),
             summary_item("Messages", "Msgs", messages.to_string(), None),
             summary_item("Turns", "Turn", turns.to_string(), None),
-            summary_item("Sources", "Src", sources.len().to_string(), None),
+            summary_item("Sources", "Src", source_list, Some(compact_sources)),
         ],
     );
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn source_display_name(source: &str) -> String {
+    if source.trim().is_empty() {
+        "Unknown".to_string()
+    } else {
+        get_client_display_name(source)
+    }
+}
+
+fn source_list_summary(sources: &BTreeSet<String>) -> String {
+    if sources.is_empty() {
+        "—".to_string()
+    } else {
+        sources.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
 }
 
 fn compact_period_label(key: &PeriodDetailKey) -> String {
@@ -600,19 +623,28 @@ fn render_model_breakdown(
     let page_capacity = inner.height.saturating_sub(1).max(1) as usize;
     app.set_max_visible_items(page_capacity);
 
-    render_model_breakdown_header(frame, app, inner);
     let start = app.scroll_offset.min(rows.len().saturating_sub(1));
     let end = (start + page_capacity).min(rows.len());
-    let mut y = inner.y.saturating_add(1);
+    let table_rows = rows[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| model_breakdown_row(app, row, start + offset, inner.width))
+        .collect::<Vec<_>>();
+    let table = Table::new(table_rows, model_breakdown_widths(inner.width))
+        .header(model_breakdown_header(app, inner.width))
+        .row_highlight_style(Style::default().bg(app.theme.selection));
+    frame.render_widget(table, inner);
+
     for (offset, row) in rows[start..end].iter().enumerate() {
-        let index = start + offset;
-        let row_area = Rect::new(inner.x, y, inner.width, 1);
         app.add_click_area(
-            row_area,
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(1 + offset as u16),
+                inner.width,
+                1,
+            ),
             ClickAction::OpenPeriodDetail(PeriodDetailKey::day(row.date)),
         );
-        render_model_breakdown_row(frame, app, row_area, row, index);
-        y = y.saturating_add(1);
     }
     render_scrollbar(frame, app, area, rows.len(), page_capacity);
 }
@@ -630,217 +662,248 @@ fn render_period_breakdown(
     let page_capacity = inner.height.saturating_sub(1).max(1) as usize;
     app.set_max_visible_items(page_capacity);
 
-    render_period_breakdown_header(frame, app, inner);
     let start = app.scroll_offset.min(rows.len().saturating_sub(1));
     let end = (start + page_capacity).min(rows.len());
-    let mut y = inner.y.saturating_add(1);
+    let table_rows = rows[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| period_breakdown_row(app, row, start + offset, inner.width))
+        .collect::<Vec<_>>();
+    let table = Table::new(table_rows, period_breakdown_widths(inner.width))
+        .header(period_breakdown_header(app, inner.width))
+        .row_highlight_style(Style::default().bg(app.theme.selection));
+    frame.render_widget(table, inner);
+
     for (offset, row) in rows[start..end].iter().enumerate() {
-        let index = start + offset;
-        let row_area = Rect::new(inner.x, y, inner.width, 1);
         app.add_click_area(
-            row_area,
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(1 + offset as u16),
+                inner.width,
+                1,
+            ),
             ClickAction::OpenModelDetail(ModelDetailKey {
                 provider: row.provider.clone(),
                 model: row.model.clone(),
                 color_key: row.color_key.clone(),
             }),
         );
-        render_period_breakdown_row(frame, app, row_area, row, index);
-        y = y.saturating_add(1);
     }
     render_scrollbar(frame, app, area, rows.len(), page_capacity);
 }
 
-fn render_model_breakdown_header(frame: &mut Frame, app: &App, inner: Rect) {
+fn model_breakdown_header(app: &App, width: u16) -> Row<'static> {
     let style = Style::default()
         .fg(app.theme.muted)
         .add_modifier(Modifier::BOLD);
-    let mut spans = Vec::new();
-    spans.push(Span::styled(pad_right("#", 4), style));
-    spans.push(Span::styled(
-        pad_left(&format!("Date{}", sort_indicator(app, SortField::Date)), 12),
-        style,
-    ));
-    spans.push(Span::styled(pad_left("Source", 14), style));
-    spans.push(Span::styled(
-        pad_right(&format!("Cost{}", sort_indicator(app, SortField::Cost)), 10),
-        style,
-    ));
-    spans.push(Span::styled(
-        pad_right(
-            &format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
-            10,
+    let mut cells = vec![
+        table_right_cell("#", style),
+        table_text_cell(
+            format!("Date{}", sort_indicator(app, SortField::Date)),
+            style,
         ),
-        style,
-    ));
-    if inner.width >= 96 {
-        spans.push(Span::styled(pad_right("Input", 10), style));
-        spans.push(Span::styled(pad_right("Output", 10), style));
-        spans.push(Span::styled(pad_right("Cache", 10), style));
-        spans.push(Span::styled(pad_right("Msgs", 8), style));
+        table_text_cell("Source", style),
+        table_right_cell(
+            format!("Cost{}", sort_indicator(app, SortField::Cost)),
+            style,
+        ),
+        table_right_cell(
+            format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
+            style,
+        ),
+    ];
+    if width >= 96 {
+        cells.push(table_right_cell("Input", style));
+        cells.push(table_right_cell("Output", style));
+        cells.push(table_right_cell("Cache", style));
+        cells.push(table_right_cell("Msgs", style));
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+    Row::new(cells).height(1)
 }
 
-fn render_period_breakdown_header(frame: &mut Frame, app: &App, inner: Rect) {
+fn period_breakdown_header(app: &App, width: u16) -> Row<'static> {
     let style = Style::default()
         .fg(app.theme.muted)
         .add_modifier(Modifier::BOLD);
-    let model_width = period_breakdown_model_width(inner.width);
-    let mut spans = Vec::new();
-    spans.push(Span::styled(pad_right("#", 4), style));
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(period_model_cell("Model", model_width), style));
-    if period_breakdown_provider_visible(inner.width) {
-        spans.push(Span::styled(pad_left("Provider", 14), style));
-        spans.push(Span::styled(pad_left("Source", 12), style));
+    let mut cells = vec![
+        table_right_cell("#", style),
+        table_text_cell("Model", style),
+    ];
+    if period_breakdown_provider_visible(width) {
+        cells.push(table_text_cell("Provider", style));
+        cells.push(table_text_cell("Source", style));
     }
-    if period_breakdown_metrics_visible(inner.width) {
-        spans.push(Span::styled(
-            pad_right(&format!("Cost{}", sort_indicator(app, SortField::Cost)), 10),
+    if period_breakdown_metrics_visible(width) {
+        cells.push(table_right_cell(
+            format!("Cost{}", sort_indicator(app, SortField::Cost)),
             style,
         ));
-        spans.push(Span::styled(
-            pad_right(
-                &format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
-                10,
-            ),
+        cells.push(table_right_cell(
+            format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
             style,
         ));
     }
-    if inner.width >= 116 {
-        spans.push(Span::styled(pad_right("Input", 10), style));
-        spans.push(Span::styled(pad_right("Output", 10), style));
-        spans.push(Span::styled(pad_right("Cache", 10), style));
-        spans.push(Span::styled(pad_right("Msgs", 8), style));
+    if width >= 116 {
+        cells.push(table_right_cell("Input", style));
+        cells.push(table_right_cell("Output", style));
+        cells.push(table_right_cell("Cache", style));
+        cells.push(table_right_cell("Msgs", style));
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+    Row::new(cells).height(1)
 }
 
-fn render_model_breakdown_row(
-    frame: &mut Frame,
+fn model_breakdown_row(
     app: &App,
-    area: Rect,
     row: &ModelDetailPeriodRow,
     index: usize,
-) {
+    width: u16,
+) -> Row<'static> {
     let selected = index == app.selected_index;
     let row_style = row_style(app, index, selected);
-    frame.render_widget(Paragraph::new("").style(row_style), area);
-
-    let mut spans = vec![
-        Span::styled(
-            pad_right(&row_marker(index, selected), 4),
+    let mut cells = vec![
+        table_right_cell(
+            row_marker(index, selected),
             subtle_or_selected(app, selected),
         ),
-        Span::styled(
-            pad_left(&row.date.to_string(), 12),
+        table_text_cell(row.date.to_string(), subtle_or_selected(app, selected)),
+        table_text_cell(
+            get_client_display_name(&row.source),
             subtle_or_selected(app, selected),
         ),
-        Span::styled(
-            pad_left(&get_client_display_name(&row.source), 14),
-            subtle_or_selected(app, selected),
-        ),
-        Span::styled(
-            pad_right(&format_cost(row.cost), 10),
+        table_right_cell(
+            format_cost(row.cost),
             metric_style(app, selected, Color::Green),
         ),
-        Span::styled(
-            pad_right(&format_tokens(row.tokens.total()), 10),
+        table_right_cell(
+            format_tokens(row.tokens.total()),
             subtle_or_selected(app, selected),
         ),
     ];
-    if area.width >= 96 {
-        spans.push(Span::styled(
-            pad_right(&format_tokens(row.tokens.input), 10),
+    if width >= 96 {
+        cells.push(table_right_cell(
+            format_tokens(row.tokens.input),
             metric_style(app, selected, Color::Rgb(96, 165, 250)),
         ));
-        spans.push(Span::styled(
-            pad_right(&format_tokens(row.tokens.output), 10),
+        cells.push(table_right_cell(
+            format_tokens(row.tokens.output),
             metric_style(app, selected, Color::Rgb(74, 222, 128)),
         ));
         let cache = row.tokens.cache_read.saturating_add(row.tokens.cache_write);
-        spans.push(Span::styled(
-            pad_right(&format_tokens(cache), 10),
+        cells.push(table_right_cell(
+            format_tokens(cache),
             metric_style(app, selected, Color::Rgb(167, 139, 250)),
         ));
-        spans.push(Span::styled(
-            pad_right(&row.messages.to_string(), 8),
+        cells.push(table_right_cell(
+            row.messages.to_string(),
             subtle_or_selected(app, selected),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(row_style), area);
+    Row::new(cells).style(row_style).height(1)
 }
 
-fn render_period_breakdown_row(
-    frame: &mut Frame,
+fn period_breakdown_row(
     app: &App,
-    area: Rect,
     row: &PeriodDetailModelRow,
     index: usize,
-) {
+    width: u16,
+) -> Row<'static> {
     let selected = index == app.selected_index;
     let row_style = row_style(app, index, selected);
-    frame.render_widget(Paragraph::new("").style(row_style), area);
 
     let color = app.model_color_for(&row.provider, &row.color_key);
-    let model_width = period_breakdown_model_width(area.width);
-    let mut spans = Vec::new();
-    spans.push(Span::styled(
-        pad_right(&row_marker(index, selected), 4),
-        subtle_or_selected(app, selected),
-    ));
-    spans.push(Span::styled("● ", Style::default().fg(color)));
-    spans.push(Span::styled(
-        period_model_cell(&row.model, model_width),
-        metric_style(app, selected, color).add_modifier(Modifier::BOLD),
-    ));
-    if period_breakdown_provider_visible(area.width) {
-        spans.push(Span::styled(
-            pad_left(&get_provider_display_name(&row.provider), 14),
+    let model_width = period_breakdown_model_width(width);
+    let mut cells = vec![
+        table_right_cell(
+            row_marker(index, selected),
+            subtle_or_selected(app, selected),
+        ),
+        table_bullet_cell(
+            color,
+            period_model_cell(&row.model, model_width),
+            metric_style(app, selected, color).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if period_breakdown_provider_visible(width) {
+        cells.push(table_text_cell(
+            get_provider_display_name(&row.provider),
             subtle_or_selected(app, selected),
         ));
-        spans.push(Span::styled(
-            pad_left(&get_client_display_name(&row.source), 12),
+        cells.push(table_text_cell(
+            get_client_display_name(&row.source),
             subtle_or_selected(app, selected),
         ));
     }
-    if period_breakdown_metrics_visible(area.width) {
-        spans.push(Span::styled(
-            pad_right(&format_cost(row.cost), 10),
+    if period_breakdown_metrics_visible(width) {
+        cells.push(table_right_cell(
+            format_cost(row.cost),
             metric_style(app, selected, Color::Green),
         ));
-        spans.push(Span::styled(
-            pad_right(&format_tokens(row.tokens.total()), 10),
+        cells.push(table_right_cell(
+            format_tokens(row.tokens.total()),
             subtle_or_selected(app, selected),
         ));
     }
-    if area.width >= 116 {
-        spans.push(Span::styled(
-            pad_right(&format_tokens(row.tokens.input), 10),
+    if width >= 116 {
+        cells.push(table_right_cell(
+            format_tokens(row.tokens.input),
             metric_style(app, selected, Color::Rgb(96, 165, 250)),
         ));
-        spans.push(Span::styled(
-            pad_right(&format_tokens(row.tokens.output), 10),
+        cells.push(table_right_cell(
+            format_tokens(row.tokens.output),
             metric_style(app, selected, Color::Rgb(74, 222, 128)),
         ));
         let cache = row.tokens.cache_read.saturating_add(row.tokens.cache_write);
-        spans.push(Span::styled(
-            pad_right(&format_tokens(cache), 10),
+        cells.push(table_right_cell(
+            format_tokens(cache),
             metric_style(app, selected, Color::Rgb(167, 139, 250)),
         ));
-        spans.push(Span::styled(
-            pad_right(&row.messages.to_string(), 8),
+        cells.push(table_right_cell(
+            row.messages.to_string(),
             subtle_or_selected(app, selected),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(row_style), area);
+    Row::new(cells).style(row_style).height(1)
+}
+
+fn model_breakdown_widths(width: u16) -> Vec<Constraint> {
+    let mut widths = vec![
+        Constraint::Length(4),
+        Constraint::Length(12),
+        Constraint::Length(14),
+        Constraint::Length(10),
+        Constraint::Length(10),
+    ];
+    if width >= 96 {
+        widths.extend([
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(8),
+        ]);
+    }
+    widths
+}
+
+fn period_breakdown_widths(width: u16) -> Vec<Constraint> {
+    let mut widths = vec![
+        Constraint::Length(4),
+        Constraint::Length(period_breakdown_model_width(width) as u16 + 2),
+    ];
+    if period_breakdown_provider_visible(width) {
+        widths.extend([Constraint::Length(14), Constraint::Length(12)]);
+    }
+    if period_breakdown_metrics_visible(width) {
+        widths.extend([Constraint::Length(10), Constraint::Length(10)]);
+    }
+    if width >= 116 {
+        widths.extend([
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(8),
+        ]);
+    }
+    widths
 }
 
 fn render_scrollbar(frame: &mut Frame, app: &App, area: Rect, len: usize, page_capacity: usize) {
@@ -1074,11 +1137,6 @@ fn pad_left(text: &str, width: usize) -> String {
 fn pad_exact(text: &str, width: usize) -> String {
     let text = truncate(text, width);
     format!("{text:<width$}")
-}
-
-fn pad_right(text: &str, width: usize) -> String {
-    let text = truncate(text, width);
-    format!("{text:>width$} ")
 }
 
 #[cfg(test)]
@@ -1439,6 +1497,23 @@ mod tests {
         assert!(
             !body.contains("█"),
             "detail mix panels should use compact rows, not bar charts\n{body}"
+        );
+    }
+
+    #[test]
+    fn period_detail_sources_summary_shows_source_names() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
+        let mut app = test_app();
+        app.data.daily = vec![multi_provider_daily_usage(date)];
+        app.open_period_detail(PeriodDetailKey::day(date));
+
+        let body = render_body(&mut app, 120, 24);
+
+        assert!(body.contains("Src"), "{body}");
+        assert!(body.contains("Codex, Cursor"), "{body}");
+        assert!(
+            !body.contains("2 src"),
+            "source summary should show names, not only a count\n{body}"
         );
     }
 

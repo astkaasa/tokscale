@@ -9,7 +9,7 @@ use ratatui::style::Color;
 use crate::ClientFilter;
 
 use super::background_job::BackgroundJob;
-use super::codex_login::{CodexLoginEvent, CodexLoginOutcome};
+use super::codex_login::{CodexLoginChildSlot, CodexLoginEvent, CodexLoginOutcome};
 use super::data::{DataLoader, UsageData};
 use super::drilldown_state::DrilldownState;
 pub(crate) use super::drilldown_state::{
@@ -131,7 +131,7 @@ pub struct App {
     #[cfg(test)]
     usage_fetcher: UsageFetcher,
     codex_login_rx: Option<std::sync::mpsc::Receiver<CodexLoginEvent>>,
-    codex_login_cancel_tx: Option<std::sync::mpsc::Sender<()>>,
+    codex_login_child: Option<CodexLoginChildSlot>,
 
     data_version: u64,
     minutely_sort_cache: RefCell<Option<MinutelySortCache>>,

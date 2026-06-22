@@ -1,11 +1,12 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table};
 
 use super::mix::token_profile_lines;
 use super::widgets::{
-    format_cache_hit_rate, format_cost, format_cost_per_million, format_ms_per_1k, format_tokens,
-    get_client_display_name, get_provider_display_name, light_ratio_bar_spans, scrollbar_state,
-    truncate_ellipsis as truncate,
+    format_cache_hit_rate, format_cache_hit_rate_with_unit, format_cost, format_cost_per_million,
+    format_ms_per_1k, format_tokens, get_client_display_name, get_provider_display_name,
+    light_ratio_bar_spans, scrollbar_state, table_area_with_scrollbar_gutter, table_bullet_cell,
+    table_right_cell, table_text_cell, truncate_ellipsis as truncate,
 };
 use crate::tui::app::{App, ClickAction, SortDirection, SortField};
 use crate::tui::data::ModelUsage;
@@ -26,8 +27,6 @@ struct RankingLayout {
     input: usize,
     output: usize,
     cache: usize,
-    sessions: usize,
-    perf: usize,
 }
 
 impl RankingLayout {
@@ -46,14 +45,10 @@ impl RankingLayout {
         let tokens = if width >= 44 { 9 } else { 0 };
         let input = if width >= 84 { 9 } else { 0 };
         let output = if width >= 84 { 9 } else { 0 };
-        let cache = if width >= 104 { 8 } else { 0 };
-        let sessions = if width >= 112 { 8 } else { 0 };
-        let perf = if width >= 122 { 8 } else { 0 };
+        let cache = if width >= 104 { 9 } else { 0 };
 
         let mut fixed = 0usize;
-        for column in [
-            rank, provider, cost, pct, tokens, input, output, cache, sessions, perf,
-        ] {
+        for column in [rank, provider, cost, pct, tokens, input, output, cache] {
             if column > 0 {
                 fixed += column + 1;
             }
@@ -71,8 +66,6 @@ impl RankingLayout {
             input,
             output,
             cache,
-            sessions,
-            perf,
         }
     }
 }
@@ -156,10 +149,9 @@ fn render_ranking(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let layout = RankingLayout::for_width(inner.width, app.is_very_narrow());
-    render_ranking_header(frame, app, inner, layout);
-
     let models_len = models.len();
+    let table_area = table_area_with_scrollbar_gutter(inner, models_len, page_capacity);
+    let layout = RankingLayout::for_width(table_area.width, app.is_very_narrow());
     let start = app.scroll_offset.min(models_len.saturating_sub(1));
     let end = (start + page_capacity).min(models_len);
     let total_cost = app.data.total_cost.max(0.01);
@@ -179,132 +171,15 @@ fn render_ranking(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect::<Vec<_>>();
 
-    let mut y = inner.y.saturating_add(1);
-    for (i, model) in models[start..end].iter().enumerate() {
-        if y >= inner.bottom() {
-            break;
-        }
-
-        let idx = i + start;
-        let is_selected = idx == app.selected_index;
-        let is_striped = idx % 2 == 1;
-        let row_area = Rect::new(inner.x, y, inner.width, 1);
-        let row_style = if is_selected {
-            Style::default()
-                .bg(app.theme.selection)
-                .fg(app.theme.foreground)
-        } else if is_striped {
-            app.theme.striped_row_style()
-        } else {
-            Style::default()
-        };
-        frame.render_widget(Paragraph::new("").style(row_style), row_area);
-
-        let color = app.model_color_for(&model.provider, &model.model);
-        let display_name = model_display_name(model, &group_by);
-        let cost_share = if model.cost.is_finite() {
-            model.cost.max(0.0) / total_cost
-        } else {
-            0.0
-        };
-        let row_fg = if is_selected {
-            app.theme.foreground
-        } else {
-            color
-        };
-
-        let mut spans = Vec::new();
-        if layout.rank > 0 {
-            let marker = if is_selected { "▶" } else { " " };
-            spans.push(Span::styled(
-                pad_right(&format!("{marker}{}", idx + 1), layout.rank),
-                Style::default().fg(if is_selected {
-                    app.theme.foreground
-                } else {
-                    app.theme.muted
-                }),
-            ));
-        }
-
-        let name_width = layout.model.saturating_sub(2).max(1);
-        spans.push(Span::styled("● ", Style::default().fg(color)));
-        spans.push(Span::styled(
-            pad_left(&truncate(&display_name, name_width), name_width),
-            Style::default().fg(row_fg).add_modifier(Modifier::BOLD),
-        ));
-
-        if layout.provider > 0 {
-            spans.push(Span::styled(
-                pad_left(&get_provider_display_name(&model.provider), layout.provider),
-                app.theme.secondary_text_style(),
-            ));
-        }
-
-        spans.push(Span::styled(
-            pad_right(&format_cost(model.cost), layout.cost),
-            Style::default()
-                .fg(if is_selected {
-                    app.theme.foreground
-                } else {
-                    Color::Green
-                })
-                .add_modifier(Modifier::BOLD),
-        ));
-
-        if layout.pct > 0 {
-            spans.push(Span::styled(
-                pad_right(&format!("{:.1}%", cost_share * 100.0), layout.pct),
-                app.theme.subtle_text_style(),
-            ));
-        }
-
-        if layout.tokens > 0 {
-            spans.push(Span::styled(
-                pad_right(&format_tokens(model.tokens.total()), layout.tokens),
-                app.theme.secondary_text_style(),
-            ));
-        }
-        if layout.input > 0 {
-            spans.push(Span::styled(
-                pad_right(&format_tokens(model.tokens.input), layout.input),
-                app.theme.metric_input_style(),
-            ));
-        }
-        if layout.output > 0 {
-            spans.push(Span::styled(
-                pad_right(&format_tokens(model.tokens.output), layout.output),
-                app.theme.metric_output_style(),
-            ));
-        }
-        if layout.cache > 0 {
-            let cache_tokens = model
-                .tokens
-                .cache_read
-                .saturating_add(model.tokens.cache_write);
-            spans.push(Span::styled(
-                pad_right(&format_tokens(cache_tokens), layout.cache),
-                app.theme.metric_cache_read_style(),
-            ));
-        }
-        if layout.sessions > 0 {
-            spans.push(Span::styled(
-                pad_right(&model.session_count.to_string(), layout.sessions),
-                app.theme.secondary_text_style(),
-            ));
-        }
-        if layout.perf > 0 {
-            spans.push(Span::styled(
-                pad_right(
-                    &format_ms_per_1k(model.performance.ms_per_1k_tokens),
-                    layout.perf,
-                ),
-                Style::default().fg(Color::Yellow),
-            ));
-        }
-
-        frame.render_widget(Paragraph::new(Line::from(spans)).style(row_style), row_area);
-        y = y.saturating_add(1);
-    }
+    let rows = models[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, model)| ranking_row(app, model, i + start, layout, total_cost, &group_by))
+        .collect::<Vec<_>>();
+    let table = Table::new(rows, ranking_widths(layout))
+        .header(ranking_header(app, layout))
+        .row_highlight_style(Style::default().bg(app.theme.selection));
+    frame.render_widget(table, table_area);
 
     for (rect, key) in row_clicks {
         app.add_click_area(rect, ClickAction::OpenModelDetail(key));
@@ -321,67 +196,176 @@ fn render_ranking(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_ranking_header(frame: &mut Frame, app: &App, inner: Rect, layout: RankingLayout) {
-    if inner.height == 0 {
-        return;
-    }
-
+fn ranking_header(app: &App, layout: RankingLayout) -> Row<'static> {
     let header_style = Style::default()
         .fg(app.theme.muted)
         .add_modifier(Modifier::BOLD);
-    let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
-    let mut spans = Vec::new();
+    let mut cells = Vec::new();
     if layout.rank > 0 {
-        spans.push(Span::styled(pad_right("#", layout.rank), header_style));
+        cells.push(table_right_cell("#", header_style));
     }
-    spans.push(Span::styled(pad_left("Model", layout.model), header_style));
+    cells.push(table_text_cell("Model", header_style));
     if layout.provider > 0 {
-        spans.push(Span::styled(
-            pad_left("Provider", layout.provider),
-            header_style,
-        ));
+        cells.push(table_text_cell("Provider", header_style));
     }
-    spans.push(Span::styled(
-        pad_right(
-            &format!("Cost{}", sort_indicator(app, SortField::Cost)),
-            layout.cost,
-        ),
+    cells.push(table_right_cell(
+        format!("Cost{}", sort_indicator(app, SortField::Cost)),
         header_style,
     ));
     if layout.pct > 0 {
-        spans.push(Span::styled(pad_right("%", layout.pct), header_style));
+        cells.push(table_right_cell("%", header_style));
     }
     if layout.tokens > 0 {
-        spans.push(Span::styled(
-            pad_right(
-                &format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
-                layout.tokens,
-            ),
+        cells.push(table_right_cell(
+            format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
             header_style,
         ));
     }
     if layout.input > 0 {
-        spans.push(Span::styled(pad_right("Input", layout.input), header_style));
+        cells.push(table_right_cell("Input", header_style));
     }
     if layout.output > 0 {
-        spans.push(Span::styled(
-            pad_right("Output", layout.output),
-            header_style,
+        cells.push(table_right_cell("Output", header_style));
+    }
+    if layout.cache > 0 {
+        cells.push(table_right_cell("Cache hit", header_style));
+    }
+    Row::new(cells).height(1)
+}
+
+fn ranking_row(
+    app: &App,
+    model: &ModelUsage,
+    index: usize,
+    layout: RankingLayout,
+    total_cost: f64,
+    group_by: &GroupBy,
+) -> Row<'static> {
+    let selected = index == app.selected_index;
+    let row_style = if selected {
+        Style::default()
+            .bg(app.theme.selection)
+            .fg(app.theme.foreground)
+    } else if index % 2 == 1 {
+        app.theme.striped_row_style()
+    } else {
+        Style::default()
+    };
+    let color = app.model_color_for(&model.provider, &model.model);
+    let display_name = model_display_name(model, group_by);
+    let cost_share = if model.cost.is_finite() {
+        model.cost.max(0.0) / total_cost
+    } else {
+        0.0
+    };
+    let row_fg = if selected {
+        app.theme.foreground
+    } else {
+        color
+    };
+
+    let mut cells = Vec::new();
+    if layout.rank > 0 {
+        let marker = if selected { "▶" } else { " " };
+        cells.push(table_right_cell(
+            format!("{marker}{}", index + 1),
+            Style::default().fg(if selected {
+                app.theme.foreground
+            } else {
+                app.theme.muted
+            }),
+        ));
+    }
+
+    let name_width = layout.model.saturating_sub(2).max(1);
+    cells.push(table_bullet_cell(
+        color,
+        truncate(&display_name, name_width),
+        Style::default().fg(row_fg).add_modifier(Modifier::BOLD),
+    ));
+
+    if layout.provider > 0 {
+        cells.push(table_text_cell(
+            get_provider_display_name(&model.provider),
+            app.theme.secondary_text_style(),
+        ));
+    }
+
+    cells.push(table_right_cell(
+        format_cost(model.cost),
+        Style::default()
+            .fg(if selected {
+                app.theme.foreground
+            } else {
+                Color::Green
+            })
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    if layout.pct > 0 {
+        cells.push(table_right_cell(
+            format!("{:.1}%", cost_share * 100.0),
+            app.theme.subtle_text_style(),
+        ));
+    }
+
+    if layout.tokens > 0 {
+        cells.push(table_right_cell(
+            format_tokens(model.tokens.total()),
+            app.theme.secondary_text_style(),
+        ));
+    }
+    if layout.input > 0 {
+        cells.push(table_right_cell(
+            format_tokens(model.tokens.input),
+            app.theme.metric_input_style(),
+        ));
+    }
+    if layout.output > 0 {
+        cells.push(table_right_cell(
+            format_tokens(model.tokens.output),
+            app.theme.metric_output_style(),
         ));
     }
     if layout.cache > 0 {
-        spans.push(Span::styled(pad_right("Cache", layout.cache), header_style));
-    }
-    if layout.sessions > 0 {
-        spans.push(Span::styled(
-            pad_right("Sessions", layout.sessions),
-            header_style,
+        cells.push(table_right_cell(
+            format_cache_hit_rate_with_unit(
+                model.tokens.cache_read,
+                model.tokens.input,
+                model.tokens.cache_write,
+            ),
+            app.theme.metric_cache_read_style(),
         ));
     }
-    if layout.perf > 0 {
-        spans.push(Span::styled(pad_right("ms/1K", layout.perf), header_style));
+    Row::new(cells).style(row_style).height(1)
+}
+
+fn ranking_widths(layout: RankingLayout) -> Vec<Constraint> {
+    let mut widths = Vec::new();
+    if layout.rank > 0 {
+        widths.push(Constraint::Length(layout.rank as u16));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), header_area);
+    widths.push(Constraint::Length(layout.model as u16));
+    if layout.provider > 0 {
+        widths.push(Constraint::Length(layout.provider as u16));
+    }
+    widths.push(Constraint::Length(layout.cost as u16));
+    if layout.pct > 0 {
+        widths.push(Constraint::Length(layout.pct as u16));
+    }
+    if layout.tokens > 0 {
+        widths.push(Constraint::Length(layout.tokens as u16));
+    }
+    if layout.input > 0 {
+        widths.push(Constraint::Length(layout.input as u16));
+    }
+    if layout.output > 0 {
+        widths.push(Constraint::Length(layout.output as u16));
+    }
+    if layout.cache > 0 {
+        widths.push(Constraint::Length(layout.cache as u16));
+    }
+    widths
 }
 
 fn render_inspector(frame: &mut Frame, app: &App, area: Rect) {
@@ -682,16 +666,6 @@ fn compact_share_line(
     Line::from(spans)
 }
 
-fn pad_left(text: &str, width: usize) -> String {
-    let text = truncate(text, width);
-    format!("{text:<width$} ")
-}
-
-fn pad_right(text: &str, width: usize) -> String {
-    let text = truncate(text, width);
-    format!("{text:>width$} ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,10 +701,14 @@ mod tests {
     }
 
     fn render_models(width: u16) -> String {
+        render_models_with_data(width, 24, vec![model("claude-4-sonnet", "anthropic", 32.0)])
+    }
+
+    fn render_models_with_data(width: u16, height: u16, models: Vec<ModelUsage>) -> String {
         let data = UsageData {
-            total_cost: 42.0,
-            total_tokens: 2_050_000,
-            models: vec![model("claude-4-sonnet", "anthropic", 32.0)],
+            total_cost: models.iter().map(|model| model.cost).sum(),
+            total_tokens: models.iter().map(|model| model.tokens.total()).sum(),
+            models,
             ..UsageData::default()
         };
 
@@ -746,19 +724,24 @@ mod tests {
         let mut app = App::new_with_cached_data(config, Some(data)).unwrap();
         app.terminal_width = width;
 
-        let backend = TestBackend::new(width, 24);
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render(frame, &mut app, Rect::new(0, 0, width, 24)))
+            .draw(|frame| render(frame, &mut app, Rect::new(0, 0, width, height)))
             .unwrap();
 
         terminal
             .backend()
             .buffer()
             .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>()
+            .chunks(width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn test_app() -> App {
@@ -781,6 +764,17 @@ mod tests {
             .collect::<String>()
     }
 
+    fn visual_col(line: &str, needle: &str) -> usize {
+        let byte_index = line
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing `{needle}` in line `{line}`"));
+        line[..byte_index].chars().count()
+    }
+
+    fn visual_end_col(line: &str, needle: &str) -> usize {
+        visual_col(line, needle) + needle.chars().count()
+    }
+
     #[test]
     fn wide_models_renders_selected_model_inspector() {
         let rendered = render_models(140);
@@ -789,6 +783,43 @@ mod tests {
         assert!(rendered.contains("Token Mix"));
         assert!(rendered.contains("Cache hit"));
         assert!(rendered.contains("Cost / 1M"));
+    }
+
+    #[test]
+    fn wide_models_table_omits_sessions_and_latency_columns() {
+        let rendered = render_models(200);
+        let header = rendered
+            .lines()
+            .find(|line| line.contains("#") && line.contains("Model") && line.contains("Cost"))
+            .expect("models table header");
+
+        assert!(header.contains("Cache hit"), "{rendered}");
+        assert!(rendered.contains("0.2x"), "{rendered}");
+        assert!(!header.contains("Sessions"), "{rendered}");
+        assert!(!header.contains("ms/1K"), "{rendered}");
+    }
+
+    #[test]
+    fn scrollable_models_table_keeps_last_column_clear_of_scrollbar() {
+        let models = (0..32)
+            .map(|index| {
+                model(
+                    &format!("claude-{index:02}"),
+                    "anthropic",
+                    32.0 - index as f64,
+                )
+            })
+            .collect::<Vec<_>>();
+        let rendered = render_models_with_data(200, 12, models);
+        let header = rendered
+            .lines()
+            .find(|line| line.contains("Model") && line.contains("Cache hit") && line.contains("▲"))
+            .unwrap_or_else(|| panic!("missing scrollable models header\n{rendered}"));
+
+        assert!(
+            visual_end_col(header, "Cache hit") <= visual_col(header, "▲"),
+            "last table column should end before the scrollbar\n{rendered}"
+        );
     }
 
     #[test]

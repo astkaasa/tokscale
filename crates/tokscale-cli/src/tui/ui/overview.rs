@@ -1,5 +1,5 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table};
 use std::collections::BTreeMap;
 
 use super::bar_chart::{render_stacked_bar_chart, ModelSegment, StackedBarData};
@@ -8,7 +8,8 @@ use super::overview_today;
 use super::widgets::scrollbar_state;
 use super::widgets::{
     format_cost, format_tokens, get_provider_display_name, get_provider_shade,
-    light_ratio_bar_spans, truncate_ellipsis as truncate_string,
+    light_ratio_bar_spans, table_area_with_scrollbar_gutter, table_bullet_cell, table_right_cell,
+    table_spans_cell, table_text_cell, truncate_ellipsis as truncate_string,
 };
 use crate::tui::app::{
     App, ChartGranularity, ClickAction, OverviewMode, PeriodDetailKey, SortDirection, SortField,
@@ -44,6 +45,18 @@ struct ModelRowData {
     tokens_cache_read: u64,
     tokens_cache_write: u64,
     cost: f64,
+}
+
+#[derive(Clone, Copy)]
+struct TopModelsLayout {
+    rank: usize,
+    model: usize,
+    provider: usize,
+    cost: usize,
+    pct: usize,
+    bar: usize,
+    token: usize,
+    compact_token: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -740,12 +753,7 @@ fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_pag
     let theme_accent = app.theme.accent;
     let theme_background = app.theme.background;
     let theme_muted = app.theme.muted;
-    let theme_foreground = app.theme.foreground;
-    let theme_selection = app.theme.selection;
-    let secondary_text_style = app.theme.secondary_text_style();
-    let subtle_text_style = app.theme.subtle_text_style();
     let scroll_offset = app.scroll_offset;
-    let selected_index = app.selected_index;
     let is_very_narrow = app.is_very_narrow();
     let sort_field = app.sort_field;
     let models_data = overview_model_rows(app);
@@ -827,218 +835,42 @@ fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_pag
         return;
     }
 
-    let rank_width = if is_very_narrow { 0 } else { 4 };
-    let provider_width = if inner.width >= 82 { 14 } else { 0 };
-    let cost_width = if inner.width >= 42 { 10 } else { 8 };
-    let pct_width = if inner.width >= 54 { 7 } else { 0 };
-    let bar_width = if inner.width >= 100 {
-        22
-    } else if inner.width >= 74 {
-        14
-    } else if inner.width >= 58 {
-        9
-    } else {
-        0
-    };
-    let token_width = if inner.width >= 112 {
-        10
-    } else if inner.width >= 88 {
-        9
-    } else {
-        0
-    };
-    let compact_token_width = if inner.width < 34 { 7 } else { 8 };
-    let mut fixed_width = 0usize;
-    for width in [
-        rank_width,
-        provider_width,
-        cost_width,
-        pct_width,
-        bar_width,
-        token_width,
-        token_width,
-        token_width.max(if token_width == 0 {
-            compact_token_width
-        } else {
-            0
-        }),
-    ] {
-        if width > 0 {
-            fixed_width += width + 1;
-        }
-    }
-    let model_width = (inner.width as usize).saturating_sub(fixed_width).max(8);
+    let table_area = table_area_with_scrollbar_gutter(inner, models_len, page_capacity);
+    let layout = top_models_layout(table_area.width, is_very_narrow);
+    let table_rows = models_data[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, model)| {
+            top_model_row(
+                app,
+                model,
+                i + start,
+                layout,
+                total_cost_for_share,
+                total_tokens_for_share,
+                &cost_bar_scale,
+            )
+        })
+        .collect::<Vec<_>>();
+    let table = Table::new(table_rows, top_models_widths(layout))
+        .header(top_models_header(layout, theme_muted))
+        .row_highlight_style(Style::default().bg(app.theme.selection));
+    frame.render_widget(table, table_area);
 
-    let pad_left = |text: &str, width: usize| -> String {
-        let text = truncate_string(text, width);
-        format!("{text:<width$} ")
-    };
-    let pad_right = |text: &str, width: usize| -> String {
-        let text = truncate_string(text, width);
-        format!("{text:>width$} ")
-    };
-    let pad_right_end = |text: &str, width: usize| -> String {
-        let text = truncate_string(text, width);
-        format!("{text:>width$}")
-    };
-
-    let header_style = Style::default()
-        .fg(theme_muted)
-        .add_modifier(Modifier::BOLD);
-    let header = Rect::new(inner.x, inner.y, inner.width, 1);
-    let mut header_spans = Vec::new();
-    if rank_width > 0 {
-        header_spans.push(Span::styled(pad_right("#", rank_width), header_style));
-    }
-    header_spans.push(Span::styled(pad_left("Model", model_width), header_style));
-    if provider_width > 0 {
-        header_spans.push(Span::styled(
-            pad_left("Provider", provider_width),
-            header_style,
-        ));
-    }
-    header_spans.push(Span::styled(pad_right("Cost", cost_width), header_style));
-    if pct_width > 0 {
-        header_spans.push(Span::styled(pad_right("%", pct_width), header_style));
-    }
-    if bar_width > 0 {
-        header_spans.push(Span::styled(pad_left("Cost Bar", bar_width), header_style));
-    }
-    if token_width > 0 {
-        header_spans.push(Span::styled(pad_right("Input", token_width), header_style));
-        header_spans.push(Span::styled(pad_right("Output", token_width), header_style));
-        header_spans.push(Span::styled(
-            pad_right_end("Total", token_width),
-            header_style,
-        ));
-    } else {
-        let label = if compact_token_width < 8 {
-            "Tok"
-        } else {
-            "Tokens"
-        };
-        header_spans.push(Span::styled(
-            pad_right_end(label, compact_token_width),
-            header_style,
-        ));
-    }
-    frame.render_widget(Paragraph::new(Line::from(header_spans)), header);
-
-    let mut y = inner.y.saturating_add(1);
     for (i, model) in models_data[start..end].iter().enumerate() {
-        if y >= inner.y + inner.height {
-            break;
-        }
-
-        let idx = i + start;
-        let is_selected = idx == selected_index;
-        let row_style = if is_selected {
-            Style::default().bg(theme_selection).fg(theme_foreground)
-        } else {
-            Style::default()
-        };
-
-        let model_color = app.model_color_for(&model.provider, &model.color_key);
-        let display_name = &model.label;
-        let percentage = match sort_field {
-            SortField::Tokens => {
-                (model.tokens_total as f64 / total_tokens_for_share as f64) * 100.0
-            }
-            _ if model.cost.is_finite() => (model.cost / total_cost_for_share) * 100.0,
-            _ => 0.0,
-        };
-
-        let cost_text = format_cost(model.cost);
-        let row_area = Rect::new(inner.x, y, inner.width, 1);
         app.add_click_area(
-            row_area,
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(1 + i as u16),
+                inner.width,
+                1,
+            ),
             ClickAction::OpenModelDetail(crate::tui::app::ModelDetailKey {
                 provider: model.provider.clone(),
                 model: model.label.clone(),
                 color_key: model.color_key.clone(),
             }),
         );
-        frame.render_widget(Paragraph::new("").style(row_style), row_area);
-
-        let row_fg = if is_selected {
-            theme_foreground
-        } else {
-            model_color
-        };
-        let mut spans = Vec::new();
-        if rank_width > 0 {
-            let marker = if is_selected { "▶" } else { " " };
-            spans.push(Span::styled(
-                pad_right(&format!("{marker}{}", idx + 1), rank_width),
-                Style::default().fg(if is_selected {
-                    theme_foreground
-                } else {
-                    theme_muted
-                }),
-            ));
-        }
-        let name_width = model_width.saturating_sub(2).max(1);
-        spans.push(Span::styled("● ", Style::default().fg(model_color)));
-        spans.push(Span::styled(
-            pad_left(&truncate_string(display_name, name_width), name_width),
-            Style::default().fg(row_fg).add_modifier(Modifier::BOLD),
-        ));
-        if provider_width > 0 {
-            let provider =
-                crate::tui::colors::provider_color_key(&model.provider, &model.color_key);
-            spans.push(Span::styled(
-                pad_left(&get_provider_display_name(&provider), provider_width),
-                secondary_text_style,
-            ));
-        }
-        spans.push(Span::styled(
-            pad_right(&cost_text, cost_width),
-            Style::default()
-                .fg(if is_selected {
-                    theme_foreground
-                } else {
-                    Color::Green
-                })
-                .add_modifier(Modifier::BOLD),
-        ));
-        if pct_width > 0 {
-            spans.push(Span::styled(
-                pad_right(&format!("{percentage:.1}%"), pct_width),
-                subtle_text_style,
-            ));
-        }
-        if bar_width > 0 {
-            spans.extend(light_ratio_bar_spans(
-                metric_bar_ratio(model.cost, &cost_bar_scale),
-                bar_width,
-                Style::default().fg(model_color),
-                subtle_text_style,
-            ));
-            spans.push(Span::raw(" "));
-        }
-        if token_width > 0 {
-            spans.push(Span::styled(
-                pad_right(&format_tokens(model.tokens_input), token_width),
-                secondary_text_style,
-            ));
-            spans.push(Span::styled(
-                pad_right(&format_tokens(model.tokens_output), token_width),
-                secondary_text_style,
-            ));
-            spans.push(Span::styled(
-                pad_right_end(&format_tokens(model.tokens_total), token_width),
-                secondary_text_style,
-            ));
-        } else {
-            spans.push(Span::styled(
-                pad_right_end(&format_tokens_tiny(model.tokens_total), compact_token_width),
-                secondary_text_style,
-            ));
-        }
-
-        frame.render_widget(Paragraph::new(Line::from(spans)).style(row_style), row_area);
-
-        y += 1;
     }
 
     if models_len > page_capacity {
@@ -1059,6 +891,215 @@ fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_pag
             &mut scrollbar_state,
         );
     }
+}
+
+fn top_models_layout(width: u16, is_very_narrow: bool) -> TopModelsLayout {
+    let rank = if is_very_narrow { 0 } else { 4 };
+    let provider = if width >= 82 { 14 } else { 0 };
+    let cost = if width >= 42 { 10 } else { 8 };
+    let pct = if width >= 54 { 7 } else { 0 };
+    let bar = if width >= 100 {
+        22
+    } else if width >= 74 {
+        14
+    } else if width >= 58 {
+        9
+    } else {
+        0
+    };
+    let token = if width >= 112 {
+        10
+    } else if width >= 88 {
+        9
+    } else {
+        0
+    };
+    let compact_token = if width < 34 { 7 } else { 8 };
+    let mut fixed_width = 0usize;
+    for column in [
+        rank,
+        provider,
+        cost,
+        pct,
+        bar,
+        token,
+        token,
+        token.max(if token == 0 { compact_token } else { 0 }),
+    ] {
+        if column > 0 {
+            fixed_width += column + 1;
+        }
+    }
+    let model = (width as usize).saturating_sub(fixed_width).max(8);
+
+    TopModelsLayout {
+        rank,
+        model,
+        provider,
+        cost,
+        pct,
+        bar,
+        token,
+        compact_token,
+    }
+}
+
+fn top_models_header(layout: TopModelsLayout, muted: Color) -> Row<'static> {
+    let header_style = Style::default().fg(muted).add_modifier(Modifier::BOLD);
+    let mut cells = Vec::new();
+    if layout.rank > 0 {
+        cells.push(table_right_cell("#", header_style));
+    }
+    cells.push(table_text_cell("Model", header_style));
+    if layout.provider > 0 {
+        cells.push(table_text_cell("Provider", header_style));
+    }
+    cells.push(table_right_cell("Cost", header_style));
+    if layout.pct > 0 {
+        cells.push(table_right_cell("%", header_style));
+    }
+    if layout.bar > 0 {
+        cells.push(table_text_cell("Cost Bar", header_style));
+    }
+    if layout.token > 0 {
+        cells.push(table_right_cell("Input", header_style));
+        cells.push(table_right_cell("Output", header_style));
+        cells.push(table_right_cell("Total", header_style));
+    } else {
+        let label = if layout.compact_token < 8 {
+            "Tok"
+        } else {
+            "Tokens"
+        };
+        cells.push(table_right_cell(label, header_style));
+    }
+    Row::new(cells).height(1)
+}
+
+fn top_model_row(
+    app: &App,
+    model: &ModelRowData,
+    index: usize,
+    layout: TopModelsLayout,
+    total_cost_for_share: f64,
+    total_tokens_for_share: u64,
+    cost_bar_scale: &MetricBarScale,
+) -> Row<'static> {
+    let selected = index == app.selected_index;
+    let row_style = if selected {
+        Style::default()
+            .bg(app.theme.selection)
+            .fg(app.theme.foreground)
+    } else {
+        Style::default()
+    };
+    let model_color = app.model_color_for(&model.provider, &model.color_key);
+    let percentage = match app.sort_field {
+        SortField::Tokens => (model.tokens_total as f64 / total_tokens_for_share as f64) * 100.0,
+        _ if model.cost.is_finite() => (model.cost / total_cost_for_share) * 100.0,
+        _ => 0.0,
+    };
+    let row_fg = if selected {
+        app.theme.foreground
+    } else {
+        model_color
+    };
+
+    let mut cells = Vec::new();
+    if layout.rank > 0 {
+        let marker = if selected { "▶" } else { " " };
+        cells.push(table_right_cell(
+            format!("{marker}{}", index + 1),
+            Style::default().fg(if selected {
+                app.theme.foreground
+            } else {
+                app.theme.muted
+            }),
+        ));
+    }
+    let name_width = layout.model.saturating_sub(2).max(1);
+    cells.push(table_bullet_cell(
+        model_color,
+        truncate_string(&model.label, name_width),
+        Style::default().fg(row_fg).add_modifier(Modifier::BOLD),
+    ));
+    if layout.provider > 0 {
+        let provider = crate::tui::colors::provider_color_key(&model.provider, &model.color_key);
+        cells.push(table_text_cell(
+            get_provider_display_name(&provider),
+            app.theme.secondary_text_style(),
+        ));
+    }
+    cells.push(table_right_cell(
+        format_cost(model.cost),
+        Style::default()
+            .fg(if selected {
+                app.theme.foreground
+            } else {
+                Color::Green
+            })
+            .add_modifier(Modifier::BOLD),
+    ));
+    if layout.pct > 0 {
+        cells.push(table_right_cell(
+            format!("{percentage:.1}%"),
+            app.theme.subtle_text_style(),
+        ));
+    }
+    if layout.bar > 0 {
+        cells.push(table_spans_cell(light_ratio_bar_spans(
+            metric_bar_ratio(model.cost, cost_bar_scale),
+            layout.bar,
+            Style::default().fg(model_color),
+            app.theme.subtle_text_style(),
+        )));
+    }
+    if layout.token > 0 {
+        cells.push(table_right_cell(
+            format_tokens(model.tokens_input),
+            app.theme.secondary_text_style(),
+        ));
+        cells.push(table_right_cell(
+            format_tokens(model.tokens_output),
+            app.theme.secondary_text_style(),
+        ));
+        cells.push(table_right_cell(
+            format_tokens(model.tokens_total),
+            app.theme.secondary_text_style(),
+        ));
+    } else {
+        cells.push(table_right_cell(
+            format_tokens_tiny(model.tokens_total),
+            app.theme.secondary_text_style(),
+        ));
+    }
+    Row::new(cells).style(row_style).height(1)
+}
+
+fn top_models_widths(layout: TopModelsLayout) -> Vec<Constraint> {
+    let mut widths = Vec::new();
+    if layout.rank > 0 {
+        widths.push(Constraint::Length(layout.rank as u16));
+    }
+    widths.push(Constraint::Length(layout.model as u16));
+    if layout.provider > 0 {
+        widths.push(Constraint::Length(layout.provider as u16));
+    }
+    widths.push(Constraint::Length(layout.cost as u16));
+    if layout.pct > 0 {
+        widths.push(Constraint::Length(layout.pct as u16));
+    }
+    if layout.bar > 0 {
+        widths.push(Constraint::Length(layout.bar as u16));
+    }
+    if layout.token > 0 {
+        widths.push(Constraint::Length(layout.token as u16));
+        widths.push(Constraint::Length(layout.token as u16));
+        widths.push(Constraint::Length(layout.token as u16));
+    } else {
+        widths.push(Constraint::Length(layout.compact_token as u16));
+    }
+    widths
 }
 
 fn format_tokens_tiny(tokens: u64) -> String {
@@ -1485,6 +1526,39 @@ mod tests {
 
         assert!(body.contains("Cost Bar"), "{body}");
         assert!(body.contains("·"), "{body}");
+    }
+
+    #[test]
+    fn scrollable_top_models_table_keeps_last_column_clear_of_scrollbar() {
+        let mut app = make_app(120);
+        app.data.models = (0..32)
+            .map(|index| {
+                model_usage(
+                    &format!("gpt-scroll-{index:02}"),
+                    "openai",
+                    120_000 - index as u64,
+                    35_000,
+                    64.0 - index as f64,
+                )
+            })
+            .collect();
+        app.data.total_tokens = app
+            .data
+            .models
+            .iter()
+            .map(|model| model.tokens.total())
+            .sum();
+        app.data.total_cost = app.data.models.iter().map(|model| model.cost).sum();
+        let body = render_body(&mut app, 120, 20);
+        let header = body
+            .lines()
+            .find(|line| line.contains("Model") && line.contains("Total") && line.contains("▲"))
+            .unwrap_or_else(|| panic!("missing scrollable top models header\n{body}"));
+
+        assert!(
+            visual_end_col(header, "Total") <= visual_col(header, "▲"),
+            "last table column should end before the scrollbar\n{body}"
+        );
     }
 
     #[test]

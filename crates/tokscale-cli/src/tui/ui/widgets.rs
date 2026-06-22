@@ -1,5 +1,5 @@
 use ratatui::prelude::*;
-use ratatui::widgets::ScrollbarState;
+use ratatui::widgets::{Cell, ScrollbarState};
 use tokscale_core::ClientId;
 
 use crate::tui::client_ui;
@@ -69,6 +69,19 @@ pub fn format_cache_hit_rate(cache_read: u64, input: u64, cache_write: u64) -> S
     format!("{:.1}x", ratio)
 }
 
+pub fn format_cache_hit_rate_with_unit(cache_read: u64, input: u64, cache_write: u64) -> String {
+    let paid = input.saturating_add(cache_write);
+    if paid == 0 {
+        return if cache_read > 0 {
+            "∞x".to_string()
+        } else {
+            "0.0x".to_string()
+        };
+    }
+    let ratio = cache_read as f64 / paid as f64;
+    format!("{:.1}x", ratio)
+}
+
 pub fn format_ms_per_1k(ms_per_1k_tokens: Option<f64>) -> String {
     let Some(value) = ms_per_1k_tokens else {
         return "—".to_string();
@@ -101,6 +114,44 @@ fn scrollbar_position(scroll_offset: usize, content_len: usize, viewport_len: us
         ((scroll_offset.min(max_scroll) as u128) * (content_len.saturating_sub(1) as u128)
             / (max_scroll as u128)) as usize
     }
+}
+
+pub(crate) fn table_area_with_scrollbar_gutter(
+    area: Rect,
+    content_len: usize,
+    viewport_len: usize,
+) -> Rect {
+    if content_len > viewport_len {
+        Rect {
+            width: area.width.saturating_sub(1),
+            ..area
+        }
+    } else {
+        area
+    }
+}
+
+pub(crate) fn table_text_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
+    Cell::from(Span::styled(text.into(), style))
+}
+
+pub(crate) fn table_right_cell(text: impl Into<String>, style: Style) -> Cell<'static> {
+    Cell::from(Line::from(Span::styled(text.into(), style)).right_aligned())
+}
+
+pub(crate) fn table_bullet_cell(
+    color: Color,
+    text: impl Into<String>,
+    style: Style,
+) -> Cell<'static> {
+    Cell::from(Line::from(vec![
+        Span::styled("● ", Style::default().fg(color)),
+        Span::styled(text.into(), style),
+    ]))
+}
+
+pub(crate) fn table_spans_cell(spans: Vec<Span<'static>>) -> Cell<'static> {
+    Cell::from(Line::from(spans))
 }
 
 pub(crate) fn light_ratio_bar_spans(

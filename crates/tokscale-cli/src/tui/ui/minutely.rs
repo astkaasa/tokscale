@@ -4,7 +4,9 @@ use ratatui::widgets::{
     Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table,
 };
 
-use super::widgets::{format_cache_hit_rate, format_cost, format_tokens, scrollbar_state};
+use super::widgets::{
+    format_cache_hit_rate_with_unit, format_cost, format_tokens, scrollbar_state,
+};
 use crate::tui::app::{App, SortDirection, SortField};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -65,12 +67,29 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     } else if has_turn_data {
         vec![
-            "Minute", "Source", "Turn", "Msgs", "Input", "Output", "Cache R", "Cache W", "Cache×",
-            "Total", "Cost",
+            "Minute",
+            "Source",
+            "Turn",
+            "Msgs",
+            "Input",
+            "Output",
+            "Cache R",
+            "Cache W",
+            "Cache hit",
+            "Total",
+            "Cost",
         ]
     } else {
         vec![
-            "Minute", "Source", "Msgs", "Input", "Output", "Cache R", "Cache W", "Cache×", "Total",
+            "Minute",
+            "Source",
+            "Msgs",
+            "Input",
+            "Output",
+            "Cache R",
+            "Cache W",
+            "Cache hit",
+            "Total",
             "Cost",
         ]
     };
@@ -207,7 +226,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                         .style(metric_cache_read_style),
                     Cell::from(format_tokens(minute.tokens.cache_write))
                         .style(metric_cache_write_style),
-                    Cell::from(format_cache_hit_rate(
+                    Cell::from(format_cache_hit_rate_with_unit(
                         minute.tokens.cache_read,
                         minute.tokens.input,
                         minute.tokens.cache_write,
@@ -262,7 +281,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(10),
         ]
@@ -275,7 +294,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(10),
         ]

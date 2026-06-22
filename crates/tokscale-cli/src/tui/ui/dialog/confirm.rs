@@ -63,7 +63,7 @@ impl ConfirmDialog {
             title: " Remove Codex Account ",
             message: "This will remove the saved Codex account from Tokscale.",
             target_label: account_label,
-            effect: "Saved fallback is deleted; active auth may move if needed",
+            effect: "Saved account is deleted; codex CLI login is unchanged",
             confirm_label: "Remove",
             confirm_verb: "remove",
             tone: ConfirmTone::Danger,
@@ -251,7 +251,7 @@ impl DialogContent for ConfirmDialog {
         }
 
         let hint = Line::from(Span::styled(
-            format!("Enter/y {} • n/Esc cancel", self.confirm_verb),
+            format!("Enter/y {} - n/Esc cancel", self.confirm_verb),
             Style::default().fg(theme.muted),
         ))
         .centered();
@@ -358,6 +358,6 @@ mod tests {
         let body = render_dialog(10, 8);
 
         assert!(body.contains("Target"), "{body}");
-        assert!(!body.contains("…"), "{body}");
+        assert!(!body.contains("..."), "{body}");
     }
 }
