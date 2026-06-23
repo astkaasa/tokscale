@@ -53,7 +53,6 @@ fn test_tab_short_name() {
 #[test]
 fn test_reset_selection() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -76,7 +75,6 @@ fn test_reset_selection() {
 #[test]
 fn test_move_selection_up() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -124,7 +122,6 @@ fn test_move_selection_up() {
 #[test]
 fn test_move_selection_down() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -172,7 +169,6 @@ fn test_move_selection_down() {
 #[test]
 fn test_clamp_selection() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -211,7 +207,6 @@ fn test_clamp_selection() {
 #[test]
 fn test_set_sort() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -244,7 +239,6 @@ fn test_set_sort() {
 #[test]
 fn test_should_quit() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -261,7 +255,6 @@ fn test_should_quit() {
 
 fn make_app() -> App {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -595,7 +588,6 @@ fn test_handle_key_tab_switch_includes_minutely_when_enabled() {
 #[test]
 fn test_initial_minutely_tab_clamps_to_overview_when_flag_off() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -1142,7 +1134,6 @@ fn test_switch_tab_restores_hourly_date_default() {
 #[test]
 fn test_initial_hourly_tab_uses_hourly_sort_default() {
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: None,
@@ -1165,7 +1156,6 @@ fn test_today_filter_initializes_overview_today_mode() {
         .format("%Y-%m-%d")
         .to_string();
     let config = TuiConfig {
-        theme: "blue".to_string(),
         refresh: 0,
         clients: None,
         since: Some(today.clone()),
@@ -1326,22 +1316,6 @@ fn test_overview_scroll_keeps_rendered_capacity_after_resize() {
 
     assert_eq!(app.selected_index, 32);
     assert_eq!(app.scroll_offset, 24);
-}
-
-// ── handle_key_event: theme ─────────────────────────────────────
-
-#[test]
-fn test_handle_key_theme_cycle() {
-    let mut app = make_app();
-    let initial_theme = app.theme.name;
-
-    app.handle_key_event(key(KeyCode::Char('p')));
-    assert_ne!(app.theme.name, initial_theme);
-
-    for _ in 0..8 {
-        app.handle_key_event(key(KeyCode::Char('p')));
-    }
-    assert_eq!(app.theme.name, initial_theme);
 }
 
 // ── handle_key_event: export ────────────────────────────────────

@@ -684,7 +684,6 @@ mod tests {
 
     fn test_app() -> App {
         let config = TuiConfig {
-            theme: "blue".to_string(),
             refresh: 0,
             clients: None,
             since: None,

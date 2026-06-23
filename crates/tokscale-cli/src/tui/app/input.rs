@@ -120,9 +120,6 @@ impl App {
             KeyCode::Char('j') => {
                 self.jump_to_today();
             }
-            KeyCode::Char('p') => {
-                self.cycle_theme();
-            }
             KeyCode::Char('r') => {
                 if self.current_tab == Tab::Usage {
                     self.refresh_usage();

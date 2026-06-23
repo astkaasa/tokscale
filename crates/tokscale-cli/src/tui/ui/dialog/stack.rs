@@ -22,11 +22,6 @@ impl DialogStack {
         }
     }
 
-    /// Update the theme
-    pub fn set_theme(&mut self, theme: Theme) {
-        self.theme = theme;
-    }
-
     /// Push a new dialog onto the stack
     pub fn show(&mut self, dialog: Box<dyn DialogContent>) {
         self.stack.push(dialog);

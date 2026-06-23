@@ -8,9 +8,6 @@ pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
 
-    #[arg(short, long, default_value = "blue")]
-    pub(crate) theme: String,
-
     #[arg(short, long, default_value = "0")]
     pub(crate) refresh: u64,
 

@@ -399,7 +399,6 @@ mod tests {
     /// sorted newest-first like the live default.
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
-            theme: "blue".to_string(),
             refresh: 0,
             clients: None,
             since: None,

@@ -1220,7 +1220,6 @@ mod tests {
 
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
-            theme: "blue".to_string(),
             refresh: 0,
             clients: None,
             since: None,
@@ -1780,7 +1779,6 @@ mod tests {
     #[test]
     fn today_live_dashboard_shows_loading_state_for_empty_background_scan() {
         let config = TuiConfig {
-            theme: "blue".to_string(),
             refresh: 0,
             clients: None,
             since: None,

@@ -7,8 +7,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokscale_core::scanner::ScannerSettings;
 
-use super::themes::ThemeName;
-
 const DEFAULT_AUTO_REFRESH_MS: u64 = 60_000;
 const MIN_AUTO_REFRESH_MS: u64 = 30_000;
 const MAX_AUTO_REFRESH_MS: u64 = 3_600_000;
@@ -46,8 +44,6 @@ pub struct LightSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    #[serde(default = "default_color_palette")]
-    pub color_palette: String,
     #[serde(default)]
     pub auto_refresh_enabled: bool,
     #[serde(default = "default_auto_refresh_ms")]
@@ -102,8 +98,8 @@ pub struct Settings {
 /// else. Hand-edited settings.json files sometimes end up with stray nulls,
 /// numbers, or trailing trash; failing the whole load over one bad element
 /// would silently fall back to defaults for *every* setting in the file
-/// (theme, scanner paths, etc.), which is a much worse user experience
-/// than dropping the bad entry.
+/// (scanner paths, default clients, etc.), which is a much worse user
+/// experience than dropping the bad entry.
 fn deserialize_string_array_lossy<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -114,10 +110,6 @@ where
         .flatten()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect())
-}
-
-fn default_color_palette() -> String {
-    "blue".to_string()
 }
 
 fn default_auto_refresh_ms() -> u64 {
@@ -131,7 +123,6 @@ fn default_native_timeout_ms() -> u64 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            color_palette: default_color_palette(),
             auto_refresh_enabled: false,
             auto_refresh_ms: DEFAULT_AUTO_REFRESH_MS,
             include_unused_models: false,
@@ -235,7 +226,7 @@ impl Settings {
 
         // Transparent macOS fallback: pre-fix releases wrote settings.json under
         // `~/Library/Application Support/tokscale/`. Read it once if the new
-        // path is empty so users don't lose theme / scanner / defaultClients
+        // path is empty so users don't lose scanner / defaultClients
         // preferences after upgrading. The next `save()` lands at the new
         // canonical path under `~/.config/tokscale/`. Skipped when the user
         // has explicitly pinned a config root via `TOKSCALE_CONFIG_DIR` so
@@ -297,14 +288,6 @@ impl Settings {
         }
 
         write_result
-    }
-
-    pub fn theme_name(&self) -> ThemeName {
-        self.color_palette.parse().unwrap_or(ThemeName::Blue)
-    }
-
-    pub fn set_theme(&mut self, theme: ThemeName) {
-        self.color_palette = theme.as_str().to_string();
     }
 
     pub fn get_auto_refresh_interval(&self) -> Option<Duration> {
@@ -394,15 +377,20 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = Settings::explicit_home_config_path(temp.path());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            r#"{"colorPalette":"halloween","defaultClients":["codex"]}"#,
-        )
-        .unwrap();
+        fs::write(&path, r#"{"defaultClients":["codex"]}"#).unwrap();
 
         let loaded = Settings::load_for_home_override(Some(temp.path()));
-        assert_eq!(loaded.color_palette, "halloween");
         assert_eq!(loaded.default_clients, vec!["codex".to_string()]);
+    }
+
+    #[test]
+    fn settings_ignores_legacy_color_palette_when_saving() {
+        let json = r#"{"colorPalette":"dark"}"#;
+        let parsed: Settings = serde_json::from_str(json).unwrap();
+
+        let serialized = serde_json::to_value(&parsed).unwrap();
+        assert!(serialized.get("theme").is_none());
+        assert!(serialized.get("colorPalette").is_none());
     }
 
     #[test]
@@ -411,7 +399,7 @@ mod tests {
     fn load_falls_back_to_legacy_macos_path_when_new_path_missing() {
         // Sandbox HOME so the test never reads or writes a real user's
         // settings.json. Existing macOS users upgrading to the unified
-        // path must keep the theme + scanner settings they already have
+        // path must keep the scanner settings they already have
         // under `~/Library/Application Support/tokscale/`.
         use std::env;
         let temp = tempfile::TempDir::new().unwrap();
@@ -426,7 +414,7 @@ mod tests {
         fs::create_dir_all(&legacy_dir).unwrap();
         fs::write(
             legacy_dir.join("settings.json"),
-            r#"{"colorPalette":"halloween","defaultClients":["opencode"]}"#,
+            r#"{"defaultClients":["opencode"]}"#,
         )
         .unwrap();
 
@@ -435,7 +423,6 @@ mod tests {
         assert!(!new_path.exists());
 
         let loaded = Settings::load();
-        assert_eq!(loaded.color_palette, "halloween");
         assert_eq!(loaded.default_clients, vec!["opencode".to_string()]);
 
         unsafe {
@@ -455,8 +442,8 @@ mod tests {
     #[serial_test::serial]
     fn load_skips_legacy_macos_fallback_when_config_dir_overridden() {
         // The whole point of TOKSCALE_CONFIG_DIR is hermeticity. CI sandboxes,
-        // tests, and isolated profiles MUST NOT silently inherit theme /
-        // scanner / defaultClients from `~/Library/Application Support/`
+        // tests, and isolated profiles MUST NOT silently inherit scanner /
+        // defaultClients from `~/Library/Application Support/`
         // when the user explicitly pinned a config root.
         use std::env;
         let temp = tempfile::TempDir::new().unwrap();
@@ -474,16 +461,11 @@ mod tests {
         fs::create_dir_all(&legacy_dir).unwrap();
         fs::write(
             legacy_dir.join("settings.json"),
-            r#"{"colorPalette":"halloween","defaultClients":["opencode"]}"#,
+            r#"{"defaultClients":["opencode"]}"#,
         )
         .unwrap();
 
         let loaded = Settings::load();
-        assert_eq!(
-            loaded.color_palette,
-            Settings::default().color_palette,
-            "override must yield default settings, not the legacy file's halloween palette"
-        );
         assert!(
             loaded.default_clients.is_empty(),
             "override must not leak defaultClients from the legacy macOS path"
@@ -506,7 +488,6 @@ mod tests {
         // Older settings.json files predate the `scanner` key. They must
         // still deserialize cleanly and fall through to ScannerSettings::default.
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -519,7 +500,6 @@ mod tests {
     #[test]
     fn settings_load_reads_scanner_opencode_db_paths() {
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -544,7 +524,6 @@ mod tests {
     #[test]
     fn settings_load_reads_scanner_extra_scan_paths() {
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -573,7 +552,6 @@ mod tests {
     fn settings_accepts_empty_scanner_object() {
         // `"scanner": {}` is the documented "no-op" form; must be valid.
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -601,7 +579,6 @@ mod tests {
     #[test]
     fn settings_round_trips_scanner_extra_scan_paths_through_json() {
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -628,7 +605,6 @@ mod tests {
         // Older settings.json files have no `defaultClients` key — they
         // must still parse and yield the "no defaults configured" state.
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -644,7 +620,6 @@ mod tests {
         // what `tokscale --client opencode,claude` consults when no CLI
         // flag is present.
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -672,11 +647,9 @@ mod tests {
     #[test]
     fn settings_default_clients_drops_non_string_elements_silently() {
         let json = r#"{
-            "colorPalette": "halloween",
             "defaultClients": ["opencode", 123, null, "claude", true, {"x":1}]
         }"#;
         let parsed: Settings = serde_json::from_str(json).expect("settings should still load");
-        assert_eq!(parsed.color_palette, "halloween");
         assert_eq!(
             parsed.default_clients,
             vec!["opencode".to_string(), "claude".to_string()]
@@ -686,7 +659,6 @@ mod tests {
     #[test]
     fn settings_load_accepts_legacy_json_without_light_section() {
         let json = r#"{
-            "colorPalette": "blue",
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
             "includeUnusedModels": false,
@@ -706,7 +678,7 @@ mod tests {
 
     #[test]
     fn settings_env_defaults_to_empty() {
-        let json = r#"{ "colorPalette": "blue" }"#;
+        let json = r#"{}"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();
         assert!(parsed.env.is_empty());
     }
@@ -764,7 +736,7 @@ mod tests {
 
     #[test]
     fn settings_minutely_tab_enabled_defaults_to_false() {
-        let json = r#"{ "colorPalette": "blue" }"#;
+        let json = r#"{}"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();
         assert!(!parsed.minutely_tab_enabled);
         assert!(!Settings::default().minutely_tab_enabled);
@@ -773,7 +745,6 @@ mod tests {
     #[test]
     fn settings_minutely_tab_enabled_round_trips_when_set() {
         let json = r#"{
-            "colorPalette": "blue",
             "minutelyTabEnabled": true
         }"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();

@@ -14,7 +14,7 @@ use crate::tui::drilldown_state::DrilldownView;
 use crate::tui::navigation::{ChartGranularity, HourlyViewMode, Tab, TimelineGranularity};
 use crate::tui::pulse_state::PulseState;
 use crate::tui::settings::Settings;
-use crate::tui::themes::{Theme, ThemeName};
+use crate::tui::themes::Theme;
 use crate::tui::ui::dialog::DialogStack;
 use crate::tui::ui::widgets::get_provider_shade;
 
@@ -40,11 +40,7 @@ impl App {
         fetch_on_entry: bool,
     ) -> Result<Self> {
         let settings = Settings::load();
-        let theme_name: ThemeName = config
-            .theme
-            .parse()
-            .unwrap_or_else(|_| settings.theme_name());
-        let theme = Theme::from_name_for_current_terminal(theme_name);
+        let theme = Theme::for_current_terminal();
 
         let enabled_clients: HashSet<ClientFilter> = if let Some(ref cli_clients) = config.clients {
             // CLI-provided filter list. Each entry is the canonical

@@ -322,7 +322,6 @@ fn labeled_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::themes::ThemeName;
     use ratatui::{backend::TestBackend, Terminal};
 
     fn render_dialog(width: u16, height: u16) -> String {
@@ -332,7 +331,7 @@ mod tests {
             "very-long-account-label".to_string(),
             confirmed,
         );
-        let theme = Theme::from_name_for_current_terminal(ThemeName::Blue);
+        let theme = Theme::for_current_terminal();
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal

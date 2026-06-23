@@ -29,7 +29,6 @@ use super::ui::dialog::DialogStack;
 
 /// Configuration for TUI initialization
 pub struct TuiConfig {
-    pub theme: String,
     pub refresh: u64,
     pub clients: Option<Vec<String>>,
     pub since: Option<String>,

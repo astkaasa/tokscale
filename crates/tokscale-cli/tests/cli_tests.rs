@@ -751,16 +751,6 @@ fn test_models_with_invalid_year() {
 }
 
 #[test]
-fn test_global_theme_flag() {
-    let mut cmd = cargo_bin_cmd!("tokscale");
-    cmd.arg("--theme")
-        .arg("blue")
-        .arg("--help")
-        .assert()
-        .success();
-}
-
-#[test]
 fn test_global_debug_flag() {
     let mut cmd = cargo_bin_cmd!("tokscale");
     cmd.arg("--debug").arg("--help").assert().success();

@@ -91,7 +91,6 @@ pub(crate) fn render_overview_html(
     let height = options.height.max(16);
     let mut app = App::new_surface_with_cached_data(
         TuiConfig {
-            theme: String::new(),
             refresh: 0,
             clients: options.clients,
             since: options.since,

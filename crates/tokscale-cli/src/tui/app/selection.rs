@@ -7,7 +7,6 @@ use crate::tui::navigation::{
     ChartGranularity, OverviewMode, SortDirection, SortField, Tab, TimelineGranularity,
 };
 use crate::tui::settings::Settings;
-use crate::tui::themes::Theme;
 use crate::tui::ui::dialog::ClientPickerDialog;
 
 use super::App;
@@ -371,22 +370,6 @@ impl App {
             self.set_status("Jumped to today's usage");
         } else {
             self.set_status("No usage recorded for today");
-        }
-    }
-
-    pub(crate) fn cycle_theme(&mut self) {
-        let new_theme = self.theme.name.next();
-        self.theme = Theme::from_name_for_current_terminal(new_theme);
-        self.dialog_stack.set_theme(self.theme.clone());
-        self.settings.set_theme(new_theme);
-        if let Err(e) = self.settings.save() {
-            self.set_status(&format!(
-                "Theme: {} (save failed: {})",
-                new_theme.as_str(),
-                e
-            ));
-        } else {
-            self.set_status(&format!("Theme: {}", new_theme.as_str()));
         }
     }
 
