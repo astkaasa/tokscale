@@ -10,7 +10,7 @@ use super::mix::{
     token_profile_lines, MixRow,
 };
 use super::widgets::{
-    format_cache_hit_rate_with_unit, format_cost, format_cost_per_million, format_tokens,
+    format_cache_ratio, format_cost, format_cost_per_million, format_tokens,
     get_client_display_name, get_provider_display_name, get_provider_shade, scrollbar_state,
     table_area_with_scrollbar_gutter, table_right_cell, table_text_cell,
     truncate_ascii as truncate,
@@ -23,7 +23,7 @@ use crate::tui::data::{DailyUsage, HourlyModelInfo, HourlyUsage, TokenBreakdown}
 const TIMELINE_INSPECTOR_MIN_WIDTH: u16 = 36;
 const TIMELINE_INSPECTOR_MAX_WIDTH: u16 = 52;
 const TIMELINE_WIDE_MIN_WIDTH: u16 = 104;
-const TIMELINE_CACHE_HIT_WIDTH: usize = 9;
+const TIMELINE_CACHE_RATIO_WIDTH: usize = 11;
 
 #[derive(Clone)]
 struct TimelineMixRow {
@@ -129,7 +129,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
     // shrink the date column, freeing 5 columns. `full_layout_width` is the
     // ideal full-mode total (Length(12) date + spacing); keep it in sync with
     // the `widths` block below.
-    let full_layout_width: u16 = if has_turn_data { 113 } else { 106 };
+    let full_layout_width: u16 = if has_turn_data { 115 } else { 108 };
     let compact_full_date = !is_narrow && !is_very_narrow && inner.width < full_layout_width;
     let date_col_width: u16 = if compact_full_date { 7 } else { 12 };
     let date_fmt: &str = if is_very_narrow {
@@ -157,7 +157,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
             "Output",
             "Cache R",
             "Cache W",
-            "Cache hit",
+            "Cache Ratio",
             "Total",
             "Cost",
             "Cost/1M",
@@ -170,7 +170,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
             "Output",
             "Cache R",
             "Cache W",
-            "Cache hit",
+            "Cache Ratio",
             "Total",
             "Cost",
             "Cost/1M",
@@ -296,7 +296,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
                     Cell::from(format_tokens(day.tokens.cache_read)).style(metric_cache_read_style),
                     Cell::from(format_tokens(day.tokens.cache_write))
                         .style(metric_cache_write_style),
-                    Cell::from(format_cache_hit_rate_with_unit(
+                    Cell::from(format_cache_ratio(
                         day.tokens.cache_read,
                         day.tokens.input,
                         day.tokens.cache_write,
@@ -365,7 +365,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -378,7 +378,7 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -527,7 +527,7 @@ fn timeline_table_header(app: &App, layout: TimelineTableLayout) -> Row<'static>
     if layout.show_messages {
         cells.push(table_right_cell("Msgs", header_style));
     }
-    cells.push(table_right_cell("Cache hit", header_style));
+    cells.push(table_right_cell("Cache Ratio", header_style));
     Row::new(cells).height(1)
 }
 
@@ -603,7 +603,7 @@ fn timeline_table_row(
         ));
     }
     cells.push(table_right_cell(
-        format_cache_hit_rate_with_unit(
+        format_cache_ratio(
             row.tokens.cache_read,
             row.tokens.input,
             row.tokens.cache_write,
@@ -618,7 +618,7 @@ fn timeline_table_layout(app: &App, width: u16) -> TimelineTableLayout {
     let show_messages = width >= 94;
     let rank_width = 4usize;
     let time_width = timeline_time_width(app);
-    let cache_width = TIMELINE_CACHE_HIT_WIDTH;
+    let cache_width = TIMELINE_CACHE_RATIO_WIDTH;
     let mut fixed_without_model = rank_width + time_width + 10 + 10 + cache_width;
     let mut columns = 6usize;
     if show_provider {
@@ -658,7 +658,7 @@ fn timeline_table_widths(layout: TimelineTableLayout) -> Vec<Constraint> {
     if layout.show_messages {
         widths.push(Constraint::Length(7));
     }
-    widths.push(Constraint::Length(TIMELINE_CACHE_HIT_WIDTH as u16));
+    widths.push(Constraint::Length(TIMELINE_CACHE_RATIO_WIDTH as u16));
     widths
 }
 
@@ -1298,7 +1298,7 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             "Output",
             "Cache R",
             "Cache W",
-            "Cache hit",
+            "Cache Ratio",
             "Total",
             "Cost",
         ]
@@ -1395,7 +1395,7 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
                     Cell::from(format_tokens(row.tokens.cache_read)).style(metric_cache_read_style),
                     Cell::from(format_tokens(row.tokens.cache_write))
                         .style(metric_cache_write_style),
-                    Cell::from(format_cache_hit_rate_with_unit(
+                    Cell::from(format_cache_ratio(
                         row.tokens.cache_read,
                         row.tokens.input,
                         row.tokens.cache_write,
@@ -1439,7 +1439,7 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(10),
         ]
@@ -1642,7 +1642,10 @@ mod tests {
         assert!(body.contains("Selected Day"), "expected inspector\n{body}");
         assert!(body.contains("Summary"), "expected day summary\n{body}");
         assert!(body.contains("Token Mix"), "expected token mix\n{body}");
-        assert!(body.contains("Cache hit"), "expected token profile\n{body}");
+        assert!(
+            body.contains("Cache Ratio"),
+            "expected token profile\n{body}"
+        );
     }
 
     #[test]
@@ -1656,10 +1659,10 @@ mod tests {
             .expect("timeline table header");
 
         assert!(
-            header.contains("Cache hit"),
+            header.contains("Cache Ratio"),
             "expected cache column\n{body}"
         );
-        assert!(body.contains("3.0x"), "expected cache hit value\n{body}");
+        assert!(body.contains("74.8%"), "expected cache ratio value\n{body}");
         assert!(
             !header.contains("Sources"),
             "sources should not be a table column\n{body}"
@@ -1679,11 +1682,11 @@ mod tests {
         let body = render_body(&mut app, 140, 12);
         let header = body
             .lines()
-            .find(|line| line.contains("Day") && line.contains("Cache hit") && line.contains("▲"))
+            .find(|line| line.contains("Day") && line.contains("Cache Ratio") && line.contains("▲"))
             .unwrap_or_else(|| panic!("missing scrollable timeline header\n{body}"));
 
         assert!(
-            visual_end_col(header, "Cache hit") <= visual_col(header, "▲"),
+            visual_end_col(header, "Cache Ratio") <= visual_col(header, "▲"),
             "last table column should end before the scrollbar\n{body}"
         );
     }
@@ -1738,8 +1741,8 @@ mod tests {
         assert!(body.contains("Cache read"), "{body}");
         assert!(body.contains("Cache write"), "{body}");
         assert!(body.contains("14.1M"), "{body}");
-        assert!(body.contains("Cache hit"), "{body}");
-        assert!(body.contains("28.8x"), "{body}");
+        assert!(body.contains("Cache Ratio"), "{body}");
+        assert!(body.contains("96.6%"), "{body}");
         assert!(!body.contains("█"), "{body}");
         assert!(!body.contains("·"), "{body}");
         assert!(!body.contains("●"), "{body}");

@@ -1491,7 +1491,7 @@ mod tests {
         assert!(body.contains("Provider Mix"), "{body}");
         assert!(body.contains("Token Mix"), "{body}");
         assert!(body.contains("%"), "{body}");
-        assert!(body.contains("Cache hit"), "{body}");
+        assert!(body.contains("Cache Ratio"), "{body}");
         assert!(!body.contains("Top Models"), "{body}");
         assert!(
             !body.contains("█"),

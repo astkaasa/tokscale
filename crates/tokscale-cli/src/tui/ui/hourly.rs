@@ -6,8 +6,7 @@ use ratatui::widgets::{
 
 use super::hourly_profile;
 use super::widgets::{
-    format_cache_hit_rate_with_unit, format_cost, format_cost_per_million, format_tokens,
-    scrollbar_state,
+    format_cache_ratio, format_cost, format_cost_per_million, format_tokens, scrollbar_state,
 };
 use crate::tui::app::{App, HourlyViewMode, SortDirection, SortField};
 
@@ -87,7 +86,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
             "Output",
             "Cache R",
             "Cache W",
-            "Cache hit",
+            "Cache Ratio",
             "Total",
             "Cost",
             "Cost/1M",
@@ -101,7 +100,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
             "Output",
             "Cache R",
             "Cache W",
-            "Cache hit",
+            "Cache Ratio",
             "Total",
             "Cost",
             "Cost/1M",
@@ -262,7 +261,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(format_tokens(hour.tokens.output)).style(metric_output_style),
                 Cell::from(format_tokens(hour.tokens.cache_read)).style(metric_cache_read_style),
                 Cell::from(format_tokens(hour.tokens.cache_write)).style(metric_cache_write_style),
-                Cell::from(format_cache_hit_rate_with_unit(
+                Cell::from(format_cache_ratio(
                     hour.tokens.cache_read,
                     hour.tokens.input,
                     hour.tokens.cache_write,
@@ -326,7 +325,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
@@ -340,7 +339,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),

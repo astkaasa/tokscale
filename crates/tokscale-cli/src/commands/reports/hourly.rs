@@ -195,7 +195,7 @@ pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
                 Cell::new("Output").fg(Color::Cyan),
                 Cell::new("Cache R").fg(Color::Cyan),
                 Cell::new("Cache W").fg(Color::Cyan),
-                Cell::new("Cache×").fg(Color::Cyan),
+                Cell::new("Cache Ratio").fg(Color::Cyan),
                 Cell::new("Cost").fg(Color::Cyan),
                 Cell::new("Cost/1M").fg(Color::Cyan),
             ]);
@@ -221,18 +221,11 @@ pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
                     unique.join(", ")
                 };
 
-                let cache_hit = {
-                    let paid = (entry.input as u64).saturating_add(entry.cache_write as u64);
-                    if paid == 0 {
-                        if entry.cache_read > 0 {
-                            "∞".to_string()
-                        } else {
-                            "—".to_string()
-                        }
-                    } else {
-                        format!("{:.1}x", entry.cache_read as f64 / paid as f64)
-                    }
-                };
+                let cache_ratio = format_cache_ratio(
+                    entry.cache_read as u64,
+                    entry.input as u64,
+                    entry.cache_write as u64,
+                );
 
                 let turn_display = if entry.turn_count > 0 {
                     entry.turn_count.to_string()
@@ -257,7 +250,7 @@ pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
                         .set_alignment(CellAlignment::Right),
                     Cell::new(format_tokens_with_commas(entry.cache_write))
                         .set_alignment(CellAlignment::Right),
-                    Cell::new(&cache_hit)
+                    Cell::new(&cache_ratio)
                         .fg(Color::Cyan)
                         .set_alignment(CellAlignment::Right),
                     Cell::new(format_currency(entry.cost))
@@ -298,4 +291,12 @@ pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn format_cache_ratio(cache_read: u64, input: u64, cache_write: u64) -> String {
+    let input_side = input.saturating_add(cache_read).saturating_add(cache_write);
+    if input_side == 0 {
+        return "—".to_string();
+    }
+    format!("{:.1}%", cache_read as f64 / input_side as f64 * 100.0)
 }

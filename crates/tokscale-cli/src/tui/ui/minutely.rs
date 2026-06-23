@@ -4,9 +4,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table,
 };
 
-use super::widgets::{
-    format_cache_hit_rate_with_unit, format_cost, format_tokens, scrollbar_state,
-};
+use super::widgets::{format_cache_ratio, format_cost, format_tokens, scrollbar_state};
 use crate::tui::app::{App, SortDirection, SortField};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -75,7 +73,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             "Output",
             "Cache R",
             "Cache W",
-            "Cache hit",
+            "Cache Ratio",
             "Total",
             "Cost",
         ]
@@ -88,7 +86,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             "Output",
             "Cache R",
             "Cache W",
-            "Cache hit",
+            "Cache Ratio",
             "Total",
             "Cost",
         ]
@@ -226,7 +224,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                         .style(metric_cache_read_style),
                     Cell::from(format_tokens(minute.tokens.cache_write))
                         .style(metric_cache_write_style),
-                    Cell::from(format_cache_hit_rate_with_unit(
+                    Cell::from(format_cache_ratio(
                         minute.tokens.cache_read,
                         minute.tokens.input,
                         minute.tokens.cache_write,
@@ -281,7 +279,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(10),
         ]
@@ -294,7 +292,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Length(10),
         ]

@@ -3,10 +3,10 @@ use ratatui::widgets::{Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrien
 
 use super::mix::token_profile_lines;
 use super::widgets::{
-    format_cache_hit_rate, format_cache_hit_rate_with_unit, format_cost, format_cost_per_million,
-    format_ms_per_1k, format_tokens, get_client_display_name, get_provider_display_name,
-    light_ratio_bar_spans, scrollbar_state, table_area_with_scrollbar_gutter, table_bullet_cell,
-    table_right_cell, table_text_cell, truncate_ellipsis as truncate,
+    format_cache_ratio, format_cost, format_cost_per_million, format_ms_per_1k, format_tokens,
+    get_client_display_name, get_provider_display_name, light_ratio_bar_spans, scrollbar_state,
+    table_area_with_scrollbar_gutter, table_bullet_cell, table_right_cell, table_text_cell,
+    truncate_ellipsis as truncate,
 };
 use crate::tui::app::{App, ClickAction, SortDirection, SortField};
 use crate::tui::data::ModelUsage;
@@ -45,7 +45,7 @@ impl RankingLayout {
         let tokens = if width >= 44 { 9 } else { 0 };
         let input = if width >= 84 { 9 } else { 0 };
         let output = if width >= 84 { 9 } else { 0 };
-        let cache = if width >= 104 { 9 } else { 0 };
+        let cache = if width >= 104 { 11 } else { 0 };
 
         let mut fixed = 0usize;
         for column in [rank, provider, cost, pct, tokens, input, output, cache] {
@@ -228,7 +228,7 @@ fn ranking_header(app: &App, layout: RankingLayout) -> Row<'static> {
         cells.push(table_right_cell("Output", header_style));
     }
     if layout.cache > 0 {
-        cells.push(table_right_cell("Cache hit", header_style));
+        cells.push(table_right_cell("Cache Ratio", header_style));
     }
     Row::new(cells).height(1)
 }
@@ -329,7 +329,7 @@ fn ranking_row(
     }
     if layout.cache > 0 {
         cells.push(table_right_cell(
-            format_cache_hit_rate_with_unit(
+            format_cache_ratio(
                 model.tokens.cache_read,
                 model.tokens.input,
                 model.tokens.cache_write,
@@ -463,8 +463,8 @@ fn render_inspector(frame: &mut Frame, app: &App, area: Rect) {
                 app,
             ),
             kv_line(
-                "Cache reuse",
-                &format_cache_hit_rate(
+                "Cache Ratio",
+                &format_cache_ratio(
                     model.tokens.cache_read,
                     model.tokens.input,
                     model.tokens.cache_write,
@@ -779,7 +779,7 @@ mod tests {
 
         assert!(rendered.contains("Selection"));
         assert!(rendered.contains("Token Mix"));
-        assert!(rendered.contains("Cache hit"));
+        assert!(rendered.contains("Cache Ratio"));
         assert!(rendered.contains("Cost / 1M"));
     }
 
@@ -791,8 +791,8 @@ mod tests {
             .find(|line| line.contains("#") && line.contains("Model") && line.contains("Cost"))
             .expect("models table header");
 
-        assert!(header.contains("Cache hit"), "{rendered}");
-        assert!(rendered.contains("0.2x"), "{rendered}");
+        assert!(header.contains("Cache Ratio"), "{rendered}");
+        assert!(rendered.contains("16.0%"), "{rendered}");
         assert!(!header.contains("Sessions"), "{rendered}");
         assert!(!header.contains("ms/1K"), "{rendered}");
     }
@@ -811,11 +811,13 @@ mod tests {
         let rendered = render_models_with_data(200, 12, models);
         let header = rendered
             .lines()
-            .find(|line| line.contains("Model") && line.contains("Cache hit") && line.contains("▲"))
+            .find(|line| {
+                line.contains("Model") && line.contains("Cache Ratio") && line.contains("▲")
+            })
             .unwrap_or_else(|| panic!("missing scrollable models header\n{rendered}"));
 
         assert!(
-            visual_end_col(header, "Cache hit") <= visual_col(header, "▲"),
+            visual_end_col(header, "Cache Ratio") <= visual_col(header, "▲"),
             "last table column should end before the scrollbar\n{rendered}"
         );
     }
@@ -884,7 +886,7 @@ mod tests {
             "Efficiency",
             vec![
                 kv_line("Cost / 1M", "$0.96", &app),
-                kv_line("Cache reuse", "17.2x", &app),
+                kv_line("Cache Ratio", "94.5%", &app),
                 kv_line("Sessions", "109", &app),
             ],
             Rect::new(0, 0, 34, 10),
@@ -896,7 +898,7 @@ mod tests {
         assert_eq!(lines.len(), 10);
         assert!(body.contains("Efficiency"), "{body}");
         assert!(body.contains("Cost / 1M"), "{body}");
-        assert!(body.contains("Cache reuse"), "{body}");
+        assert!(body.contains("Cache Ratio"), "{body}");
         assert!(!body.contains("Sessions"), "{body}");
     }
 }

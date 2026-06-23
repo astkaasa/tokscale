@@ -2,7 +2,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 
 use super::widgets::{
-    format_cache_hit_rate, format_cost, format_tokens, light_ratio_bar_spans,
+    format_cache_ratio, format_cost, format_tokens, light_ratio_bar_spans,
     truncate_ascii as truncate,
 };
 use crate::tui::app::App;
@@ -181,8 +181,8 @@ pub(crate) fn token_profile_lines(
         ));
     }
     rows.push((
-        "Cache hit",
-        format_cache_hit_rate(tokens.cache_read, tokens.input, tokens.cache_write),
+        "Cache Ratio",
+        format_cache_ratio(tokens.cache_read, tokens.input, tokens.cache_write),
         app.theme.accent,
     ));
     if max_lines > rows.len() {
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn token_profile_lines_show_cache_hit_without_ratio_bars() {
+    fn token_profile_lines_show_cache_ratio_without_ratio_bars() {
         let app = test_app();
         let tokens = TokenBreakdown {
             input: 490_000,
@@ -750,8 +750,8 @@ mod tests {
         assert!(body.contains("Input"), "{body}");
         assert!(body.contains("Cache read"), "{body}");
         assert!(body.contains("Cache write"), "{body}");
-        assert!(body.contains("Cache hit"), "{body}");
-        assert!(body.contains("28.8x"), "{body}");
+        assert!(body.contains("Cache Ratio"), "{body}");
+        assert!(body.contains("96.6%"), "{body}");
         assert!(!body.contains("█"), "{body}");
         assert!(!body.contains("▏"), "{body}");
         assert!(lines.iter().all(|line| line.width() <= 33), "{body}");
