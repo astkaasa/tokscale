@@ -58,6 +58,7 @@ pub struct App {
     pub should_quit: bool,
     pub current_tab: Tab,
     pub theme: Theme,
+    theme_preference: ThemePreference,
     pub settings: Settings,
     pub data: UsageData,
     pub data_loader: DataLoader,

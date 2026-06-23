@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::tui::navigation::{Tab, TimelineGranularity};
+use crate::tui::themes::Theme;
 
 use super::App;
 
@@ -49,6 +50,22 @@ impl App {
             self.set_status(&format!("{} (save failed: {})", msg, e));
         } else {
             self.set_status(&msg);
+        }
+    }
+
+    pub(crate) fn toggle_theme(&mut self) {
+        let next = self.theme_preference.toggled();
+        self.theme_preference = next;
+        self.settings.ui_theme = next;
+
+        let theme = Theme::for_current_terminal_with_preference(next);
+        self.theme = theme.clone();
+        self.dialog_stack.set_theme(theme);
+
+        let msg = format!("Theme: {}", next.label());
+        match self.settings.save() {
+            Ok(()) => self.set_status(&msg),
+            Err(e) => self.set_status(&format!("{} (save failed: {})", msg, e)),
         }
     }
 

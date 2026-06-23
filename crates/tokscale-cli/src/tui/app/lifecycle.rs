@@ -95,6 +95,7 @@ impl App {
             should_quit: false,
             current_tab,
             theme,
+            theme_preference,
             settings,
             data,
             data_loader,

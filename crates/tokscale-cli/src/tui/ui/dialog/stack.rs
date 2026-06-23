@@ -40,6 +40,10 @@ impl DialogStack {
         !self.stack.is_empty()
     }
 
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
     /// Render the dialog stack (backdrop + topmost dialog)
     pub fn render(&mut self, frame: &mut Frame, viewport: Rect) {
         let Some(top) = self.stack.last() else {

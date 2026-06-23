@@ -34,6 +34,9 @@ impl App {
                 self.should_quit = true;
                 return true;
             }
+            KeyCode::Char('p') => {
+                self.toggle_theme();
+            }
             KeyCode::Tab => {
                 let next = self.next_visible_tab();
                 self.switch_tab(next);

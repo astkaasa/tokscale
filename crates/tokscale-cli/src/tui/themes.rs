@@ -27,6 +27,23 @@ impl FromStr for ThemePreference {
     }
 }
 
+impl ThemePreference {
+    pub(crate) fn toggled(self) -> Self {
+        match self {
+            Self::Light => Self::Dark,
+            Self::Dark | Self::Auto => Self::Light,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::Auto => "auto",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThemeKind {
     Dark,

@@ -242,6 +242,7 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
                 SortField::Date,
             );
         }
+        push_theme_key_fit(&mut spans, app, width);
         return spans;
     }
 
@@ -263,6 +264,7 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         app.theme.muted,
         width,
     );
+    push_theme_key_fit(&mut spans, app, width);
 
     if app.current_tab == Tab::Usage {
         push_action_key_fit(
@@ -547,6 +549,18 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         width,
     );
     spans
+}
+
+fn push_theme_key_fit(spans: &mut Vec<Span<'static>>, app: &App, width: u16) {
+    push_key_fit(
+        spans,
+        "p",
+        "Theme",
+        Some("Theme"),
+        app.theme.accent,
+        app.theme.muted,
+        width,
+    );
 }
 
 fn timeline_key_color(app: &App, granularity: crate::tui::app::TimelineGranularity) -> Color {
@@ -1229,6 +1243,14 @@ mod tests {
 
         assert!(wide.contains("Navigate"), "{wide}");
         assert!(wide.contains("Workspace"), "{wide}");
+    }
+
+    #[test]
+    fn action_hints_include_theme_toggle_on_wide_panes() {
+        let mut app = make_app_on(Tab::Overview);
+        let hints = line_text(&Line::from(action_spans(&mut app, 0, 0, 120)));
+
+        assert!(hints.contains(" p  Theme"), "{hints}");
     }
 
     #[test]

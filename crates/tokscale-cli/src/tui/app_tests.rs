@@ -15,6 +15,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -1473,6 +1474,54 @@ fn test_handle_key_auto_refresh_toggle() {
     let initial = app.auto_refresh;
     app.handle_key_event(key_with_mod(KeyCode::Char('R'), KeyModifiers::SHIFT));
     assert_ne!(app.auto_refresh, initial);
+}
+
+#[test]
+#[serial_test::serial]
+fn test_handle_key_p_toggles_theme() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let prev_override = env::var_os("TOKSCALE_CONFIG_DIR");
+    unsafe {
+        env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+    }
+
+    let config = TuiConfig {
+        theme: Some(ThemePreference::Dark),
+        refresh: 0,
+        clients: None,
+        since: None,
+        until: None,
+        year: None,
+        initial_tab: None,
+    };
+    let mut app = App::new_with_cached_data(config, None).unwrap();
+
+    app.handle_key_event(key(KeyCode::Char('p')));
+
+    assert_eq!(app.settings.ui_theme, ThemePreference::Light);
+    assert!(matches!(
+        app.theme.background,
+        Color::Rgb(255, 255, 255) | Color::White
+    ));
+    assert_eq!(app.status_message.as_deref(), Some("Theme: light"));
+    let saved = std::fs::read_to_string(temp.path().join("settings.json")).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        saved.get("uiTheme").and_then(|value| value.as_str()),
+        Some("light")
+    );
+
+    app.handle_key_event(key(KeyCode::Char('p')));
+
+    assert_eq!(app.settings.ui_theme, ThemePreference::Dark);
+    assert_eq!(app.status_message.as_deref(), Some("Theme: dark"));
+
+    unsafe {
+        match prev_override {
+            Some(v) => env::set_var("TOKSCALE_CONFIG_DIR", v),
+            None => env::remove_var("TOKSCALE_CONFIG_DIR"),
+        }
+    }
 }
 
 #[test]
