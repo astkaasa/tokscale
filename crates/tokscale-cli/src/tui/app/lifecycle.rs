@@ -40,7 +40,8 @@ impl App {
         fetch_on_entry: bool,
     ) -> Result<Self> {
         let settings = Settings::load();
-        let theme = Theme::for_current_terminal();
+        let theme_preference = config.theme.unwrap_or(settings.ui_theme);
+        let theme = Theme::for_current_terminal_with_preference(theme_preference);
 
         let enabled_clients: HashSet<ClientFilter> = if let Some(ref cli_clients) = config.clients {
             // CLI-provided filter list. Each entry is the canonical

@@ -75,6 +75,7 @@ fn main() -> Result<()> {
                 tui::run(
                     cli.refresh,
                     cli.debug,
+                    cli.theme,
                     clients,
                     since,
                     until,
@@ -117,6 +118,7 @@ fn main() -> Result<()> {
                 tui::run(
                     cli.refresh,
                     cli.debug,
+                    cli.theme,
                     clients,
                     since,
                     until,
@@ -159,6 +161,7 @@ fn main() -> Result<()> {
                 tui::run(
                     cli.refresh,
                     cli.debug,
+                    cli.theme,
                     clients,
                     since,
                     until,
@@ -186,7 +189,16 @@ fn main() -> Result<()> {
             let year = normalize_year_filter(today, week, month, date.year);
             let clients = build_client_filter(clients, &cli.home);
             auto_sync_cursor_before_tui(&cli.home, &clients)?;
-            tui::run(cli.refresh, cli.debug, clients, since, until, year, None)
+            tui::run(
+                cli.refresh,
+                cli.debug,
+                cli.theme,
+                clients,
+                since,
+                until,
+                year,
+                None,
+            )
         }
         Some(Commands::Serve {
             port,
@@ -325,7 +337,16 @@ fn main() -> Result<()> {
             } else {
                 ensure_home_supported_for_tui(&cli.home)?;
                 auto_sync_cursor_before_tui(&cli.home, &clients)?;
-                tui::run(cli.refresh, cli.debug, clients, since, until, year, None)
+                tui::run(
+                    cli.refresh,
+                    cli.debug,
+                    cli.theme,
+                    clients,
+                    since,
+                    until,
+                    year,
+                    None,
+                )
             }
         }
     }

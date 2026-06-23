@@ -63,6 +63,9 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let metric_output_style = app.theme.metric_output_style();
     let metric_cache_read_style = app.theme.metric_cache_read_style();
     let metric_cache_write_style = app.theme.metric_cache_write_style();
+    let success_style = app.theme.success_style();
+    let warning_style = app.theme.warning_style();
+    let info_style = app.theme.info_style();
     let current_row_style = app.theme.current_row_style();
     let striped_row_style = app.theme.striped_row_style();
     let now = Local::now().naive_local();
@@ -164,9 +167,8 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let sep_style = Style::default()
+    let sep_style = striped_row_style
         .fg(theme_accent)
-        .bg(Color::Rgb(24, 28, 36))
         .add_modifier(Modifier::BOLD);
 
     // Turn count → display string ("—" when the hour has no turn data).
@@ -219,9 +221,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
         let time_str = hour.datetime.format("%H:00").to_string();
         let time_style = if is_current {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+            warning_style.add_modifier(Modifier::BOLD)
         } else if !is_narrow && !is_very_narrow {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
@@ -231,7 +231,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
         let cells: Vec<Cell> = if is_very_narrow {
             vec![
                 Cell::from(time_str).style(time_style),
-                Cell::from(format_cost(hour.cost)).style(Style::default().fg(Color::Green)),
+                Cell::from(format_cost(hour.cost)).style(success_style),
             ]
         } else if is_narrow {
             let mut cells = vec![
@@ -244,7 +244,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
             cells.extend([
                 Cell::from(hour.message_count.to_string()),
                 Cell::from(format_tokens(hour.tokens.total())),
-                Cell::from(format_cost(hour.cost)).style(Style::default().fg(Color::Green)),
+                Cell::from(format_cost(hour.cost)).style(success_style),
             ]);
             cells
         } else {
@@ -266,11 +266,11 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
                     hour.tokens.input,
                     hour.tokens.cache_write,
                 ))
-                .style(Style::default().fg(Color::Cyan)),
+                .style(info_style),
                 Cell::from(format_tokens(hour.tokens.total())),
-                Cell::from(format_cost(hour.cost)).style(Style::default().fg(Color::Green)),
+                Cell::from(format_cost(hour.cost)).style(success_style),
                 Cell::from(format_cost_per_million(hour.cost, hour.tokens.total()))
-                    .style(Style::default().fg(Color::Rgb(150, 200, 150))),
+                    .style(success_style),
             ]);
             cells
         };
@@ -398,6 +398,7 @@ mod tests {
     /// sorted newest-first like the live default.
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,

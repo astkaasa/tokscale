@@ -297,7 +297,7 @@ fn ranking_row(
             .fg(if selected {
                 app.theme.foreground
             } else {
-                Color::Green
+                app.theme.success_color()
             })
             .add_modifier(Modifier::BOLD),
     ));
@@ -440,7 +440,7 @@ fn render_inspector(frame: &mut Frame, app: &App, area: Rect) {
         "Tokens",
         &format_tokens(model.tokens.total()),
         token_share,
-        Color::Cyan,
+        app.theme.info_color(),
         inner.width,
         app,
     ));
@@ -713,6 +713,7 @@ mod tests {
         };
 
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,
@@ -745,6 +746,7 @@ mod tests {
 
     fn test_app() -> App {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,

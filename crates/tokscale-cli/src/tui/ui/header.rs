@@ -104,9 +104,7 @@ fn render_right_status(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool
         Span::styled("  •  ", app.theme.subtle_text_style()),
         Span::styled(
             status,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
+            app.theme.success_style().add_modifier(Modifier::BOLD),
         ),
     ]);
     frame.render_widget(
@@ -259,6 +257,7 @@ mod tests {
 
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,

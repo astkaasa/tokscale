@@ -7,6 +7,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokscale_core::scanner::ScannerSettings;
 
+use crate::tui::themes::ThemePreference;
+
 const DEFAULT_AUTO_REFRESH_MS: u64 = 60_000;
 const MIN_AUTO_REFRESH_MS: u64 = 30_000;
 const MAX_AUTO_REFRESH_MS: u64 = 3_600_000;
@@ -44,6 +46,8 @@ pub struct LightSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    #[serde(default)]
+    pub ui_theme: ThemePreference,
     #[serde(default)]
     pub auto_refresh_enabled: bool,
     #[serde(default = "default_auto_refresh_ms")]
@@ -123,6 +127,7 @@ fn default_native_timeout_ms() -> u64 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            ui_theme: ThemePreference::Dark,
             auto_refresh_enabled: false,
             auto_refresh_ms: DEFAULT_AUTO_REFRESH_MS,
             include_unused_models: false,
@@ -384,13 +389,28 @@ mod tests {
     }
 
     #[test]
+    fn settings_theme_defaults_to_dark() {
+        let parsed: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(parsed.ui_theme, ThemePreference::Dark);
+    }
+
+    #[test]
+    fn settings_loads_ui_theme() {
+        let parsed: Settings = serde_json::from_str(r#"{"uiTheme":"light"}"#).unwrap();
+
+        assert_eq!(parsed.ui_theme, ThemePreference::Light);
+    }
+
+    #[test]
     fn settings_ignores_legacy_color_palette_when_saving() {
-        let json = r#"{"colorPalette":"dark"}"#;
+        let json = r#"{"theme":"blue","colorPalette":"dark"}"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();
 
         let serialized = serde_json::to_value(&parsed).unwrap();
         assert!(serialized.get("theme").is_none());
         assert!(serialized.get("colorPalette").is_none());
+        assert!(serialized.get("uiTheme").is_some());
     }
 
     #[test]

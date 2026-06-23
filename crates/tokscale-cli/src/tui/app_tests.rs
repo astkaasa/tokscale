@@ -1,7 +1,8 @@
 use super::super::ui::widgets::get_provider_shade;
 use super::{
     App, ChartGranularity, ClickAction, DrilldownView, HourlyViewMode, ModelDetailKey,
-    OverviewMode, PeriodDetailKey, SortDirection, SortField, Tab, TimelineGranularity, TuiConfig,
+    OverviewMode, PeriodDetailKey, SortDirection, SortField, Tab, ThemePreference,
+    TimelineGranularity, TuiConfig,
 };
 use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput, UsageResetCredits};
 use crate::tui::data::{
@@ -12,6 +13,7 @@ use crate::ClientFilter;
 use chrono::{NaiveDate, NaiveDateTime};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -51,8 +53,33 @@ fn test_tab_short_name() {
 }
 
 #[test]
+fn config_theme_overrides_settings_default() {
+    let config = TuiConfig {
+        theme: Some(ThemePreference::Light),
+        refresh: 0,
+        clients: None,
+        since: None,
+        until: None,
+        year: None,
+        initial_tab: None,
+    };
+
+    let app = App::new_with_cached_data(config, None).unwrap();
+
+    assert!(matches!(
+        app.theme.background,
+        Color::Rgb(255, 255, 255) | Color::White
+    ));
+    assert!(matches!(
+        app.theme.foreground,
+        Color::Rgb(22, 22, 22) | Color::Black
+    ));
+}
+
+#[test]
 fn test_reset_selection() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -75,6 +102,7 @@ fn test_reset_selection() {
 #[test]
 fn test_move_selection_up() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -122,6 +150,7 @@ fn test_move_selection_up() {
 #[test]
 fn test_move_selection_down() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -169,6 +198,7 @@ fn test_move_selection_down() {
 #[test]
 fn test_clamp_selection() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -207,6 +237,7 @@ fn test_clamp_selection() {
 #[test]
 fn test_set_sort() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -239,6 +270,7 @@ fn test_set_sort() {
 #[test]
 fn test_should_quit() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -255,6 +287,7 @@ fn test_should_quit() {
 
 fn make_app() -> App {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -588,6 +621,7 @@ fn test_handle_key_tab_switch_includes_minutely_when_enabled() {
 #[test]
 fn test_initial_minutely_tab_clamps_to_overview_when_flag_off() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -1134,6 +1168,7 @@ fn test_switch_tab_restores_hourly_date_default() {
 #[test]
 fn test_initial_hourly_tab_uses_hourly_sort_default() {
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: None,
@@ -1156,6 +1191,7 @@ fn test_today_filter_initializes_overview_today_mode() {
         .format("%Y-%m-%d")
         .to_string();
     let config = TuiConfig {
+        theme: None,
         refresh: 0,
         clients: None,
         since: Some(today.clone()),

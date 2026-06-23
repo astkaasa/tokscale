@@ -679,6 +679,7 @@ mod tests {
 
     fn make_app() -> App {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,

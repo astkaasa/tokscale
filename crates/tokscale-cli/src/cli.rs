@@ -1,3 +1,4 @@
+use crate::tui::ThemePreference;
 use crate::{ClientFlags, DateRangeFlags};
 use clap::{Parser, Subcommand};
 
@@ -13,6 +14,15 @@ pub(crate) struct Cli {
 
     #[arg(long)]
     pub(crate) debug: bool,
+
+    #[arg(
+        long,
+        global = true,
+        value_name = "THEME",
+        value_parser = parse_theme_preference,
+        help = "TUI color theme: dark, light, or auto"
+    )]
+    pub(crate) theme: Option<ThemePreference>,
 
     #[arg(long, help = "Output as JSON")]
     pub(crate) json: bool,
@@ -63,6 +73,10 @@ pub(crate) struct Cli {
 
     #[arg(long, help = "Disable spinner (for AI agents and scripts)")]
     pub(crate) no_spinner: bool,
+}
+
+fn parse_theme_preference(value: &str) -> Result<ThemePreference, String> {
+    value.parse()
 }
 
 #[derive(Subcommand)]
@@ -373,6 +387,22 @@ mod tests {
     #[test]
     fn clap_accepts_models_light_write_cache_after_subcommand() {
         assert!(Cli::try_parse_from(["tokscale", "models", "--light", "--write-cache"]).is_ok());
+    }
+
+    #[test]
+    fn clap_accepts_supported_theme_values() {
+        assert_eq!(
+            Cli::try_parse_from(["tokscale", "--theme", "light"])
+                .unwrap()
+                .theme,
+            Some(ThemePreference::Light)
+        );
+        assert!(Cli::try_parse_from(["tokscale", "tui", "--theme", "auto"]).is_ok());
+    }
+
+    #[test]
+    fn clap_rejects_unknown_theme_values() {
+        assert!(Cli::try_parse_from(["tokscale", "--theme", "blue"]).is_err());
     }
 
     #[test]

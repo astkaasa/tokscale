@@ -47,6 +47,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let metric_output_style = app.theme.metric_output_style();
     let metric_cache_read_style = app.theme.metric_cache_read_style();
     let metric_cache_write_style = app.theme.metric_cache_write_style();
+    let success_style = app.theme.success_style();
+    let warning_style = app.theme.warning_style();
+    let info_style = app.theme.info_style();
     let current_row_style = app.theme.current_row_style();
     let striped_row_style = app.theme.striped_row_style();
     let now = Local::now().naive_local();
@@ -159,22 +162,18 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 vec![
                     Cell::from(minute.datetime.format("%m/%d %H:%M").to_string()).style(
                         if is_current {
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)
+                            warning_style.add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         },
                     ),
-                    Cell::from(format_cost(minute.cost)).style(Style::default().fg(Color::Green)),
+                    Cell::from(format_cost(minute.cost)).style(success_style),
                 ]
             } else if is_narrow {
                 let mut cells = vec![
                     Cell::from(minute.datetime.format("%m-%d %H:%M").to_string()).style(
                         if is_current {
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)
+                            warning_style.add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         },
@@ -192,16 +191,14 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 cells.extend([
                     Cell::from(minute.message_count.to_string()),
                     Cell::from(format_tokens(minute.tokens.total())),
-                    Cell::from(format_cost(minute.cost)).style(Style::default().fg(Color::Green)),
+                    Cell::from(format_cost(minute.cost)).style(success_style),
                 ]);
                 cells
             } else {
                 let mut cells = vec![
                     Cell::from(minute.datetime.format("%Y-%m-%d %H:%M").to_string()).style(
                         if is_current {
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)
+                            warning_style.add_modifier(Modifier::BOLD)
                         } else {
                             Style::default().add_modifier(Modifier::BOLD)
                         },
@@ -229,9 +226,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                         minute.tokens.input,
                         minute.tokens.cache_write,
                     ))
-                    .style(Style::default().fg(Color::Cyan)),
+                    .style(info_style),
                     Cell::from(format_tokens(minute.tokens.total())),
-                    Cell::from(format_cost(minute.cost)).style(Style::default().fg(Color::Green)),
+                    Cell::from(format_cost(minute.cost)).style(success_style),
                 ]);
                 cells
             };

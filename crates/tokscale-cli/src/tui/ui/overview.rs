@@ -800,7 +800,7 @@ fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_pag
         .title_top(
             Line::from(Span::styled(
                 format!(" {} ", title_right),
-                Style::default().fg(Color::Green),
+                app.theme.success_style(),
             ))
             .right_aligned(),
         )
@@ -1036,7 +1036,7 @@ fn top_model_row(
             .fg(if selected {
                 app.theme.foreground
             } else {
-                Color::Green
+                app.theme.success_color()
             })
             .add_modifier(Modifier::BOLD),
     ));
@@ -1220,6 +1220,7 @@ mod tests {
 
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,
@@ -1779,6 +1780,7 @@ mod tests {
     #[test]
     fn today_live_dashboard_shows_loading_state_for_empty_background_scan() {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,

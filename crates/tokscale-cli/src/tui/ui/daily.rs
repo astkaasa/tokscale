@@ -118,6 +118,9 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let metric_output_style = app.theme.metric_output_style();
     let metric_cache_read_style = app.theme.metric_cache_read_style();
     let metric_cache_write_style = app.theme.metric_cache_write_style();
+    let success_style = app.theme.success_style();
+    let warning_style = app.theme.warning_style();
+    let info_style = app.theme.info_style();
     let current_row_style = app.theme.current_row_style();
     let striped_row_style = app.theme.striped_row_style();
     let today = Local::now().date_naive();
@@ -225,104 +228,97 @@ fn render_timeline_table(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let rows: Vec<Row> = daily[start..end]
-        .iter()
-        .enumerate()
-        .map(|(i, day)| {
-            let idx = i + start;
-            let is_selected = idx == selected_index;
-            let is_striped = idx % 2 == 1;
-            let is_today = day.date == today;
+    let rows: Vec<Row> =
+        daily[start..end]
+            .iter()
+            .enumerate()
+            .map(|(i, day)| {
+                let idx = i + start;
+                let is_selected = idx == selected_index;
+                let is_striped = idx % 2 == 1;
+                let is_today = day.date == today;
 
-            let cells: Vec<Cell> = if is_very_narrow {
-                vec![
-                    Cell::from(day.date.format(date_fmt).to_string()).style(if is_today {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
+                let cells: Vec<Cell> =
+                    if is_very_narrow {
+                        vec![
+                            Cell::from(day.date.format(date_fmt).to_string()).style(if is_today {
+                                warning_style.add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                            }),
+                            Cell::from(format_cost(day.cost)).style(success_style),
+                        ]
+                    } else if is_narrow {
+                        let mut cells = vec![Cell::from(day.date.format(date_fmt).to_string())
+                            .style(if is_today {
+                                warning_style.add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                            })];
+                        if has_turn_data {
+                            let turn_str = if day.turn_count > 0 {
+                                day.turn_count.to_string()
+                            } else {
+                                "\u{2014}".to_string()
+                            };
+                            cells.push(Cell::from(turn_str));
+                        }
+                        cells.extend([
+                            Cell::from(day.message_count.to_string()),
+                            Cell::from(format_tokens(day.tokens.total())),
+                            Cell::from(format_cost(day.cost)).style(success_style),
+                        ]);
+                        cells
                     } else {
-                        Style::default()
-                    }),
-                    Cell::from(format_cost(day.cost)).style(Style::default().fg(Color::Green)),
-                ]
-            } else if is_narrow {
-                let mut cells =
-                    vec![
-                        Cell::from(day.date.format(date_fmt).to_string()).style(if is_today {
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        }),
-                    ];
-                if has_turn_data {
-                    let turn_str = if day.turn_count > 0 {
-                        day.turn_count.to_string()
-                    } else {
-                        "\u{2014}".to_string()
+                        let mut cells = vec![Cell::from(day.date.format(date_fmt).to_string())
+                            .style(if is_today {
+                                warning_style.add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().add_modifier(Modifier::BOLD)
+                            })];
+                        if has_turn_data {
+                            let turn_str = if day.turn_count > 0 {
+                                day.turn_count.to_string()
+                            } else {
+                                "\u{2014}".to_string()
+                            };
+                            cells.push(Cell::from(turn_str));
+                        }
+                        cells.extend([
+                            Cell::from(day.message_count.to_string()),
+                            Cell::from(format_tokens(day.tokens.input)).style(metric_input_style),
+                            Cell::from(format_tokens(day.tokens.output)).style(metric_output_style),
+                            Cell::from(format_tokens(day.tokens.cache_read))
+                                .style(metric_cache_read_style),
+                            Cell::from(format_tokens(day.tokens.cache_write))
+                                .style(metric_cache_write_style),
+                            Cell::from(format_cache_ratio(
+                                day.tokens.cache_read,
+                                day.tokens.input,
+                                day.tokens.cache_write,
+                            ))
+                            .style(info_style),
+                            Cell::from(format_tokens(day.tokens.total())),
+                            Cell::from(format_cost(day.cost)).style(success_style),
+                            Cell::from(format_cost_per_million(day.cost, day.tokens.total()))
+                                .style(success_style),
+                        ]);
+                        cells
                     };
-                    cells.push(Cell::from(turn_str));
-                }
-                cells.extend([
-                    Cell::from(day.message_count.to_string()),
-                    Cell::from(format_tokens(day.tokens.total())),
-                    Cell::from(format_cost(day.cost)).style(Style::default().fg(Color::Green)),
-                ]);
-                cells
-            } else {
-                let mut cells =
-                    vec![
-                        Cell::from(day.date.format(date_fmt).to_string()).style(if is_today {
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().add_modifier(Modifier::BOLD)
-                        }),
-                    ];
-                if has_turn_data {
-                    let turn_str = if day.turn_count > 0 {
-                        day.turn_count.to_string()
-                    } else {
-                        "\u{2014}".to_string()
-                    };
-                    cells.push(Cell::from(turn_str));
-                }
-                cells.extend([
-                    Cell::from(day.message_count.to_string()),
-                    Cell::from(format_tokens(day.tokens.input)).style(metric_input_style),
-                    Cell::from(format_tokens(day.tokens.output)).style(metric_output_style),
-                    Cell::from(format_tokens(day.tokens.cache_read)).style(metric_cache_read_style),
-                    Cell::from(format_tokens(day.tokens.cache_write))
-                        .style(metric_cache_write_style),
-                    Cell::from(format_cache_ratio(
-                        day.tokens.cache_read,
-                        day.tokens.input,
-                        day.tokens.cache_write,
-                    ))
-                    .style(Style::default().fg(Color::Cyan)),
-                    Cell::from(format_tokens(day.tokens.total())),
-                    Cell::from(format_cost(day.cost)).style(Style::default().fg(Color::Green)),
-                    Cell::from(format_cost_per_million(day.cost, day.tokens.total()))
-                        .style(Style::default().fg(Color::Rgb(150, 200, 150))),
-                ]);
-                cells
-            };
 
-            let row_style = if is_selected {
-                Style::default().bg(theme_selection)
-            } else if is_today {
-                current_row_style
-            } else if is_striped {
-                striped_row_style
-            } else {
-                Style::default()
-            };
+                let row_style = if is_selected {
+                    Style::default().bg(theme_selection)
+                } else if is_today {
+                    current_row_style
+                } else if is_striped {
+                    striped_row_style
+                } else {
+                    Style::default()
+                };
 
-            Row::new(cells).style(row_style).height(1)
-        })
-        .collect();
+                Row::new(cells).style(row_style).height(1)
+            })
+            .collect();
     let period_clicks = daily[start..end]
         .iter()
         .enumerate()
@@ -554,9 +550,7 @@ fn timeline_table_row(
             .fg(app.theme.foreground)
             .add_modifier(Modifier::BOLD)
     } else if row.is_current {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        app.theme.warning_style().add_modifier(Modifier::BOLD)
     } else {
         app.theme.secondary_text_style()
     };
@@ -577,7 +571,7 @@ fn timeline_table_row(
                 .fg(if selected {
                     app.theme.foreground
                 } else {
-                    Color::Green
+                    app.theme.success_color()
                 })
                 .add_modifier(Modifier::BOLD),
         ),
@@ -608,7 +602,7 @@ fn timeline_table_row(
             row.tokens.input,
             row.tokens.cache_write,
         ),
-        Style::default().fg(Color::Cyan),
+        app.theme.info_style(),
     ));
     Row::new(cells).style(row_style).height(1)
 }
@@ -737,7 +731,7 @@ fn render_timeline_inspector(frame: &mut Frame, app: &App, area: Rect) {
         },
         Style::default()
             .fg(if row.is_current {
-                Color::Yellow
+                app.theme.warning_color()
             } else {
                 app.theme.foreground
             })
@@ -1281,6 +1275,8 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     let metric_output_style = app.theme.metric_output_style();
     let metric_cache_read_style = app.theme.metric_cache_read_style();
     let metric_cache_write_style = app.theme.metric_cache_write_style();
+    let success_style = app.theme.success_style();
+    let info_style = app.theme.info_style();
     let striped_row_style = app.theme.striped_row_style();
 
     let header_cells = if is_very_narrow {
@@ -1363,7 +1359,7 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
                             .fg(model_color)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Cell::from(format_cost(row.cost)).style(Style::default().fg(Color::Green)),
+                    Cell::from(format_cost(row.cost)).style(success_style),
                 ]
             } else if is_narrow {
                 vec![
@@ -1376,7 +1372,7 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
                         .style(Style::default().fg(theme_muted)),
                     Cell::from(row.messages.to_string()),
                     Cell::from(format_tokens(row.tokens.total())),
-                    Cell::from(format_cost(row.cost)).style(Style::default().fg(Color::Green)),
+                    Cell::from(format_cost(row.cost)).style(success_style),
                 ]
             } else {
                 vec![
@@ -1400,9 +1396,9 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
                         row.tokens.input,
                         row.tokens.cache_write,
                     ))
-                    .style(Style::default().fg(Color::Cyan)),
+                    .style(info_style),
                     Cell::from(format_tokens(row.tokens.total())),
-                    Cell::from(format_cost(row.cost)).style(Style::default().fg(Color::Green)),
+                    Cell::from(format_cost(row.cost)).style(success_style),
                 ]
             };
 
@@ -1560,6 +1556,7 @@ mod tests {
 
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,

@@ -959,6 +959,7 @@ mod tests {
 
     fn make_app_on(tab: Tab) -> App {
         let config = TuiConfig {
+            theme: None,
             refresh: 0,
             clients: None,
             since: None,

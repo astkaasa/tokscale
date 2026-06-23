@@ -24,11 +24,12 @@ pub(crate) use super::navigation::{
 };
 use super::pulse_state::PulseState;
 use super::settings::Settings;
-use super::themes::Theme;
+use super::themes::{Theme, ThemePreference};
 use super::ui::dialog::DialogStack;
 
 /// Configuration for TUI initialization
 pub struct TuiConfig {
+    pub theme: Option<ThemePreference>,
     pub refresh: u64,
     pub clients: Option<Vec<String>>,
     pub since: Option<String>,

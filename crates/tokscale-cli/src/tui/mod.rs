@@ -23,6 +23,7 @@ pub(crate) use cache::{
 };
 pub(crate) use data::{DataLoader, UsageData};
 pub(crate) use event::{Event, EventHandler};
+pub(crate) use themes::ThemePreference;
 
 use std::collections::HashSet;
 use std::io;
@@ -81,6 +82,7 @@ fn background_cache_scope(
 pub fn run(
     refresh: u64,
     debug: bool,
+    theme: Option<ThemePreference>,
     clients: Option<Vec<String>>,
     since: Option<String>,
     until: Option<String>,
@@ -94,6 +96,7 @@ pub fn run(
     }
 
     let config = TuiConfig {
+        theme,
         refresh,
         clients: clients.clone(),
         since: since.clone(),

@@ -118,7 +118,7 @@ fn render_error(frame: &mut Frame, app: &App, area: Rect, error: &str) {
 
     let text = format!("Error: {}", error);
     let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::Red))
+        .style(app.theme.danger_style())
         .alignment(Alignment::Center);
 
     frame.render_widget(paragraph, center);
