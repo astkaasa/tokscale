@@ -437,15 +437,17 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
                 app.theme.muted,
                 width,
             );
-            push_key_fit(
-                &mut spans,
-                "⇧←→",
-                "Scroll",
-                Some("Scr"),
-                Color::White,
-                app.theme.muted,
-                width,
-            );
+            if app.chart_granularity != crate::tui::app::ChartGranularity::Daily {
+                push_key_fit(
+                    &mut spans,
+                    "⇧←→",
+                    "Scroll",
+                    Some("Scr"),
+                    Color::White,
+                    app.theme.muted,
+                    width,
+                );
+            }
         }
     }
     if app.current_tab == Tab::Timeline && !app.is_daily_detail_active() {
@@ -1109,6 +1111,7 @@ mod tests {
     #[test]
     fn narrow_footer_keeps_action_hint_and_scope_summary() {
         let mut app = make_app_on(Tab::Overview);
+        app.clear_status();
         let body = render_footer_text(&mut app, 28);
 
         assert!(body.contains("Nav"), "{body}");
@@ -1244,6 +1247,28 @@ mod tests {
         let hints = line_text(&Line::from(action_spans(&mut app, 0, 0, 120)));
 
         assert!(hints.contains(" p  Theme"), "{hints}");
+    }
+
+    #[test]
+    fn overview_daily_footer_omits_scroll_hint() {
+        let mut app = make_app_on(Tab::Overview);
+        app.chart_granularity = crate::tui::app::ChartGranularity::Daily;
+
+        let hints = line_text(&Line::from(action_spans(&mut app, 0, 0, 160)));
+
+        assert!(hints.contains("D/W/M"), "{hints}");
+        assert!(!hints.contains("Scroll"), "{hints}");
+    }
+
+    #[test]
+    fn overview_weekly_footer_keeps_scroll_hint() {
+        let mut app = make_app_on(Tab::Overview);
+        app.chart_granularity = crate::tui::app::ChartGranularity::Weekly;
+
+        let hints = line_text(&Line::from(action_spans(&mut app, 0, 0, 160)));
+
+        assert!(hints.contains("D/W/M"), "{hints}");
+        assert!(hints.contains("Scroll"), "{hints}");
     }
 
     #[test]

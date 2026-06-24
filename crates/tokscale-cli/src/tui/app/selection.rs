@@ -45,9 +45,6 @@ impl App {
     pub(crate) fn reset_selection(&mut self) {
         self.scroll_offset = 0;
         self.selected_index = 0;
-        self.selected_daily_detail_date = None;
-        self.daily_list_selected_index = 0;
-        self.daily_list_scroll_offset = 0;
         self.overview_chart_scroll_offset = usize::MAX;
         self.drilldown = None;
     }
@@ -57,9 +54,6 @@ impl App {
 
         self.current_tab = target;
         self.drilldown = None;
-        if target != Tab::Timeline {
-            self.selected_daily_detail_date = None;
-        }
 
         let (field, dir) = self
             .tab_sort_state
@@ -313,7 +307,6 @@ impl App {
             return;
         }
         self.timeline_granularity = granularity;
-        self.selected_daily_detail_date = None;
         self.drilldown = None;
         self.sort_field = SortField::Date;
         self.sort_direction = SortDirection::Descending;
@@ -325,7 +318,6 @@ impl App {
         if self.current_tab != Tab::Timeline {
             return;
         }
-        self.selected_daily_detail_date = None;
         self.drilldown = None;
 
         let today = chrono::Local::now().date_naive();

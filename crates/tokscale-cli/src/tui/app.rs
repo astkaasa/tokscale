@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
 use ratatui::style::Color;
 
 use crate::ClientFilter;
@@ -76,9 +75,6 @@ pub struct App {
     pub scroll_offset: usize,
     pub selected_index: usize,
     pub max_visible_items: usize,
-    pub selected_daily_detail_date: Option<NaiveDate>,
-    daily_list_selected_index: usize,
-    daily_list_scroll_offset: usize,
     pub drilldown: Option<DrilldownState>,
 
     pub auto_refresh: bool,

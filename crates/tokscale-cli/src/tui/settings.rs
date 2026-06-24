@@ -46,7 +46,7 @@ pub struct LightSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_theme_preference_lossy")]
     pub ui_theme: ThemePreference,
     #[serde(default)]
     pub auto_refresh_enabled: bool,
@@ -105,6 +105,21 @@ where
         .flatten()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect())
+}
+
+fn deserialize_theme_preference_lossy<'de, D>(deserializer: D) -> Result<ThemePreference, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer).ok().flatten();
+    let Some(value) = value else {
+        return Ok(ThemePreference::Dark);
+    };
+    let Some(theme) = value.as_str() else {
+        return Ok(ThemePreference::Dark);
+    };
+
+    Ok(theme.parse().unwrap_or(ThemePreference::Dark))
 }
 
 fn default_auto_refresh_ms() -> u64 {
@@ -361,6 +376,15 @@ mod tests {
         let parsed: Settings = serde_json::from_str(r#"{"uiTheme":"light"}"#).unwrap();
 
         assert_eq!(parsed.ui_theme, ThemePreference::Light);
+    }
+
+    #[test]
+    fn settings_invalid_ui_theme_falls_back_without_dropping_other_fields() {
+        let parsed: Settings =
+            serde_json::from_str(r#"{"uiTheme":"blue","defaultClients":["codex"]}"#).unwrap();
+
+        assert_eq!(parsed.ui_theme, ThemePreference::Dark);
+        assert_eq!(parsed.default_clients, vec!["codex".to_string()]);
     }
 
     #[test]

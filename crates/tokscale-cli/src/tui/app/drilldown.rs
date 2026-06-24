@@ -94,7 +94,6 @@ impl App {
         });
         self.sort_field = sort_field;
         self.sort_direction = sort_direction;
-        self.selected_daily_detail_date = None;
         self.selected_index = 0;
         self.scroll_offset = 0;
         self.clear_status();
