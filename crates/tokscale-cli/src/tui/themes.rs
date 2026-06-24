@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -273,6 +273,19 @@ impl Theme {
         Style::default().fg(self.subtle)
     }
 
+    pub(crate) fn active_control_style(&self) -> Style {
+        let background = if self.color_mode == TerminalColorMode::Compatible {
+            Color::Blue
+        } else {
+            self.highlight
+        };
+
+        Style::default()
+            .fg(Color::White)
+            .bg(background)
+            .add_modifier(Modifier::BOLD)
+    }
+
     pub(crate) fn striped_row_style(&self) -> Style {
         if self.color_mode == TerminalColorMode::Compatible {
             Style::default()
@@ -529,6 +542,7 @@ mod tests {
             theme.metric_cache_write_style(),
             theme.secondary_text_style(),
             theme.subtle_text_style(),
+            theme.active_control_style(),
             theme.striped_row_style(),
             theme.current_row_style(),
         ];
@@ -558,6 +572,11 @@ mod tests {
         assert_eq!(theme.foreground, Color::Rgb(22, 22, 22));
         assert_eq!(theme.accent, Color::Rgb(59, 92, 246));
         assert_eq!(theme.selection, Color::Rgb(238, 238, 238));
+        assert_eq!(theme.active_control_style().fg, Some(Color::White));
+        assert_eq!(
+            theme.active_control_style().bg,
+            Some(Color::Rgb(59, 92, 246))
+        );
         assert_eq!(
             theme.striped_row_style().bg,
             Some(Color::Rgb(250, 250, 250))

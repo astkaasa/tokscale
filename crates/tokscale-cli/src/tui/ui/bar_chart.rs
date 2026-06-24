@@ -1,3 +1,4 @@
+use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 use ratatui::prelude::*;
 
 use super::widgets::format_tokens;
@@ -5,8 +6,15 @@ use crate::tui::app::{App, ChartGranularity, ClickAction, OverviewMode, PeriodDe
 
 /// 8-level block characters for sub-cell precision.
 const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-const BAR_WIDTH: usize = 1;
+const MIN_BAR_WIDTH: usize = 1;
+const TARGET_BAR_WIDTH: usize = 2;
+const MAX_BAR_WIDTH: usize = 3;
 const BAR_GAP: usize = 1;
+const HEATMAP_MIN_CELL_WIDTH: usize = 2;
+const HEATMAP_MAX_CELL_WIDTH: usize = 4;
+const HEATMAP_MAX_CELL_HEIGHT: usize = 2;
+const HEATMAP_WEEKDAY_COUNT: usize = 7;
+const HEATMAP_DAY_WINDOW: i64 = 364;
 
 const MONTH_NAMES: &[&str] = &[
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -66,10 +74,12 @@ pub fn render_stacked_bar_chart(
 
     let buf = frame.buffer_mut();
     let bar_count = data.len();
+    let preferred_bar_width = preferred_chart_bar_width(app);
     let chart_layout = chart_layout(
         plot_width as usize,
         bar_count,
         app.overview_chart_scroll_offset,
+        preferred_bar_width,
     );
     app.overview_chart_scroll_offset = chart_layout.scroll_offset;
 
@@ -246,6 +256,197 @@ pub fn render_stacked_bar_chart(
                 }
             }
         }
+    }
+}
+
+/// Render dense daily activity as an origin Stats-style contribution graph.
+pub fn render_daily_heatmap_chart(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    data: &[StackedBarData],
+) {
+    if data.is_empty() {
+        return;
+    }
+
+    let Some(first_date) = first_daily_date(data) else {
+        render_stacked_bar_chart(frame, app, area, data);
+        return;
+    };
+
+    let is_very_narrow = app.is_very_narrow();
+    let label_width = if area.width >= 48 { 4 } else { 0 };
+    let grid_x = area.x.saturating_add(label_width);
+    let title_y = area.y;
+    let month_y = area.y.saturating_add(1);
+    let grid_y = area.y.saturating_add(2);
+    let grid_width = area.width.saturating_sub(label_width);
+    let cell_height = preferred_heatmap_cell_height(area.height);
+    let grid_height = HEATMAP_WEEKDAY_COUNT.saturating_mul(cell_height) as u16;
+
+    if usize::from(grid_width) < HEATMAP_MIN_CELL_WIDTH || area.height < grid_height + 2 {
+        render_stacked_bar_chart(frame, app, area, data);
+        return;
+    }
+
+    let layout = daily_heatmap_layout(usize::from(grid_width), first_date, data.len());
+    app.overview_chart_scroll_offset = 0;
+
+    let max_total = heatmap_scale_max(data);
+    let title = if is_very_narrow {
+        "Activity"
+    } else {
+        "Daily Activity (52w)"
+    };
+    let buf = frame.buffer_mut();
+
+    for (index, ch) in title.chars().enumerate() {
+        let x = grid_x.saturating_add(index as u16);
+        if x < area.right() {
+            buf[(x, title_y)]
+                .set_char(ch)
+                .set_style(Style::default().add_modifier(Modifier::BOLD));
+        }
+    }
+
+    if let Some(peak) = data
+        .iter()
+        .map(|bar| bar.total)
+        .max()
+        .filter(|peak| *peak > 0)
+    {
+        let peak = format!("Peak {}", format_tokens(peak));
+        render_title_suffix(
+            buf,
+            area,
+            label_width,
+            title,
+            &peak,
+            app.theme.subtle_text_style(),
+        );
+    }
+
+    render_heatmap_month_labels(
+        buf,
+        HeatmapMonthLabelContext {
+            app,
+            area,
+            grid_x,
+            month_y,
+            grid_width,
+            layout: &layout,
+        },
+    );
+
+    if label_width > 0 {
+        for (row, label) in [(1usize, "Mon"), (3, "Wed"), (5, "Fri")] {
+            let y = grid_y
+                .saturating_add(row.saturating_mul(cell_height) as u16)
+                .saturating_add((cell_height / 2) as u16);
+            for (index, ch) in format!("{label:>3} ").chars().enumerate() {
+                let x = area.x.saturating_add(index as u16);
+                if x < grid_x {
+                    buf[(x, y)]
+                        .set_char(ch)
+                        .set_style(app.theme.subtle_text_style());
+                }
+            }
+        }
+    }
+
+    let palette = heatmap_palette(app.theme.background, app.theme.muted);
+    let visible_width = layout
+        .visible_width()
+        .min(layout.virtual_width)
+        .min(usize::from(grid_width));
+    for y in grid_y..grid_y.saturating_add(grid_height) {
+        for x in grid_x..grid_x.saturating_add(grid_width) {
+            buf[(x, y)]
+                .set_char(' ')
+                .set_style(Style::default().fg(app.theme.muted));
+        }
+    }
+
+    for cell_x in (0..visible_width).step_by(layout.cell_width.max(1)) {
+        for weekday in 0..HEATMAP_WEEKDAY_COUNT {
+            let y = grid_y.saturating_add(weekday.saturating_mul(cell_height) as u16);
+            for dy in 0..cell_height {
+                let y = y.saturating_add(dy as u16);
+                if y >= grid_y.saturating_add(grid_height) {
+                    continue;
+                }
+                for dx in 0..layout.cell_width {
+                    let x = grid_x.saturating_add(cell_x.saturating_add(dx) as u16);
+                    if x < grid_x.saturating_add(grid_width) {
+                        buf[(x, y)]
+                            .set_char(palette.empty.ch)
+                            .set_style(palette.empty.style);
+                    }
+                }
+            }
+        }
+    }
+
+    for (index, bar) in data.iter().enumerate() {
+        let Some((cell_x, cell_y)) = layout.positions.get(index).copied().flatten() else {
+            continue;
+        };
+        let x = grid_x.saturating_add(cell_x as u16);
+        let y = grid_y.saturating_add(cell_y.saturating_mul(cell_height) as u16);
+        if x >= grid_x.saturating_add(grid_width) || y >= grid_y.saturating_add(grid_height) {
+            continue;
+        }
+
+        let cell = heatmap_cell(bar, max_total, &palette);
+        for dy in 0..cell_height {
+            let y = y.saturating_add(dy as u16);
+            if y >= grid_y.saturating_add(grid_height) {
+                continue;
+            }
+            for dx in 0..layout.cell_width {
+                let x = x.saturating_add(dx as u16);
+                if x < grid_x.saturating_add(grid_width) {
+                    buf[(x, y)].set_char(cell.ch).set_style(cell.style);
+                }
+            }
+        }
+
+        if let Some(period) = bar.period.clone() {
+            let width = layout.cell_width.min(usize::from(
+                grid_x.saturating_add(grid_width).saturating_sub(x),
+            ));
+            app.add_click_area(
+                Rect::new(x, y, width.max(1) as u16, cell_height as u16),
+                ClickAction::OpenPeriodDetail(period),
+            );
+        }
+    }
+
+    let legend_y = grid_y.saturating_add(grid_height).saturating_add(1);
+    if area.height >= grid_height.saturating_add(4) && legend_y < area.bottom() {
+        render_heatmap_legend(
+            buf,
+            app,
+            grid_x,
+            legend_y,
+            area.right(),
+            &palette,
+            layout.cell_width,
+        );
+    }
+}
+
+fn preferred_chart_bar_width(app: &App) -> usize {
+    if app.overview_mode == OverviewMode::All
+        && matches!(
+            app.chart_granularity,
+            ChartGranularity::Weekly | ChartGranularity::Monthly
+        )
+    {
+        MAX_BAR_WIDTH
+    } else {
+        TARGET_BAR_WIDTH
     }
 }
 
@@ -470,6 +671,7 @@ fn chart_layout(
     plot_width: usize,
     bar_count: usize,
     requested_scroll_offset: usize,
+    preferred_max_width: usize,
 ) -> ChartLayout {
     if plot_width == 0 || bar_count == 0 {
         return ChartLayout {
@@ -480,16 +682,17 @@ fn chart_layout(
         };
     }
 
-    let spaced_width = spaced_chart_width(bar_count);
-    if spaced_width > plot_width {
-        let max_scroll = spaced_width.saturating_sub(plot_width);
+    let bar_width = preferred_bar_width(plot_width, bar_count, preferred_max_width);
+    let virtual_width = spaced_chart_width(bar_count, bar_width);
+    if virtual_width > plot_width {
+        let max_scroll = virtual_width.saturating_sub(plot_width);
         let scroll_offset = requested_scroll_offset.min(max_scroll);
         let viewport_end = scroll_offset.saturating_add(plot_width);
         let positions = (0..bar_count)
             .map(|index| {
-                let virtual_x = index.saturating_mul(BAR_WIDTH + BAR_GAP);
+                let virtual_x = index.saturating_mul(bar_width + BAR_GAP);
                 if virtual_x >= scroll_offset && virtual_x < viewport_end {
-                    Some((virtual_x - scroll_offset, BAR_WIDTH))
+                    Some((virtual_x - scroll_offset, bar_width))
                 } else {
                     None
                 }
@@ -500,38 +703,437 @@ fn chart_layout(
             positions,
             scroll_offset,
             max_scroll,
-            virtual_width: spaced_width,
+            virtual_width,
         };
     }
 
     ChartLayout {
-        positions: distributed_bar_positions(plot_width, bar_count),
+        positions: fixed_spacing_bar_positions(plot_width, bar_count, bar_width),
         scroll_offset: 0,
         max_scroll: 0,
         virtual_width: plot_width,
     }
 }
 
-fn spaced_chart_width(bar_count: usize) -> usize {
+fn preferred_bar_width(plot_width: usize, bar_count: usize, preferred_max_width: usize) -> usize {
+    if preferred_max_width >= MAX_BAR_WIDTH {
+        return MAX_BAR_WIDTH;
+    }
+    if spaced_chart_width(bar_count, TARGET_BAR_WIDTH) <= plot_width {
+        return TARGET_BAR_WIDTH;
+    }
+    MIN_BAR_WIDTH
+}
+
+#[derive(Debug, Clone)]
+struct HeatmapLayout {
+    positions: Vec<Option<(usize, usize)>>,
+    start_date: NaiveDate,
+    start_week: usize,
+    visible_weeks: usize,
+    week_count: usize,
+    virtual_width: usize,
+    cell_width: usize,
+}
+
+fn daily_heatmap_layout(
+    grid_width: usize,
+    first_date: NaiveDate,
+    day_count: usize,
+) -> HeatmapLayout {
+    if grid_width == 0 || day_count == 0 {
+        return HeatmapLayout {
+            positions: Vec::new(),
+            start_date: first_date,
+            start_week: 0,
+            visible_weeks: 0,
+            week_count: 0,
+            virtual_width: 0,
+            cell_width: HEATMAP_MIN_CELL_WIDTH,
+        };
+    }
+
+    let last_date = first_date
+        .checked_add_signed(ChronoDuration::days(day_count.saturating_sub(1) as i64))
+        .unwrap_or(first_date);
+    let start_date = heatmap_start_date(last_date);
+    let total_days = last_date
+        .signed_duration_since(start_date)
+        .num_days()
+        .max(0) as usize
+        + 1;
+    let week_count = total_days.saturating_add(HEATMAP_WEEKDAY_COUNT - 1) / HEATMAP_WEEKDAY_COUNT;
+    let cell_width = preferred_heatmap_cell_width(grid_width, week_count);
+    let min_visible_weeks = if week_count > 0 { 1 } else { 0 };
+    let visible_weeks = (grid_width / cell_width)
+        .min(week_count)
+        .max(min_visible_weeks);
+    let start_week = week_count.saturating_sub(visible_weeks);
+    let virtual_width = week_count.saturating_mul(cell_width);
+    let positions = (0..day_count)
+        .map(|index| {
+            let date = first_date.checked_add_signed(ChronoDuration::days(index as i64))?;
+            if date < start_date {
+                return None;
+            }
+
+            let slot = date.signed_duration_since(start_date).num_days().max(0) as usize;
+            let week = slot / HEATMAP_WEEKDAY_COUNT;
+            if week < start_week {
+                return None;
+            }
+            let visible_week = week - start_week;
+            if visible_week >= visible_weeks {
+                return None;
+            }
+            let weekday = date.weekday().num_days_from_sunday() as usize;
+            Some((visible_week.saturating_mul(cell_width), weekday))
+        })
+        .collect();
+
+    HeatmapLayout {
+        positions,
+        start_date,
+        start_week,
+        visible_weeks,
+        week_count,
+        virtual_width,
+        cell_width,
+    }
+}
+
+fn preferred_heatmap_cell_width(grid_width: usize, week_count: usize) -> usize {
+    if week_count == 0 {
+        return HEATMAP_MIN_CELL_WIDTH;
+    }
+
+    (grid_width / week_count)
+        .clamp(HEATMAP_MIN_CELL_WIDTH, HEATMAP_MAX_CELL_WIDTH)
+        .max(HEATMAP_MIN_CELL_WIDTH)
+}
+
+fn preferred_heatmap_cell_height(area_height: u16) -> usize {
+    let expanded_height =
+        2usize.saturating_add(HEATMAP_WEEKDAY_COUNT.saturating_mul(HEATMAP_MAX_CELL_HEIGHT));
+    if usize::from(area_height) >= expanded_height {
+        HEATMAP_MAX_CELL_HEIGHT
+    } else {
+        1
+    }
+}
+
+fn heatmap_start_date(end_date: NaiveDate) -> NaiveDate {
+    end_date
+        .checked_sub_signed(ChronoDuration::days(
+            HEATMAP_DAY_WINDOW + i64::from(end_date.weekday().num_days_from_sunday()),
+        ))
+        .unwrap_or(end_date)
+}
+
+impl HeatmapLayout {
+    fn visible_width(&self) -> usize {
+        self.visible_weeks.saturating_mul(self.cell_width)
+    }
+}
+
+fn first_daily_date(data: &[StackedBarData]) -> Option<NaiveDate> {
+    data.iter()
+        .find_map(|bar| bar.period.as_ref().map(|period| period.start))
+}
+
+fn heatmap_scale_max(data: &[StackedBarData]) -> f64 {
+    let mut values = data
+        .iter()
+        .filter_map(|bar| (bar.total > 0).then_some(bar.total as f64))
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return 1.0;
+    }
+
+    values.sort_by(|a, b| a.total_cmp(b));
+    percentile_value(&values, 0.9).max(1.0)
+}
+
+struct HeatmapMonthLabelContext<'a> {
+    app: &'a App,
+    area: Rect,
+    grid_x: u16,
+    month_y: u16,
+    grid_width: u16,
+    layout: &'a HeatmapLayout,
+}
+
+fn render_heatmap_month_labels(buf: &mut Buffer, context: HeatmapMonthLabelContext<'_>) {
+    if context.grid_width < 10 {
+        return;
+    }
+
+    let mut next_label_x = context.grid_x;
+    let mut previous_month = None;
+    let max_visible_weeks = context.layout.visible_weeks.min(
+        context
+            .layout
+            .week_count
+            .saturating_sub(context.layout.start_week),
+    );
+    for visible_week in 0..max_visible_weeks {
+        let week = context.layout.start_week.saturating_add(visible_week);
+        let Some(date) = context
+            .layout
+            .start_date
+            .checked_add_signed(ChronoDuration::days(
+                week.saturating_mul(HEATMAP_WEEKDAY_COUNT) as i64,
+            ))
+        else {
+            break;
+        };
+        if previous_month == Some(date.month()) {
+            continue;
+        }
+        previous_month = Some(date.month());
+
+        let x = context
+            .grid_x
+            .saturating_add(visible_week.saturating_mul(context.layout.cell_width) as u16);
+        if x < next_label_x {
+            continue;
+        }
+
+        let label = MONTH_NAMES[(date.month() - 1) as usize];
+        if x.saturating_add(label.chars().count() as u16) >= context.area.right() {
+            continue;
+        }
+
+        for (offset, ch) in label.chars().enumerate() {
+            buf[(x.saturating_add(offset as u16), context.month_y)]
+                .set_char(ch)
+                .set_style(context.app.theme.subtle_text_style());
+        }
+        next_label_x = x.saturating_add(label.chars().count() as u16 + 1);
+    }
+}
+
+fn heatmap_cell(bar: &StackedBarData, max_total: f64, palette: &HeatmapPalette) -> HeatmapCell {
+    if bar.total == 0 {
+        return palette.empty;
+    }
+
+    let ratio = (bar.total as f64 / max_total).clamp(0.0, 1.0);
+    let level = heatmap_intensity_level(ratio);
+    let color = bar
+        .models
+        .iter()
+        .max_by_key(|model| model.tokens)
+        .map(|model| heatmap_intensity_color(model.color, level, palette))
+        .unwrap_or(palette.levels[level]);
+
+    HeatmapCell {
+        ch: heatmap_intensity_glyph(level, color),
+        style: Style::default().fg(color),
+    }
+}
+
+fn heatmap_intensity_level(ratio: f64) -> usize {
+    match ratio.clamp(0.0, 1.0) {
+        r if r < 0.25 => 0,
+        r if r < 0.5 => 1,
+        r if r < 0.75 => 2,
+        _ => 3,
+    }
+}
+
+fn heatmap_intensity_color(base: Color, level: usize, palette: &HeatmapPalette) -> Color {
+    const FACTORS: [f32; 4] = [0.35, 0.55, 0.78, 1.0];
+    let factor = FACTORS[level.min(FACTORS.len() - 1)];
+    match (base, palette.background) {
+        (Color::Rgb(r, g, b), Color::Rgb(bg_r, bg_g, bg_b)) => {
+            let blend = |channel: u8, bg: u8| -> u8 {
+                let channel = channel as f32;
+                let bg = bg as f32;
+                (bg + (channel - bg) * factor).round().clamp(0.0, 255.0) as u8
+            };
+            Color::Rgb(blend(r, bg_r), blend(g, bg_g), blend(b, bg_b))
+        }
+        _ => base,
+    }
+}
+
+fn heatmap_intensity_glyph(level: usize, color: Color) -> char {
+    if matches!(color, Color::Rgb(..)) {
+        '█'
+    } else {
+        match level {
+            0 => '░',
+            1 => '▒',
+            2 => '▓',
+            _ => '█',
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HeatmapCell {
+    ch: char,
+    style: Style,
+}
+
+#[derive(Clone, Copy)]
+struct HeatmapPalette {
+    empty: HeatmapCell,
+    levels: [Color; 4],
+    background: Color,
+}
+
+fn heatmap_palette(background: Color, muted: Color) -> HeatmapPalette {
+    match background {
+        Color::Rgb(r, g, b) => {
+            let brightness = u16::from(r) + u16::from(g) + u16::from(b);
+            if brightness > 540 {
+                HeatmapPalette {
+                    empty: HeatmapCell {
+                        ch: ' ',
+                        style: Style::default().bg(Color::Rgb(244, 246, 248)),
+                    },
+                    levels: [
+                        Color::Rgb(189, 243, 219),
+                        Color::Rgb(88, 216, 168),
+                        Color::Rgb(30, 194, 135),
+                        Color::Rgb(18, 155, 103),
+                    ],
+                    background,
+                }
+            } else {
+                HeatmapPalette {
+                    empty: HeatmapCell {
+                        ch: ' ',
+                        style: Style::default().bg(Color::Rgb(22, 27, 34)),
+                    },
+                    levels: [
+                        Color::Rgb(14, 68, 41),
+                        Color::Rgb(0, 109, 50),
+                        Color::Rgb(38, 166, 65),
+                        Color::Rgb(57, 211, 83),
+                    ],
+                    background,
+                }
+            }
+        }
+        Color::White => HeatmapPalette {
+            empty: HeatmapCell {
+                ch: '·',
+                style: Style::default().fg(Color::Gray),
+            },
+            levels: [Color::Gray, Color::DarkGray, Color::Green, Color::Green],
+            background,
+        },
+        Color::Black => HeatmapPalette {
+            empty: HeatmapCell {
+                ch: '·',
+                style: Style::default().fg(Color::DarkGray),
+            },
+            levels: [
+                Color::DarkGray,
+                Color::Green,
+                Color::Green,
+                Color::LightGreen,
+            ],
+            background,
+        },
+        _ => HeatmapPalette {
+            empty: HeatmapCell {
+                ch: '·',
+                style: Style::default().fg(muted),
+            },
+            levels: [muted, Color::Green, Color::Green, Color::LightGreen],
+            background,
+        },
+    }
+}
+
+fn render_heatmap_legend(
+    buf: &mut Buffer,
+    app: &App,
+    x: u16,
+    y: u16,
+    right: u16,
+    palette: &HeatmapPalette,
+    cell_width: usize,
+) {
+    if right.saturating_sub(x) < 24 {
+        return;
+    }
+
+    let mut cursor = x;
+    for ch in "Less ".chars() {
+        if cursor >= right {
+            return;
+        }
+        buf[(cursor, y)]
+            .set_char(ch)
+            .set_style(app.theme.subtle_text_style());
+        cursor = cursor.saturating_add(1);
+    }
+
+    for cell in
+        std::iter::once(palette.empty).chain(palette.levels.iter().map(|color| HeatmapCell {
+            ch: '█',
+            style: Style::default().fg(*color),
+        }))
+    {
+        for _ in 0..cell_width.max(HEATMAP_MIN_CELL_WIDTH) {
+            if cursor >= right {
+                return;
+            }
+            buf[(cursor, y)].set_char(cell.ch).set_style(cell.style);
+            cursor = cursor.saturating_add(1);
+        }
+        if cursor < right {
+            buf[(cursor, y)]
+                .set_char(' ')
+                .set_style(app.theme.subtle_text_style());
+            cursor = cursor.saturating_add(1);
+        }
+    }
+
+    for ch in "More".chars() {
+        if cursor >= right {
+            return;
+        }
+        buf[(cursor, y)]
+            .set_char(ch)
+            .set_style(app.theme.subtle_text_style());
+        cursor = cursor.saturating_add(1);
+    }
+}
+
+fn spaced_chart_width(bar_count: usize, bar_width: usize) -> usize {
     bar_count
-        .saturating_mul(BAR_WIDTH)
+        .saturating_mul(bar_width)
         .saturating_add(bar_count.saturating_sub(1).saturating_mul(BAR_GAP))
 }
 
-fn distributed_bar_positions(plot_width: usize, bar_count: usize) -> Vec<Option<(usize, usize)>> {
+fn fixed_spacing_bar_positions(
+    plot_width: usize,
+    bar_count: usize,
+    bar_width: usize,
+) -> Vec<Option<(usize, usize)>> {
     if plot_width == 0 || bar_count == 0 {
         return Vec::new();
     }
 
-    (0..bar_count)
-        .map(|index| {
-            let slot_start = index * plot_width / bar_count;
-            let slot_end = ((index + 1) * plot_width / bar_count).max(slot_start + 1);
-            let slot_width = slot_end.saturating_sub(slot_start).max(1);
-            let bar_start = slot_start + slot_width.saturating_sub(BAR_WIDTH) / 2;
-            Some((bar_start, BAR_WIDTH))
-        })
-        .collect()
+    let width = bar_width.max(1);
+    let used_width = spaced_chart_width(bar_count, width);
+    let mut x = plot_width.saturating_sub(used_width);
+    let mut positions = Vec::with_capacity(bar_count);
+
+    for index in 0..bar_count {
+        positions.push(Some((x, width)));
+        if index + 1 < bar_count {
+            x = x.saturating_add(width).saturating_add(BAR_GAP);
+        }
+    }
+
+    positions
 }
 
 fn label_indices(
@@ -737,37 +1339,234 @@ mod tests {
 
     #[test]
     fn test_chart_layout_distributes_when_spacing_fits() {
-        let layout = chart_layout(14, 3, 0);
+        let layout = chart_layout(14, 3, 0, TARGET_BAR_WIDTH);
 
-        assert!(!layout.is_scrollable());
+        assert_eq!(layout.max_scroll, 0);
         assert_eq!(
             layout.positions,
-            vec![Some((1, 1)), Some((6, 1)), Some((11, 1))]
+            vec![Some((6, 2)), Some((9, 2)), Some((12, 2))]
+        );
+    }
+
+    #[test]
+    fn test_chart_layout_uses_wide_bars_when_preferred() {
+        let layout = chart_layout(14, 3, 0, MAX_BAR_WIDTH);
+
+        assert_eq!(layout.max_scroll, 0);
+        assert_eq!(
+            layout.positions,
+            vec![Some((3, 3)), Some((7, 3)), Some((11, 3))]
+        );
+    }
+
+    #[test]
+    fn test_chart_layout_uses_medium_bars_when_three_columns_do_not_fit() {
+        let layout = chart_layout(8, 3, 0, TARGET_BAR_WIDTH);
+
+        assert_eq!(layout.max_scroll, 0);
+        assert_eq!(
+            layout.positions,
+            vec![Some((0, 2)), Some((3, 2)), Some((6, 2))]
+        );
+    }
+
+    #[test]
+    fn test_chart_layout_keeps_fixed_gap_when_falling_back_to_narrow_bars() {
+        let layout = chart_layout(7, 3, 0, TARGET_BAR_WIDTH);
+
+        assert_eq!(layout.max_scroll, 0);
+        assert_eq!(
+            layout.positions,
+            vec![Some((2, 1)), Some((4, 1)), Some((6, 1))]
         );
     }
 
     #[test]
     fn test_chart_layout_scrolls_without_compressing_bars() {
-        let layout = chart_layout(5, 5, 2);
+        let layout = chart_layout(4, 5, 2, TARGET_BAR_WIDTH);
 
-        assert!(layout.is_scrollable());
+        assert!(layout.max_scroll > 0);
         assert_eq!(layout.virtual_width, 9);
-        assert_eq!(layout.max_scroll, 4);
+        assert_eq!(layout.max_scroll, 5);
         assert_eq!(layout.scroll_offset, 2);
         assert_eq!(
             layout.positions,
-            vec![None, Some((0, 1)), Some((2, 1)), Some((4, 1)), None]
+            vec![None, Some((0, 1)), Some((2, 1)), None, None]
         );
     }
 
     #[test]
-    fn test_chart_layout_clamps_scroll_to_end() {
-        let layout = chart_layout(5, 5, usize::MAX);
+    fn test_chart_layout_keeps_dense_bars_on_wide_scrollable_plots() {
+        let layout = chart_layout(80, 60, usize::MAX, TARGET_BAR_WIDTH);
 
-        assert_eq!(layout.scroll_offset, 4);
+        assert!(layout.max_scroll > 0);
+        assert_eq!(layout.virtual_width, 119);
+        assert_eq!(layout.max_scroll, 39);
+        assert!(layout
+            .positions
+            .iter()
+            .flatten()
+            .all(|(_, width)| *width == MIN_BAR_WIDTH));
+        assert!(layout
+            .positions
+            .iter()
+            .flatten()
+            .map(|(x, _)| *x)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|pair| pair[1].saturating_sub(pair[0]) == MIN_BAR_WIDTH + BAR_GAP));
+    }
+
+    #[test]
+    fn test_chart_layout_keeps_wide_bars_on_wide_scrollable_plots_when_preferred() {
+        let layout = chart_layout(80, 60, usize::MAX, MAX_BAR_WIDTH);
+
+        assert!(layout.max_scroll > 0);
+        assert_eq!(layout.virtual_width, 239);
+        assert_eq!(layout.max_scroll, 159);
+        assert!(layout
+            .positions
+            .iter()
+            .flatten()
+            .all(|(_, width)| *width == MAX_BAR_WIDTH));
+        assert!(layout
+            .positions
+            .iter()
+            .flatten()
+            .map(|(x, _)| *x)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|pair| pair[1].saturating_sub(pair[0]) == MAX_BAR_WIDTH + BAR_GAP));
+    }
+
+    #[test]
+    fn test_daily_heatmap_layout_uses_fixed_contribution_window() {
+        let first_date = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        let layout = daily_heatmap_layout(120, first_date, 75);
+
+        assert_eq!(layout.cell_width, HEATMAP_MIN_CELL_WIDTH);
+        assert_eq!(layout.start_date.weekday().num_days_from_sunday(), 0);
+        assert_eq!(layout.week_count, 53);
+        assert_eq!(layout.visible_weeks, 53);
+        assert_eq!(layout.virtual_width, 106);
+        assert_eq!(layout.positions[0], Some((84, 1)));
+        assert_eq!(layout.positions[6], Some((86, 0)));
+        assert_eq!(layout.positions[7], Some((86, 1)));
+        assert_eq!(layout.positions[74], Some((104, 5)));
+    }
+
+    #[test]
+    fn test_daily_heatmap_layout_expands_cells_on_wide_plots() {
+        let first_date = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        let layout = daily_heatmap_layout(180, first_date, 75);
+
+        assert_eq!(layout.cell_width, 3);
+        assert_eq!(layout.visible_weeks, 53);
+        assert_eq!(layout.virtual_width, 159);
+        assert_eq!(layout.positions[0], Some((126, 1)));
+        assert_eq!(layout.positions[74], Some((156, 5)));
+    }
+
+    #[test]
+    fn test_daily_heatmap_layout_caps_cell_expansion() {
+        let first_date = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        let layout = daily_heatmap_layout(260, first_date, 75);
+
+        assert_eq!(layout.cell_width, HEATMAP_MAX_CELL_WIDTH);
+        assert_eq!(layout.visible_weeks, 53);
+        assert_eq!(layout.virtual_width, 212);
+    }
+
+    #[test]
+    fn test_daily_heatmap_layout_crops_old_weeks_on_narrow_plots() {
+        let first_date = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        let layout = daily_heatmap_layout(8, first_date, 75);
+
+        assert_eq!(layout.week_count, 53);
+        assert_eq!(layout.visible_weeks, 4);
+        assert_eq!(layout.start_week, 49);
+        assert_eq!(layout.positions[0], None);
+        assert_eq!(layout.positions[48], Some((0, 0)));
+        assert_eq!(layout.positions[74], Some((6, 5)));
+    }
+
+    #[test]
+    fn test_daily_heatmap_cell_height_expands_when_panel_has_room() {
+        assert_eq!(preferred_heatmap_cell_height(14), 1);
+        assert_eq!(
+            preferred_heatmap_cell_height(
+                (2 + HEATMAP_WEEKDAY_COUNT * HEATMAP_MAX_CELL_HEIGHT) as u16
+            ),
+            HEATMAP_MAX_CELL_HEIGHT
+        );
+    }
+
+    #[test]
+    fn test_heatmap_palette_uses_background_fill_for_full_color_themes() {
+        let light = heatmap_palette(Color::Rgb(255, 255, 255), Color::Gray);
+        let dark = heatmap_palette(Color::Rgb(13, 17, 23), Color::DarkGray);
+
+        assert_eq!(light.empty.ch, ' ');
+        assert_eq!(light.empty.style.bg, Some(Color::Rgb(244, 246, 248)));
+        assert_eq!(dark.empty.ch, ' ');
+        assert_eq!(dark.empty.style.bg, Some(Color::Rgb(22, 27, 34)));
+    }
+
+    #[test]
+    fn test_heatmap_cell_uses_dominant_model_color() {
+        let palette = heatmap_palette(Color::Rgb(255, 255, 255), Color::Gray);
+        let bar = StackedBarData {
+            date: "2026-06-19".to_string(),
+            period: None,
+            total: 100,
+            models: vec![
+                ModelSegment {
+                    model_id: "small".to_string(),
+                    tokens: 30,
+                    color: Color::Red,
+                },
+                ModelSegment {
+                    model_id: "large".to_string(),
+                    tokens: 70,
+                    color: Color::Blue,
+                },
+            ],
+        };
+
+        let cell = heatmap_cell(&bar, 100.0, &palette);
+
+        assert_eq!(cell.ch, '█');
+        assert_eq!(cell.style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn test_heatmap_cell_tints_model_color_by_intensity() {
+        let palette = heatmap_palette(Color::Rgb(255, 255, 255), Color::Gray);
+        let bar = StackedBarData {
+            date: "2026-06-19".to_string(),
+            period: None,
+            total: 10,
+            models: vec![ModelSegment {
+                model_id: "model".to_string(),
+                tokens: 10,
+                color: Color::Rgb(255, 0, 0),
+            }],
+        };
+
+        let cell = heatmap_cell(&bar, 100.0, &palette);
+
+        assert_eq!(cell.ch, '█');
+        assert_eq!(cell.style.fg, Some(Color::Rgb(255, 166, 166)));
+    }
+
+    #[test]
+    fn test_chart_layout_clamps_scroll_to_end() {
+        let layout = chart_layout(4, 5, usize::MAX, TARGET_BAR_WIDTH);
+
+        assert_eq!(layout.scroll_offset, 5);
         assert_eq!(
             layout.positions,
-            vec![None, None, Some((0, 1)), Some((2, 1)), Some((4, 1))]
+            vec![None, None, None, Some((1, 1)), Some((3, 1))]
         );
     }
 

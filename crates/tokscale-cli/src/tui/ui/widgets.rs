@@ -152,8 +152,17 @@ pub(crate) fn light_ratio_bar_spans(
     )
 }
 
+pub(crate) fn filled_ratio_bar_spans(
+    ratio: f64,
+    width: usize,
+    fill_style: Style,
+) -> Vec<Span<'static>> {
+    ratio_bar_spans(ratio, width, fill_style, RatioBarTrack::Hidden)
+}
+
 enum RatioBarTrack {
     Visible { symbol: &'static str, style: Style },
+    Hidden,
 }
 
 fn ratio_bar_spans(
@@ -180,6 +189,7 @@ fn ratio_bar_spans(
             RatioBarTrack::Visible { symbol, style } => {
                 spans.push(Span::styled(symbol.repeat(cells.empty), style));
             }
+            RatioBarTrack::Hidden => {}
         }
     }
     spans

@@ -677,10 +677,7 @@ fn timeline_title_status(app: &mut App, area: Rect) -> Line<'static> {
     for granularity in granularities {
         let selected = app.timeline_granularity == granularity;
         let style = if selected {
-            Style::default()
-                .fg(app.theme.foreground)
-                .bg(app.theme.color(Color::Rgb(30, 64, 175)))
-                .add_modifier(Modifier::BOLD)
+            app.theme.active_control_style()
         } else {
             app.theme.subtle_text_style()
         };

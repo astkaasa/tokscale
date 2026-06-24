@@ -1467,7 +1467,7 @@ fn render_today_models_table(frame: &mut Frame, app: &mut App, area: Rect, summa
                     .bg(app.theme.selection)
                     .fg(app.theme.foreground)
             } else if offset % 2 == 1 {
-                Style::default().bg(app.theme.color(Color::Rgb(10, 16, 22)))
+                app.theme.striped_row_style()
             } else {
                 Style::default()
             };

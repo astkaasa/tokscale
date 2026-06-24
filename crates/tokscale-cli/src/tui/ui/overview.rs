@@ -2,13 +2,15 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, Table};
 use std::collections::BTreeMap;
 
-use super::bar_chart::{render_stacked_bar_chart, ModelSegment, StackedBarData};
+use super::bar_chart::{
+    render_daily_heatmap_chart, render_stacked_bar_chart, ModelSegment, StackedBarData,
+};
 use super::mix::{render_stacked_mix_summary, MixRow};
 use super::overview_today;
 use super::widgets::scrollbar_state;
 use super::widgets::{
-    format_cost, format_tokens, get_provider_display_name, get_provider_shade,
-    light_ratio_bar_spans, table_area_with_scrollbar_gutter, table_bullet_cell, table_right_cell,
+    filled_ratio_bar_spans, format_cost, format_tokens, get_provider_display_name,
+    get_provider_shade, table_area_with_scrollbar_gutter, table_bullet_cell, table_right_cell,
     table_spans_cell, table_text_cell, truncate_ellipsis as truncate_string,
 };
 use crate::tui::app::{
@@ -207,8 +209,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 fn render_wide_dashboard(frame: &mut Frame, app: &mut App, area: Rect) {
     let legend_height = 1u16;
     let min_list_height = 7u16;
-    let top_capacity = area.height.saturating_sub(legend_height + min_list_height);
-    let top_height = top_capacity.clamp(10, 16);
+    let top_height = wide_dashboard_top_height(app, area.height, legend_height, min_list_height);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -235,6 +236,24 @@ fn render_wide_dashboard(frame: &mut Frame, app: &mut App, area: Rect) {
     render_overview_sidebar(frame, app, top[1]);
     render_legend(frame, app, chunks[1]);
     render_top_models(frame, app, chunks[2], items_per_page);
+}
+
+fn wide_dashboard_top_height(
+    app: &App,
+    area_height: u16,
+    legend_height: u16,
+    min_list_height: u16,
+) -> u16 {
+    let top_capacity = area_height.saturating_sub(legend_height + min_list_height);
+    let preferred_height = if app.overview_mode == OverviewMode::All
+        && app.chart_granularity == ChartGranularity::Daily
+    {
+        20
+    } else {
+        16
+    };
+
+    top_capacity.clamp(10, preferred_height)
 }
 
 fn render_compact_dashboard(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -311,10 +330,7 @@ fn chart_granularity_selector(app: &mut App, area: Rect) -> Line<'static> {
     for granularity in granularities {
         let selected = app.chart_granularity == granularity;
         let style = if selected {
-            Style::default()
-                .fg(app.theme.foreground)
-                .bg(app.theme.color(Color::Rgb(30, 64, 175)))
-                .add_modifier(Modifier::BOLD)
+            app.theme.active_control_style()
         } else {
             app.theme.subtle_text_style()
         };
@@ -371,7 +387,11 @@ fn render_chart(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
-    render_stacked_bar_chart(frame, app, area, &data);
+    if app.overview_mode == OverviewMode::All && app.chart_granularity == ChartGranularity::Daily {
+        render_daily_heatmap_chart(frame, app, area, &data);
+    } else {
+        render_stacked_bar_chart(frame, app, area, &data);
+    }
 }
 
 struct ChartBucket {
@@ -382,20 +402,45 @@ struct ChartBucket {
 }
 
 fn daily_chart_bars(app: &App, group_by: &GroupBy) -> Vec<StackedBarData> {
-    let mut days: Vec<_> = app.data.daily.iter().collect();
-    days.sort_by_key(|day| day.date);
-    if days.len() > 60 {
-        days = days.split_off(days.len() - 60);
+    let days_by_date = app
+        .data
+        .daily
+        .iter()
+        .map(|day| (day.date, day))
+        .collect::<BTreeMap<_, _>>();
+    let Some(first_date) = days_by_date.keys().next().copied() else {
+        return Vec::new();
+    };
+    let Some(last_date) = days_by_date.keys().next_back().copied() else {
+        return Vec::new();
+    };
+
+    let mut bars = Vec::new();
+    let mut date = first_date;
+    while date <= last_date {
+        if let Some(day) = days_by_date.get(&date) {
+            bars.push(StackedBarData {
+                date: date.format("%m/%d").to_string(),
+                period: Some(PeriodDetailKey::day(date)),
+                models: daily_model_segments(app, group_by, day),
+                total: day.tokens.total(),
+            });
+        } else {
+            bars.push(StackedBarData {
+                date: date.format("%m/%d").to_string(),
+                period: None,
+                models: Vec::new(),
+                total: 0,
+            });
+        }
+
+        let Some(next_date) = date.checked_add_days(chrono::Days::new(1)) else {
+            break;
+        };
+        date = next_date;
     }
 
-    days.into_iter()
-        .map(|day| StackedBarData {
-            date: day.date.format("%m/%d").to_string(),
-            period: Some(PeriodDetailKey::day(day.date)),
-            models: daily_model_segments(app, group_by, day),
-            total: day.tokens.total(),
-        })
-        .collect()
+    bars
 }
 
 fn weekly_chart_bars(app: &App, group_by: &GroupBy) -> Vec<StackedBarData> {
@@ -712,40 +757,137 @@ fn metric_line(
 }
 
 fn render_legend(frame: &mut Frame, app: &App, area: Rect) {
-    let legend_limit = if app.is_narrow() { 3 } else { 5 };
-    let max_name_width = if app.is_narrow() { 12 } else { 18 };
-    let muted_color = app.theme.muted;
-
-    let top_models: Vec<(String, Color)> = overview_model_rows(app)
-        .iter()
-        .take(legend_limit)
-        .map(|m| {
-            (
-                m.label.clone(),
-                app.model_color_for(&m.provider, &m.color_key),
-            )
-        })
-        .collect();
-
-    if top_models.is_empty() {
+    if area.width < 12 {
         return;
     }
 
-    let mut spans: Vec<Span> = Vec::new();
-    for (i, (model_name, color)) in top_models.iter().enumerate() {
-        let name = truncate_string(model_name, max_name_width);
+    let models = overview_model_rows(app);
+    if models.is_empty() {
+        return;
+    }
 
-        spans.push(Span::styled("●", Style::default().fg(*color)));
-        spans.push(Span::raw(format!(" {}", name)));
+    let total_tokens = models.iter().map(|model| model.tokens_total).sum::<u64>();
+    let legend_line = Line::from(legend_spans_that_fit(
+        app,
+        &models,
+        total_tokens,
+        area.width as usize,
+    ));
+    let paragraph = Paragraph::new(legend_line).style(Style::default().bg(app.theme.background));
+    frame.render_widget(paragraph, area);
+}
 
-        if i < top_models.len() - 1 {
-            spans.push(Span::styled("  ·", Style::default().fg(muted_color)));
+fn legend_spans_that_fit(
+    app: &App,
+    models: &[ModelRowData],
+    total_tokens: u64,
+    width: usize,
+) -> Vec<Span<'static>> {
+    let max_items = if width < 80 {
+        3
+    } else if width < 140 {
+        5
+    } else {
+        6
+    }
+    .min(models.len());
+    let max_name_width = if width < 80 {
+        10
+    } else if width < 140 {
+        14
+    } else {
+        18
+    };
+
+    for show_share in [true, false] {
+        for count in (1..=max_items).rev() {
+            for name_width in (8..=max_name_width).rev() {
+                let spans = legend_spans(app, models, total_tokens, count, name_width, show_share);
+                if Line::from(spans.clone()).width() <= width {
+                    return spans;
+                }
+            }
         }
     }
 
-    let legend_line = Line::from(spans);
-    let paragraph = Paragraph::new(legend_line);
-    frame.render_widget(paragraph, area);
+    vec![
+        Span::styled(
+            " Models ",
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("+{}", models.len()),
+            app.theme.secondary_text_style(),
+        ),
+    ]
+}
+
+fn legend_spans(
+    app: &App,
+    models: &[ModelRowData],
+    total_tokens: u64,
+    count: usize,
+    name_width: usize,
+    show_share: bool,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![
+        Span::styled(
+            " Models ",
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", app.theme.subtle_text_style()),
+    ];
+
+    for (index, model) in models.iter().take(count).enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", app.theme.subtle_text_style()));
+        }
+        spans.push(Span::styled(
+            "●",
+            Style::default().fg(app.model_color_for(&model.provider, &model.color_key)),
+        ));
+        spans.push(Span::styled(
+            format!(" {}", truncate_string(&model.label, name_width)),
+            Style::default().fg(app.theme.foreground),
+        ));
+        if show_share {
+            spans.push(Span::styled(
+                format!(
+                    " {}",
+                    format_share_percent(model.tokens_total, total_tokens)
+                ),
+                app.theme.subtle_text_style(),
+            ));
+        }
+    }
+
+    let omitted = models.len().saturating_sub(count);
+    if omitted > 0 {
+        spans.push(Span::styled(" · ", app.theme.subtle_text_style()));
+        spans.push(Span::styled(
+            format!("+{omitted}"),
+            app.theme.secondary_text_style(),
+        ));
+    }
+
+    spans
+}
+
+fn format_share_percent(value: u64, total: u64) -> String {
+    if total == 0 || value == 0 {
+        return "0%".to_string();
+    }
+
+    let share = value as f64 * 100.0 / total as f64;
+    if share < 1.0 {
+        "<1%".to_string()
+    } else {
+        format!("{share:.0}%")
+    }
 }
 
 fn render_top_models(frame: &mut Frame, app: &mut App, area: Rect, items_per_page: usize) {
@@ -1047,11 +1189,10 @@ fn top_model_row(
         ));
     }
     if layout.bar > 0 {
-        cells.push(table_spans_cell(light_ratio_bar_spans(
+        cells.push(table_spans_cell(filled_ratio_bar_spans(
             metric_bar_ratio(model.cost, cost_bar_scale),
             layout.bar,
             Style::default().fg(model_color),
-            app.theme.subtle_text_style(),
         )));
     }
     if layout.token > 0 {
@@ -1214,8 +1355,9 @@ mod tests {
         DailyModelInfo, DailySourceInfo, DailyUsage, HourlyModelInfo, HourlyUsage, ModelUsage,
         TokenBreakdown, UsageData,
     };
+    use crate::tui::themes::ThemePreference;
     use chrono::NaiveDate;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
     use std::collections::{BTreeMap, BTreeSet};
 
     fn make_app(width: u16) -> App {
@@ -1338,6 +1480,17 @@ mod tests {
         output: u64,
         cost: f64,
     ) -> HourlyUsage {
+        hourly_usage_with_named_model(date, hour, "gpt-5.5", input, output, cost)
+    }
+
+    fn hourly_usage_with_named_model(
+        date: NaiveDate,
+        hour: u32,
+        display_name: &str,
+        input: u64,
+        output: u64,
+        cost: f64,
+    ) -> HourlyUsage {
         let tokens = TokenBreakdown {
             input,
             output,
@@ -1347,11 +1500,11 @@ mod tests {
         };
         let mut models = BTreeMap::new();
         models.insert(
-            "gpt-5.5".to_string(),
+            display_name.to_string(),
             HourlyModelInfo {
                 provider: "openai".to_string(),
-                display_name: "gpt-5.5".to_string(),
-                color_key: "gpt-5.5".to_string(),
+                display_name: display_name.to_string(),
+                color_key: display_name.to_string(),
                 tokens: tokens.clone(),
                 cost,
             },
@@ -1370,15 +1523,19 @@ mod tests {
         }
     }
 
-    fn render_body(app: &mut App, width: u16, height: u16) -> String {
+    fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render(frame, app, Rect::new(0, 0, width, height)))
             .unwrap();
-        terminal
-            .backend()
-            .buffer()
+
+        terminal.backend().buffer().clone()
+    }
+
+    fn render_body(app: &mut App, width: u16, height: u16) -> String {
+        let buffer = render_buffer(app, width, height);
+        buffer
             .content()
             .chunks(width as usize)
             .map(|row| {
@@ -1388,6 +1545,17 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn buffer_row_text(buffer: &Buffer, y: u16) -> String {
+        buffer
+            .content()
+            .chunks(buffer.area.width as usize)
+            .nth(y as usize)
+            .unwrap_or_else(|| panic!("missing row {y}"))
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
     }
 
     fn line_text(line: &Line<'_>) -> String {
@@ -1484,7 +1652,7 @@ mod tests {
 
         assert!(body.contains("Overview"), "missing overview title\n{body}");
         assert!(
-            body.contains("Usage Trend (Daily)"),
+            body.contains("Daily Activity (52w)") || body.contains("Usage Trend (Daily)"),
             "missing chart body\n{body}"
         );
         assert!(body.contains("Summary"), "missing summary panel\n{body}");
@@ -1520,12 +1688,108 @@ mod tests {
     }
 
     #[test]
-    fn overview_cost_bar_uses_dotted_track() {
+    fn overview_cost_bar_omits_empty_track() {
         let mut app = make_app(120);
         let body = render_body(&mut app, 120, 30);
 
         assert!(body.contains("Cost Bar"), "{body}");
-        assert!(body.contains("·"), "{body}");
+        let model_row = body
+            .lines()
+            .find(|line| line.contains("gpt-4.1") && line.contains("OpenAI"))
+            .unwrap_or_else(|| panic!("missing model row\n{body}"));
+
+        assert!(model_row.contains("█"), "{model_row}");
+        assert!(!model_row.contains("·"), "{model_row}");
+    }
+
+    #[test]
+    fn overview_legend_uses_compact_model_chips() {
+        let mut app = make_app(120);
+        let body = render_body(&mut app, 120, 30);
+        let legend = body
+            .lines()
+            .find(|line| line.trim_start().starts_with("Models") && line.contains("●"))
+            .unwrap_or_else(|| panic!("missing compact model legend\n{body}"));
+
+        assert!(legend.contains("gpt-4.1"), "{legend}");
+        assert!(legend.contains('%'), "{legend}");
+    }
+
+    #[test]
+    fn daily_chart_uses_all_daily_points() {
+        let mut app = make_app(120);
+        let today = chrono::Local::now().date_naive();
+        app.data.daily = (0..75)
+            .map(|offset| {
+                daily_usage(
+                    today - chrono::Days::new(74 - offset),
+                    1.0 + offset as f64,
+                    1_000 + offset,
+                )
+            })
+            .collect();
+        let group_by = app.group_by.borrow().clone();
+
+        let bars = daily_chart_bars(&app, &group_by);
+
+        assert_eq!(bars.len(), 75);
+    }
+
+    #[test]
+    fn daily_chart_fills_missing_calendar_days() {
+        let mut app = make_app(120);
+        let today = chrono::Local::now().date_naive();
+        app.data.daily = vec![
+            daily_usage(today - chrono::Days::new(2), 3.0, 3_000),
+            daily_usage(today, 1.0, 1_000),
+        ];
+        let group_by = app.group_by.borrow().clone();
+
+        let bars = daily_chart_bars(&app, &group_by);
+
+        assert_eq!(bars.len(), 3);
+        assert_eq!(bars[0].total, 3_000);
+        assert_eq!(bars[1].total, 0);
+        assert!(bars[1].period.is_none());
+        assert_eq!(bars[2].total, 1_000);
+    }
+
+    #[test]
+    fn daily_heatmap_renders_dense_points_without_scroll() {
+        let mut app = make_app(120);
+        let today = chrono::Local::now().date_naive();
+        app.data.daily = (0..75)
+            .map(|offset| {
+                daily_usage(
+                    today - chrono::Days::new(74 - offset),
+                    1.0 + offset as f64,
+                    1_000 + offset,
+                )
+            })
+            .collect();
+
+        let body = render_body(&mut app, 120, 30);
+        let day_clicks = app
+            .click_areas
+            .iter()
+            .filter(|area| matches!(&area.action, ClickAction::OpenPeriodDetail(_)))
+            .count();
+
+        assert!(body.contains("Daily Activity (52w)"), "{body}");
+        assert_eq!(app.overview_chart_scroll_offset, 0);
+        assert_eq!(day_clicks, 75);
+    }
+
+    #[test]
+    fn wide_daily_overview_allocates_taller_heatmap_panel() {
+        let mut app = make_app(160);
+        app.overview_mode = OverviewMode::All;
+        app.chart_granularity = ChartGranularity::Daily;
+
+        assert_eq!(wide_dashboard_top_height(&app, 56, 1, 7), 20);
+
+        app.chart_granularity = ChartGranularity::Weekly;
+        assert_eq!(wide_dashboard_top_height(&app, 56, 1, 7), 16);
     }
 
     #[test]
@@ -1568,7 +1832,7 @@ mod tests {
 
         assert!(body.contains("Overview"), "missing overview title\n{body}");
         assert!(
-            body.contains("Usage Trend (Daily)"),
+            body.contains("Daily Activity (52w)") || body.contains("Usage Trend (Daily)"),
             "missing chart body\n{body}"
         );
         assert!(body.contains("Today"), "missing compact summary\n{body}");
@@ -1774,6 +2038,59 @@ mod tests {
             visual_col(header, "Signal"),
             visual_col(model_row, "above usual pace"),
             "signal column should start under its header\n{body}"
+        );
+    }
+
+    #[test]
+    fn today_models_striped_rows_use_theme_background_in_light_mode() {
+        let config = TuiConfig {
+            theme: Some(ThemePreference::Light),
+            refresh: 0,
+            clients: None,
+            since: None,
+            until: None,
+            year: None,
+            initial_tab: Some(Tab::Overview),
+        };
+        let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
+        let today = chrono::Local::now().date_naive();
+        app.terminal_width = 140;
+        app.current_tab = Tab::Overview;
+        app.overview_mode = OverviewMode::Today;
+        app.sort_field = SortField::Cost;
+        app.sort_direction = SortDirection::Descending;
+        app.data.hourly = vec![
+            hourly_usage_with_named_model(today, 8, "leader-model", 70_000, 30_000, 24.0),
+            hourly_usage_with_named_model(today, 9, "striped-model", 10_000, 2_000, 1.0),
+        ];
+        let expected_bg = Some(
+            app.theme
+                .striped_row_style()
+                .bg
+                .unwrap_or(app.theme.background),
+        );
+        let old_dark_bg = Some(app.theme.color(Color::Rgb(10, 16, 22)));
+
+        let buffer = render_buffer(&mut app, 140, 32);
+        let row_y = (0..buffer.area.height)
+            .find(|y| buffer_row_text(&buffer, *y).contains("striped-model"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing striped model row\n{}",
+                    render_body(&mut app, 140, 32)
+                )
+            });
+        let row = buffer_row_text(&buffer, row_y);
+        let model_x = visual_col(&row, "striped-model") as u16;
+        let actual_bg = buffer[(model_x, row_y)].style().bg;
+
+        assert_eq!(
+            actual_bg, expected_bg,
+            "striped row should use the active theme background\n{row}"
+        );
+        assert_ne!(
+            actual_bg, old_dark_bg,
+            "light theme should not reuse the old hard-coded dark stripe\n{row}"
         );
     }
 

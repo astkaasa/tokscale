@@ -2,7 +2,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use tokscale_core::pulse::weread::format_read_duration;
 
-use super::widgets::{format_cost, format_tokens};
 use crate::tui::app::{App, ClickAction, Tab};
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -50,49 +49,36 @@ fn render_right_status(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool
     if is_narrow || area.width < 40 {
         return 0;
     }
+    if app.current_tab != Tab::Pulse {
+        return 0;
+    }
 
-    let active_days = app
-        .data
-        .daily
-        .iter()
-        .filter(|day| day.tokens.total() > 0 || day.cost > 0.0)
-        .count();
-    let (scope, status) = if app.current_tab == Tab::Pulse {
-        let week = app
-            .pulse
-            .weread
-            .weekly
-            .as_ref()
-            .map(|weekly| {
-                format!(
-                    "{}/7  •  {}",
-                    weekly.read_days,
-                    format_read_duration(weekly.total_seconds)
-                )
-            })
-            .unwrap_or_else(|| app.pulse.weread.status.label().to_string());
-        ("WeRead", week)
-    } else if app.current_tab == Tab::Overview
-        && app.overview_mode == crate::tui::app::OverviewMode::Today
-    {
-        let (tokens, cost, models) = app.overview_totals();
-        (
-            "Today",
+    let scope = "WeRead";
+    let status = app
+        .pulse
+        .weread
+        .weekly
+        .as_ref()
+        .map(|weekly| {
             format!(
-                "{}  •  {}  •  {} models",
-                format_tokens(tokens),
-                format_cost(cost),
-                models
-            ),
-        )
-    } else {
-        (
-            "All Time",
-            format!("{} days  •  {} models", active_days, app.data.models.len()),
-        )
-    };
+                "{}/7  •  {}",
+                weekly.read_days,
+                format_read_duration(weekly.total_seconds)
+            )
+        })
+        .unwrap_or_else(|| app.pulse.weread.status.label().to_string());
     let status_text = format!("{scope}  •  {status}");
     let width = Line::from(status_text.as_str()).width() as u16;
+    let guard_width: u16 = 18;
+    let tab_width = header_tabs_width(&header_tabs(app), false);
+    if guard_width
+        .saturating_add(tab_width)
+        .saturating_add(width)
+        .saturating_add(2)
+        > area.width
+    {
+        return 0;
+    }
     let status_area = Rect::new(
         area.right().saturating_sub(width),
         area.y,
@@ -143,6 +129,9 @@ fn render_workspace_tabs(
         .saturating_add(divider_width.saturating_mul(tab_count.saturating_sub(1) as u16));
     let left_guard = area.x.saturating_add(if is_very_narrow { 7 } else { 18 });
     let right_guard = area.right().saturating_sub(right_reserved);
+    if right_guard <= left_guard {
+        return;
+    }
     let centered = area.x + area.width.saturating_sub(total_width) / 2;
     let mut x = centered.max(left_guard);
     if x.saturating_add(total_width) > right_guard {
@@ -151,7 +140,7 @@ fn render_workspace_tabs(
     }
 
     for (index, tab) in visible_tabs.into_iter().enumerate() {
-        let remaining_width = area.right().saturating_sub(x);
+        let remaining_width = right_guard.saturating_sub(x);
         if remaining_width == 0 {
             break;
         }
@@ -159,10 +148,7 @@ fn render_workspace_tabs(
         let width = item_widths[index].min(remaining_width);
         let selected = tab == app.current_tab;
         let style = if selected {
-            Style::default()
-                .fg(app.theme.foreground)
-                .bg(app.theme.color(Color::Rgb(30, 64, 175)))
-                .add_modifier(Modifier::BOLD)
+            app.theme.active_control_style()
         } else {
             Style::default().fg(app.theme.foreground)
         };
@@ -174,7 +160,7 @@ fn render_workspace_tabs(
         app.add_click_area(rect, ClickAction::Tab(tab));
         x = x.saturating_add(width);
 
-        let remaining_width = area.right().saturating_sub(x);
+        let remaining_width = right_guard.saturating_sub(x);
         if remaining_width == 0 || index + 1 == tab_count {
             break;
         }
@@ -201,6 +187,14 @@ fn tab_label(tab: Tab, is_very_narrow: bool) -> &'static str {
 
 fn tab_label_width(tab: Tab, is_very_narrow: bool) -> u16 {
     Line::from(tab_label(tab, is_very_narrow)).width() as u16
+}
+
+fn header_tabs_width(tabs: &[Tab], is_very_narrow: bool) -> u16 {
+    let divider_width = 2u16;
+    tabs.iter()
+        .map(|tab| tab_label_width(*tab, is_very_narrow).saturating_add(4))
+        .sum::<u16>()
+        .saturating_add(divider_width.saturating_mul(tabs.len().saturating_sub(1) as u16))
 }
 
 fn header_tabs(app: &App) -> Vec<Tab> {
@@ -351,6 +345,42 @@ mod tests {
                 Tab::Hourly,
             ]
         );
+    }
+
+    #[test]
+    fn non_overview_header_hides_all_time_status() {
+        let mut app = make_app(100);
+        app.current_tab = Tab::Usage;
+
+        let rows = render_header(&mut app, 100);
+        let row = row_text(&rows, 1);
+
+        assert!(row.contains("Usage"), "{row}");
+        assert!(!row.contains("All Time"), "{row}");
+    }
+
+    #[test]
+    fn overview_header_omits_summary_status_without_covering_tabs() {
+        let mut app = make_app(120);
+
+        let rows = render_header(&mut app, 120);
+        let row = row_text(&rows, 1);
+
+        assert!(!row.contains("All Time"), "{row}");
+        assert!(!row.contains("days"), "{row}");
+        assert!(!row.contains("models"), "{row}");
+        assert!(row.contains("Timeline"), "{row}");
+    }
+
+    #[test]
+    fn pulse_header_keeps_weread_status() {
+        let mut app = make_app(120);
+        app.current_tab = Tab::Pulse;
+
+        let rows = render_header(&mut app, 120);
+        let row = row_text(&rows, 1);
+
+        assert!(row.contains("WeRead"), "{row}");
     }
 
     #[test]
