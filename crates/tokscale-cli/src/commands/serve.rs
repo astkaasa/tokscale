@@ -8,7 +8,9 @@ use crate::date_filter::get_date_range_label;
 use crate::report_support::{emit_cursor_setup_warnings, setup_warnings_for_report};
 use crate::spinner::LightSpinner;
 use crate::tui::{load_cache, CacheReportScope, CacheResult, DataLoader, UsageData};
-use crate::web::overview::{build_overview_json, render_overview_html, OverviewRenderOptions};
+use crate::web::overview::{
+    build_overview_json, render_overview_html, render_overview_surface, OverviewRenderOptions,
+};
 use crate::web::server::{serve_static_overview, StaticSite};
 
 pub(crate) struct ServeArgs {
@@ -72,10 +74,24 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
         render_options.width,
         render_options.height,
     );
-    let html = render_overview_html(data, render_options)?;
+    let html = render_overview_html(data.clone(), render_options.clone())?;
     let json = serde_json::to_string_pretty(&overview_json)?;
+    let surface_data = data.clone();
+    let surface_options = render_options.clone();
 
-    serve_static_overview(port, StaticSite { html, json })
+    serve_static_overview(
+        port,
+        StaticSite {
+            html,
+            json,
+            surface: Some(Box::new(move |size| {
+                let mut options = surface_options.clone();
+                options.width = size.cols;
+                options.height = size.rows;
+                render_overview_surface(surface_data.clone(), options)
+            })),
+        },
+    )
 }
 
 fn scan_usage_data(

@@ -23,7 +23,7 @@ pub(crate) use cache::{
 };
 pub(crate) use data::{DataLoader, UsageData};
 pub(crate) use event::{Event, EventHandler};
-pub(crate) use themes::ThemePreference;
+pub(crate) use themes::{Theme, ThemePreference};
 
 use std::collections::HashSet;
 use std::io;

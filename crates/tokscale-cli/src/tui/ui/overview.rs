@@ -304,7 +304,30 @@ fn render_chart_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .style(Style::default().bg(app.theme.background));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    render_chart(frame, app, inner);
+    render_chart(frame, app, overview_chart_content_area(app, inner));
+}
+
+fn overview_chart_content_area(app: &App, area: Rect) -> Rect {
+    if app.overview_mode == OverviewMode::All && app.chart_granularity == ChartGranularity::Daily {
+        return centered_daily_heatmap_area(area);
+    }
+
+    area
+}
+
+fn centered_daily_heatmap_area(area: Rect) -> Rect {
+    const DAILY_HEATMAP_CONTENT_HEIGHT: u16 = 11;
+    if area.height <= DAILY_HEATMAP_CONTENT_HEIGHT + 2 {
+        return area;
+    }
+
+    let top_padding = (area.height.saturating_sub(DAILY_HEATMAP_CONTENT_HEIGHT) / 2).min(2);
+    Rect::new(
+        area.x,
+        area.y.saturating_add(top_padding),
+        area.width,
+        DAILY_HEATMAP_CONTENT_HEIGHT,
+    )
 }
 
 fn chart_granularity_selector(app: &mut App, area: Rect) -> Line<'static> {
@@ -536,7 +559,7 @@ fn add_day_to_chart_bucket(
 }
 
 fn render_overview_sidebar(frame: &mut Frame, app: &App, area: Rect) {
-    let summary_height = if area.height >= 14 { 7 } else { 6 };
+    let summary_height = overview_summary_panel_height(area.height);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(summary_height), Constraint::Min(0)])
@@ -544,6 +567,10 @@ fn render_overview_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 
     render_summary_panel(frame, app, chunks[0]);
     render_provider_mix_panel(frame, app, chunks[1]);
+}
+
+fn overview_summary_panel_height(area_height: u16) -> u16 {
+    area_height.min(5)
 }
 
 fn render_summary_panel(frame: &mut Frame, app: &App, area: Rect) {
@@ -1791,6 +1818,29 @@ mod tests {
 
         app.chart_granularity = ChartGranularity::Weekly;
         assert_eq!(wide_dashboard_top_height(&app, 56, 1, 7), 16);
+    }
+
+    #[test]
+    fn wide_daily_heatmap_chart_is_vertically_centered() {
+        let mut app = make_app(160);
+        app.overview_mode = OverviewMode::All;
+        app.chart_granularity = ChartGranularity::Daily;
+        let area = Rect::new(4, 8, 120, 18);
+
+        let centered = overview_chart_content_area(&app, area);
+
+        assert_eq!(centered.y, 10);
+        assert_eq!(centered.height, 11);
+
+        app.chart_granularity = ChartGranularity::Weekly;
+        assert_eq!(overview_chart_content_area(&app, area), area);
+    }
+
+    #[test]
+    fn overview_summary_panel_stays_tight_to_content() {
+        assert_eq!(overview_summary_panel_height(20), 5);
+        assert_eq!(overview_summary_panel_height(10), 5);
+        assert_eq!(overview_summary_panel_height(4), 4);
     }
 
     #[test]

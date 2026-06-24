@@ -4,10 +4,32 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-#[derive(Clone, Debug)]
+const DEFAULT_SURFACE_COLS: u16 = 220;
+const DEFAULT_SURFACE_ROWS: u16 = 69;
+const MIN_SURFACE_COLS: u16 = 40;
+const MAX_SURFACE_COLS: u16 = 320;
+const MIN_SURFACE_ROWS: u16 = 16;
+const MAX_SURFACE_ROWS: u16 = 120;
+
 pub(crate) struct StaticSite {
     pub html: String,
     pub json: String,
+    pub surface: Option<Box<dyn Fn(SurfaceSize) -> Result<String> + Send + Sync>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl Default for SurfaceSize {
+    fn default() -> Self {
+        Self {
+            cols: DEFAULT_SURFACE_COLS,
+            rows: DEFAULT_SURFACE_ROWS,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,6 +115,28 @@ fn response_for_target(target: &str, site: &StaticSite) -> HttpResponse {
             body: site.json.clone(),
             send_body: true,
         },
+        "/surface" => match &site.surface {
+            Some(render) => match render(surface_size_from_target(target)) {
+                Ok(body) => HttpResponse {
+                    status: "200 OK",
+                    content_type: "text/html; charset=utf-8",
+                    body,
+                    send_body: true,
+                },
+                Err(err) => HttpResponse {
+                    status: "500 Internal Server Error",
+                    content_type: "text/plain; charset=utf-8",
+                    body: format!("Render failed: {err}\n"),
+                    send_body: true,
+                },
+            },
+            None => HttpResponse {
+                status: "404 Not Found",
+                content_type: "text/plain; charset=utf-8",
+                body: "Surface renderer not configured\n".to_string(),
+                send_body: true,
+            },
+        },
         "/healthz" => HttpResponse {
             status: "200 OK",
             content_type: "text/plain; charset=utf-8",
@@ -114,11 +158,34 @@ fn response_for_target(target: &str, site: &StaticSite) -> HttpResponse {
     }
 }
 
+fn surface_size_from_target(target: &str) -> SurfaceSize {
+    let mut size = SurfaceSize::default();
+    let Some((_, query)) = target.split_once('?') else {
+        return size;
+    };
+
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let Ok(value) = value.parse::<u16>() else {
+            continue;
+        };
+        match key {
+            "cols" => size.cols = value.clamp(MIN_SURFACE_COLS, MAX_SURFACE_COLS),
+            "rows" => size.rows = value.clamp(MIN_SURFACE_ROWS, MAX_SURFACE_ROWS),
+            _ => {}
+        }
+    }
+
+    size
+}
+
 fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<()> {
     let body = response.body.as_bytes();
     write!(
         stream,
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:\r\nConnection: close\r\n\r\n",
         response.status,
         response.content_type,
         body.len()
@@ -138,6 +205,15 @@ mod tests {
         StaticSite {
             html: "<html>overview</html>".to_string(),
             json: "{\"ok\":true}".to_string(),
+            surface: None,
+        }
+    }
+
+    fn dynamic_site() -> StaticSite {
+        StaticSite {
+            html: "<html>overview</html>".to_string(),
+            json: "{\"ok\":true}".to_string(),
+            surface: Some(Box::new(|size| Ok(format!("{}x{}", size.cols, size.rows)))),
         }
     }
 
@@ -157,6 +233,24 @@ mod tests {
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.content_type, "application/json; charset=utf-8");
         assert_eq!(response.body, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn routes_surface_to_dynamic_renderer() {
+        let response =
+            response_for_request_line("GET /surface?cols=96&rows=32 HTTP/1.1", &dynamic_site());
+
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "text/html; charset=utf-8");
+        assert_eq!(response.body, "96x32");
+    }
+
+    #[test]
+    fn clamps_surface_size() {
+        let response =
+            response_for_request_line("GET /surface?cols=999&rows=2 HTTP/1.1", &dynamic_site());
+
+        assert_eq!(response.body, "320x16");
     }
 
     #[test]

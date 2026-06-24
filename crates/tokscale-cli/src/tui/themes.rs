@@ -168,6 +168,14 @@ impl Theme {
         Self::from_env(preference, std::env::vars())
     }
 
+    pub(crate) fn for_web_with_preference(preference: ThemePreference) -> Self {
+        Self::with_terminal(
+            preference,
+            TerminalColorMode::FullColor,
+            TerminalBackground::Unknown,
+        )
+    }
+
     pub(crate) fn from_env<I, K, V>(preference: ThemePreference, env: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
