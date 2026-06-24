@@ -1,20 +1,19 @@
 use super::super::ui::widgets::get_provider_shade;
 use super::{
-    App, ChartGranularity, ClickAction, DrilldownView, HourlyViewMode, ModelDetailKey,
-    OverviewMode, PeriodDetailKey, SortDirection, SortField, Tab, ThemePreference,
-    TimelineGranularity, TuiConfig,
+    App, ChartGranularity, ClickAction, DrilldownView, ModelDetailKey, OverviewMode,
+    PeriodDetailKey, SortDirection, SortField, Tab, ThemePreference, TimelineGranularity,
+    TuiConfig,
 };
 use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput, UsageResetCredits};
 use crate::tui::data::{
-    DailyModelInfo, DailySourceInfo, DailyUsage, MinutelyUsage, ModelUsage, TokenBreakdown,
-    UsageData,
+    DailyModelInfo, DailySourceInfo, DailyUsage, ModelUsage, TokenBreakdown, UsageData,
 };
 use crate::ClientFilter;
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::time::{Duration, Instant};
 
@@ -26,8 +25,7 @@ fn test_tab_workspaces() {
             Tab::Overview,
             Tab::Pulse,
             Tab::Models,
-            Tab::Daily,
-            Tab::Minutely,
+            Tab::Timeline,
             Tab::Usage
         ]
     );
@@ -38,9 +36,7 @@ fn test_tab_as_str() {
     assert_eq!(Tab::Overview.as_str(), "Overview");
     assert_eq!(Tab::Pulse.as_str(), "Pulse");
     assert_eq!(Tab::Models.as_str(), "Models");
-    assert_eq!(Tab::Daily.as_str(), "Daily");
-    assert_eq!(Tab::Hourly.as_str(), "Hourly");
-    assert_eq!(Tab::Minutely.as_str(), "Minutely");
+    assert_eq!(Tab::Timeline.as_str(), "Timeline");
 }
 
 #[test]
@@ -48,9 +44,7 @@ fn test_tab_short_name() {
     assert_eq!(Tab::Overview.short_name(), "Ovw");
     assert_eq!(Tab::Pulse.short_name(), "Pul");
     assert_eq!(Tab::Models.short_name(), "Mod");
-    assert_eq!(Tab::Daily.short_name(), "Day");
-    assert_eq!(Tab::Hourly.short_name(), "Hr");
-    assert_eq!(Tab::Minutely.short_name(), "Min");
+    assert_eq!(Tab::Timeline.short_name(), "Time");
 }
 
 #[test]
@@ -63,6 +57,7 @@ fn config_theme_overrides_settings_default() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
 
     let app = App::new_with_cached_data(config, None).unwrap();
@@ -87,6 +82,7 @@ fn test_reset_selection() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     let mut app = App::new_with_cached_data(config, None).unwrap();
 
@@ -110,6 +106,7 @@ fn test_move_selection_up() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     let mut app = App::new_with_cached_data(config, None).unwrap();
 
@@ -158,6 +155,7 @@ fn test_move_selection_down() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     let mut app = App::new_with_cached_data(config, None).unwrap();
 
@@ -206,6 +204,7 @@ fn test_clamp_selection() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     let mut app = App::new_with_cached_data(config, None).unwrap();
 
@@ -245,6 +244,7 @@ fn test_set_sort() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     let mut app = App::new_with_cached_data(config, None).unwrap();
 
@@ -278,6 +278,7 @@ fn test_should_quit() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     let app = App::new_with_cached_data(config, None).unwrap();
 
@@ -295,6 +296,7 @@ fn make_app() -> App {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     App::new_with_cached_data(config, None).unwrap()
 }
@@ -414,122 +416,6 @@ fn daily_usage(date: &str, cost: f64, models: Vec<(&str, &str, f64)>) -> DailyUs
     }
 }
 
-fn minutely_usage(datetime: &str, input_tokens: u64, cost: f64) -> MinutelyUsage {
-    MinutelyUsage {
-        datetime: NaiveDateTime::parse_from_str(datetime, "%Y-%m-%d %H:%M:%S").unwrap(),
-        tokens: TokenBreakdown {
-            input: input_tokens,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-            reasoning: 0,
-        },
-        cost,
-        clients: BTreeSet::new(),
-        models: BTreeMap::new(),
-        message_count: 1,
-        turn_count: 1,
-    }
-}
-
-#[test]
-fn test_get_sorted_minutely_reuses_cached_order_for_same_sort() {
-    let mut app = make_app();
-    app.data.minutely = vec![
-        minutely_usage("2026-05-20 10:00:00", 10, 1.0),
-        minutely_usage("2026-05-20 10:01:00", 20, 9.0),
-    ];
-
-    let first = app
-        .get_sorted_minutely()
-        .iter()
-        .map(|entry| entry.datetime)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        first,
-        vec![
-            NaiveDateTime::parse_from_str("2026-05-20 10:01:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-            NaiveDateTime::parse_from_str("2026-05-20 10:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-        ]
-    );
-
-    app.data.minutely.swap(0, 1);
-
-    let second = app
-        .get_sorted_minutely()
-        .iter()
-        .map(|entry| entry.datetime)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        second,
-        vec![
-            NaiveDateTime::parse_from_str("2026-05-20 10:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-            NaiveDateTime::parse_from_str("2026-05-20 10:01:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-        ],
-        "unchanged data should reuse the cached sorted index order"
-    );
-}
-
-#[test]
-fn test_get_sorted_minutely_invalidates_cache_when_sort_changes() {
-    let mut app = make_app();
-    app.data.minutely = vec![
-        minutely_usage("2026-05-20 10:00:00", 10, 1.0),
-        minutely_usage("2026-05-20 10:01:00", 20, 9.0),
-    ];
-    let _ = app.get_sorted_minutely();
-
-    app.data.minutely.swap(0, 1);
-    app.set_sort(SortField::Date);
-
-    let sorted = app
-        .get_sorted_minutely()
-        .iter()
-        .map(|entry| entry.datetime)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        sorted,
-        vec![
-            NaiveDateTime::parse_from_str("2026-05-20 10:01:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-            NaiveDateTime::parse_from_str("2026-05-20 10:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-        ],
-        "changing sort key should rebuild the minutely sorted cache"
-    );
-}
-
-#[test]
-fn test_get_sorted_minutely_invalidates_cache_when_data_updates() {
-    let mut app = make_app();
-    app.data.minutely = vec![
-        minutely_usage("2026-05-20 10:00:00", 10, 1.0),
-        minutely_usage("2026-05-20 10:01:00", 20, 9.0),
-    ];
-    let _ = app.get_sorted_minutely();
-
-    let refreshed = UsageData {
-        minutely: vec![
-            minutely_usage("2026-05-20 10:02:00", 30, 2.0),
-            minutely_usage("2026-05-20 10:03:00", 40, 12.0),
-        ],
-        ..Default::default()
-    };
-    app.update_data(refreshed);
-
-    let sorted = app
-        .get_sorted_minutely()
-        .iter()
-        .map(|entry| entry.datetime)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        sorted,
-        vec![
-            NaiveDateTime::parse_from_str("2026-05-20 10:03:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-            NaiveDateTime::parse_from_str("2026-05-20 10:02:00", "%Y-%m-%d %H:%M:%S").unwrap(),
-        ],
-        "update_data should clear stale minutely sorted cache entries"
-    );
-}
-
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -570,7 +456,7 @@ fn test_handle_key_tab_switch() {
     assert_eq!(app.current_tab, Tab::Models);
 
     app.handle_key_event(key(KeyCode::Tab));
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
 
     app.handle_key_event(key(KeyCode::Tab));
     assert_eq!(app.current_tab, Tab::Usage);
@@ -588,7 +474,7 @@ fn test_handle_key_backtab_switch() {
     assert_eq!(app.current_tab, Tab::Usage);
 
     app.handle_key_event(key(KeyCode::BackTab));
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
 
     app.handle_key_event(key(KeyCode::BackTab));
     assert_eq!(app.current_tab, Tab::Models);
@@ -597,40 +483,6 @@ fn test_handle_key_backtab_switch() {
     assert_eq!(app.current_tab, Tab::Pulse);
 
     app.handle_key_event(key(KeyCode::BackTab));
-    assert_eq!(app.current_tab, Tab::Overview);
-}
-
-#[test]
-fn test_handle_key_tab_switch_includes_minutely_when_enabled() {
-    let mut app = make_app();
-    app.settings.minutely_tab_enabled = true;
-    assert_eq!(app.current_tab, Tab::Overview);
-
-    for expected in [
-        Tab::Pulse,
-        Tab::Models,
-        Tab::Daily,
-        Tab::Minutely,
-        Tab::Usage,
-        Tab::Overview,
-    ] {
-        app.handle_key_event(key(KeyCode::Tab));
-        assert_eq!(app.current_tab, expected);
-    }
-}
-
-#[test]
-fn test_initial_minutely_tab_clamps_to_overview_when_flag_off() {
-    let config = TuiConfig {
-        theme: None,
-        refresh: 0,
-        clients: None,
-        since: None,
-        until: None,
-        year: None,
-        initial_tab: Some(Tab::Minutely),
-    };
-    let app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
     assert_eq!(app.current_tab, Tab::Overview);
 }
 
@@ -644,7 +496,7 @@ fn test_handle_key_left_right_switch() {
     assert_eq!(app.current_tab, Tab::Models);
 
     app.handle_key_event(key(KeyCode::Right));
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
 
     app.handle_key_event(key(KeyCode::Left));
     assert_eq!(app.current_tab, Tab::Models);
@@ -677,7 +529,7 @@ fn test_handle_key_tab_resets_selection() {
 #[test]
 fn test_enter_on_daily_opens_selected_day_detail_rows() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.sort_field = SortField::Date;
     app.sort_direction = SortDirection::Descending;
     app.data.daily = vec![
@@ -742,7 +594,7 @@ fn test_period_detail_aggregates_week_range() {
 #[test]
 fn period_detail_uses_local_sort_and_restores_parent_sort() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.sort_field = SortField::Date;
     app.sort_direction = SortDirection::Descending;
     app.data.daily = vec![daily_usage(
@@ -769,7 +621,7 @@ fn period_detail_uses_local_sort_and_restores_parent_sort() {
     assert_eq!(app.sort_direction, SortDirection::Descending);
 
     app.handle_key_event(key(KeyCode::Esc));
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
     assert_eq!(app.sort_field, SortField::Date);
     assert_eq!(app.sort_direction, SortDirection::Descending);
 }
@@ -777,7 +629,7 @@ fn period_detail_uses_local_sort_and_restores_parent_sort() {
 #[test]
 fn test_enter_on_period_detail_opens_model_detail() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.data.daily = vec![daily_usage(
         "2026-05-11",
         2.0,
@@ -799,7 +651,7 @@ fn test_enter_on_period_detail_opens_model_detail() {
 #[test]
 fn test_esc_from_nested_drilldown_returns_to_parent_detail() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.data.daily = vec![daily_usage(
         "2026-05-11",
         2.0,
@@ -822,19 +674,19 @@ fn test_esc_from_nested_drilldown_returns_to_parent_detail() {
         app.drilldown_view(),
         Some(DrilldownView::Period(key)) if key.label == "2026-05-11"
     ));
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
     assert_eq!(app.selected_index, 0);
 
     app.handle_key_event(key(KeyCode::Esc));
 
     assert!(app.drilldown_view().is_none());
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
 }
 
 #[test]
 fn nested_drilldown_restores_each_level_sort_state() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.sort_field = SortField::Date;
     app.sort_direction = SortDirection::Descending;
     app.data.daily = vec![
@@ -878,7 +730,7 @@ fn nested_drilldown_restores_each_level_sort_state() {
 
     app.handle_key_event(key(KeyCode::Esc));
     assert!(app.drilldown_view().is_none());
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
     assert_eq!(app.sort_field, SortField::Date);
     assert_eq!(app.sort_direction, SortDirection::Descending);
 }
@@ -886,7 +738,7 @@ fn nested_drilldown_restores_each_level_sort_state() {
 #[test]
 fn test_esc_from_daily_detail_restores_daily_selection() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.sort_field = SortField::Date;
     app.sort_direction = SortDirection::Descending;
     app.data.daily = vec![
@@ -908,7 +760,7 @@ fn test_esc_from_daily_detail_restores_daily_selection() {
 
     app.handle_key_event(key(KeyCode::Esc));
 
-    assert_eq!(app.current_tab, Tab::Daily);
+    assert_eq!(app.current_tab, Tab::Timeline);
     assert_eq!(app.selected_index, 1);
     assert_eq!(app.scroll_offset, 1);
     assert_eq!(app.get_current_list_len(), 3);
@@ -917,7 +769,7 @@ fn test_esc_from_daily_detail_restores_daily_selection() {
 #[test]
 fn test_close_daily_detail_reanchors_selection_by_date_after_sort_change() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.sort_field = SortField::Date;
     app.sort_direction = SortDirection::Descending;
     app.data.daily = vec![
@@ -954,7 +806,7 @@ fn test_close_daily_detail_reanchors_selection_by_date_after_sort_change() {
 #[test]
 fn test_update_data_exits_daily_detail_when_date_disappears() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.sort_field = SortField::Date;
     app.sort_direction = SortDirection::Descending;
     app.data.daily = vec![
@@ -991,7 +843,7 @@ fn test_update_data_exits_daily_detail_when_date_disappears() {
 #[test]
 fn test_update_data_keeps_daily_detail_when_date_still_present() {
     let mut app = make_app();
-    app.current_tab = Tab::Daily;
+    app.current_tab = Tab::Timeline;
     app.sort_field = SortField::Date;
     app.sort_direction = SortDirection::Descending;
     app.data.daily = vec![
@@ -1055,7 +907,7 @@ fn test_handle_key_sort_date() {
 #[test]
 fn test_timeline_day_hour_keys_do_not_enable_minute_granularity() {
     let mut app = make_app();
-    app.switch_tab(Tab::Daily);
+    app.switch_tab(Tab::Timeline);
 
     app.handle_key_event(key(KeyCode::Char('h')));
     assert_eq!(app.timeline_granularity, TimelineGranularity::Hour);
@@ -1069,7 +921,7 @@ fn test_timeline_day_hour_keys_do_not_enable_minute_granularity() {
 #[test]
 fn model_drilldown_date_sort_takes_precedence_over_timeline_day_key() {
     let mut app = make_app();
-    app.switch_tab(Tab::Daily);
+    app.switch_tab(Tab::Timeline);
     app.timeline_granularity = TimelineGranularity::Hour;
     app.sort_field = SortField::Cost;
     app.open_model_detail(ModelDetailKey {
@@ -1087,7 +939,7 @@ fn model_drilldown_date_sort_takes_precedence_over_timeline_day_key() {
 #[test]
 fn period_drilldown_date_key_does_not_mutate_underlying_timeline() {
     let mut app = make_app();
-    app.switch_tab(Tab::Daily);
+    app.switch_tab(Tab::Timeline);
     app.timeline_granularity = TimelineGranularity::Hour;
     app.sort_field = SortField::Cost;
     app.open_period_detail(PeriodDetailKey::day(
@@ -1153,11 +1005,11 @@ fn test_overview_chart_granularity_keys_switch_day_week_month() {
 }
 
 #[test]
-fn test_switch_tab_restores_hourly_date_default() {
+fn test_switch_tab_restores_timeline_date_default() {
     let mut app = make_app();
     assert_eq!(app.sort_field, SortField::Cost);
 
-    app.switch_tab(Tab::Hourly);
+    app.switch_tab(Tab::Timeline);
     assert_eq!(app.sort_field, SortField::Date);
     assert_eq!(app.sort_direction, SortDirection::Descending);
 
@@ -1167,7 +1019,7 @@ fn test_switch_tab_restores_hourly_date_default() {
 }
 
 #[test]
-fn test_initial_hourly_tab_uses_hourly_sort_default() {
+fn test_initial_timeline_hour_granularity_uses_timeline_sort_default() {
     let config = TuiConfig {
         theme: None,
         refresh: 0,
@@ -1175,12 +1027,14 @@ fn test_initial_hourly_tab_uses_hourly_sort_default() {
         since: None,
         until: None,
         year: None,
-        initial_tab: Some(Tab::Hourly),
+        initial_tab: Some(Tab::Timeline),
+        initial_timeline_granularity: Some(TimelineGranularity::Hour),
     };
 
     let app = App::new_with_cached_data(config, None).unwrap();
 
-    assert_eq!(app.current_tab, Tab::Hourly);
+    assert_eq!(app.current_tab, Tab::Timeline);
+    assert_eq!(app.timeline_granularity, TimelineGranularity::Hour);
     assert_eq!(app.sort_field, SortField::Date);
     assert_eq!(app.sort_direction, SortDirection::Descending);
 }
@@ -1199,6 +1053,7 @@ fn test_today_filter_initializes_overview_today_mode() {
         until: Some(today),
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
 
     let app = App::new_with_cached_data(config, None).unwrap();
@@ -1216,29 +1071,12 @@ fn test_switch_tab_preserves_user_sort() {
     assert_eq!(app.sort_field, SortField::Tokens);
     assert_eq!(app.sort_direction, SortDirection::Descending);
 
-    app.switch_tab(Tab::Daily);
+    app.switch_tab(Tab::Timeline);
     assert_eq!(app.sort_field, SortField::Date);
     assert_eq!(app.sort_direction, SortDirection::Descending);
 
     app.switch_tab(Tab::Models);
     assert_eq!(app.sort_field, SortField::Tokens);
-    assert_eq!(app.sort_direction, SortDirection::Descending);
-}
-
-#[test]
-fn test_switch_tab_preserves_daily_sort_after_hourly_roundtrip() {
-    let mut app = make_app();
-
-    app.switch_tab(Tab::Daily);
-    assert_eq!(app.sort_field, SortField::Date);
-    assert_eq!(app.sort_direction, SortDirection::Descending);
-
-    app.switch_tab(Tab::Hourly);
-    assert_eq!(app.sort_field, SortField::Date);
-    assert_eq!(app.sort_direction, SortDirection::Descending);
-
-    app.switch_tab(Tab::Daily);
-    assert_eq!(app.sort_field, SortField::Date);
     assert_eq!(app.sort_direction, SortDirection::Descending);
 }
 
@@ -1493,6 +1331,7 @@ fn test_handle_key_p_toggles_theme() {
         until: None,
         year: None,
         initial_tab: None,
+        initial_timeline_granularity: None,
     };
     let mut app = App::new_with_cached_data(config, None).unwrap();
 
@@ -1504,12 +1343,6 @@ fn test_handle_key_p_toggles_theme() {
         Color::Rgb(255, 255, 255) | Color::White
     ));
     assert_eq!(app.status_message.as_deref(), Some("Theme: light"));
-    let saved = std::fs::read_to_string(temp.path().join("settings.json")).unwrap();
-    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
-    assert_eq!(
-        saved.get("uiTheme").and_then(|value| value.as_str()),
-        Some("light")
-    );
 
     app.handle_key_event(key(KeyCode::Char('p')));
 
@@ -1611,7 +1444,7 @@ fn test_handle_mouse_click_opens_drilldown_detail() {
 #[test]
 fn test_handle_mouse_click_outside_areas() {
     let mut app = make_app();
-    app.add_click_area(Rect::new(0, 0, 5, 5), ClickAction::Tab(Tab::Daily));
+    app.add_click_area(Rect::new(0, 0, 5, 5), ClickAction::Tab(Tab::Timeline));
 
     let event = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -1916,7 +1749,7 @@ fn test_on_tick_keeps_fresh_status() {
 fn test_clear_click_areas() {
     let mut app = make_app();
     app.add_click_area(Rect::new(0, 0, 10, 10), ClickAction::Tab(Tab::Models));
-    app.add_click_area(Rect::new(10, 0, 10, 10), ClickAction::Tab(Tab::Daily));
+    app.add_click_area(Rect::new(10, 0, 10, 10), ClickAction::Tab(Tab::Timeline));
     assert_eq!(app.click_areas.len(), 2);
 
     app.clear_click_areas();
@@ -1943,44 +1776,6 @@ fn test_is_very_narrow() {
 
     app.terminal_width = 60;
     assert!(!app.is_very_narrow());
-}
-
-// ── HourlyViewMode tests ─────────────────────────────────────────
-
-#[test]
-fn test_hourly_view_mode_default() {
-    let mode = HourlyViewMode::default();
-    assert_eq!(mode, HourlyViewMode::Table);
-}
-
-#[test]
-fn test_hourly_view_mode_toggle() {
-    let mut app = make_app();
-    assert_eq!(app.hourly_view_mode, HourlyViewMode::Table);
-
-    // Toggle to Profile when on Hourly tab
-    app.current_tab = Tab::Hourly;
-    app.handle_key_event(key(KeyCode::Char('v')));
-    assert_eq!(app.hourly_view_mode, HourlyViewMode::Profile);
-
-    // Toggle back to Table
-    app.handle_key_event(key(KeyCode::Char('v')));
-    assert_eq!(app.hourly_view_mode, HourlyViewMode::Table);
-}
-
-#[test]
-fn test_hourly_view_mode_no_toggle_on_other_tabs() {
-    let mut app = make_app();
-    assert_eq!(app.hourly_view_mode, HourlyViewMode::Table);
-
-    // 'v' should not toggle when not on Hourly tab
-    app.current_tab = Tab::Overview;
-    app.handle_key_event(key(KeyCode::Char('v')));
-    assert_eq!(app.hourly_view_mode, HourlyViewMode::Table);
-
-    app.current_tab = Tab::Daily;
-    app.handle_key_event(key(KeyCode::Char('v')));
-    assert_eq!(app.hourly_view_mode, HourlyViewMode::Table);
 }
 
 // ── build_model_shade_map ───────────────────────────────────────

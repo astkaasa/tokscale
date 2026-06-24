@@ -75,7 +75,7 @@ impl App {
                 .get_sorted_models()
                 .get(self.selected_index)
                 .map(|m| format!("{}: {} tokens, ${:.4}", m.model, m.tokens.total(), m.cost)),
-            Tab::Daily if self.is_daily_detail_active() => self
+            Tab::Timeline if self.is_daily_detail_active() => self
                 .get_sorted_daily_detail_rows()
                 .get(self.selected_index)
                 .map(|row| {
@@ -87,7 +87,7 @@ impl App {
                         row.cost
                     )
                 }),
-            Tab::Daily => match self.timeline_granularity {
+            Tab::Timeline => match self.timeline_granularity {
                 TimelineGranularity::Day => self
                     .get_sorted_daily()
                     .get(self.selected_index)
@@ -103,25 +103,6 @@ impl App {
                     })
                 }
             },
-            Tab::Hourly => self.get_sorted_hourly().get(self.selected_index).map(|h| {
-                format!(
-                    "{}: {} tokens, ${:.4}",
-                    h.datetime.format("%Y-%m-%d %H:%M"),
-                    h.tokens.total(),
-                    h.cost
-                )
-            }),
-            Tab::Minutely => self
-                .get_sorted_minutely()
-                .get(self.selected_index)
-                .map(|m| {
-                    format!(
-                        "{}: {} tokens, ${:.4}",
-                        m.datetime.format("%Y-%m-%d %H:%M"),
-                        m.tokens.total(),
-                        m.cost
-                    )
-                }),
             Tab::Pulse | Tab::Usage => None,
         };
 

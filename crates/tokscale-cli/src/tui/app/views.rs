@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::NaiveDate;
 
-use crate::tui::data::{DailyUsage, HourlyUsage, MinutelyUsage, ModelUsage, TokenBreakdown};
+use crate::tui::data::{DailyUsage, HourlyUsage, ModelUsage, TokenBreakdown};
 use crate::tui::drilldown_state::{
     add_tokens, model_detail_matches, sort_model_detail_rows, sort_period_detail_rows,
     DailyDetailRow, DrilldownView, ModelDetailPeriodRow, PeriodDetailKey, PeriodDetailModelRow,
@@ -10,7 +10,7 @@ use crate::tui::drilldown_state::{
 };
 use crate::tui::navigation::{OverviewMode, SortDirection, SortField};
 
-use super::{App, MinutelySortCache};
+use super::App;
 
 impl App {
     pub(crate) fn initial_overview_mode(
@@ -348,85 +348,6 @@ impl App {
         }
 
         hourly
-    }
-
-    pub fn get_sorted_minutely(&self) -> Vec<&MinutelyUsage> {
-        let sort_field = self.sort_field;
-        let sort_direction = self.sort_direction;
-        let data_version = self.data_version;
-        let data_len = self.data.minutely.len();
-
-        let cached_indices = {
-            let cache = self.minutely_sort_cache.borrow();
-            cache
-                .as_ref()
-                .filter(|cache| {
-                    cache.sort_field == sort_field
-                        && cache.sort_direction == sort_direction
-                        && cache.data_version == data_version
-                        && cache.data_len == data_len
-                })
-                .map(|cache| cache.indices.clone())
-        };
-
-        let indices = if let Some(indices) = cached_indices {
-            indices
-        } else {
-            let mut indices: Vec<usize> = (0..data_len).collect();
-
-            match (sort_field, sort_direction) {
-                (SortField::Cost, SortDirection::Descending) => indices.sort_by(|a, b| {
-                    let a = &self.data.minutely[*a];
-                    let b = &self.data.minutely[*b];
-                    b.cost
-                        .total_cmp(&a.cost)
-                        .then_with(|| a.datetime.cmp(&b.datetime))
-                }),
-                (SortField::Cost, SortDirection::Ascending) => indices.sort_by(|a, b| {
-                    let a = &self.data.minutely[*a];
-                    let b = &self.data.minutely[*b];
-                    a.cost
-                        .total_cmp(&b.cost)
-                        .then_with(|| a.datetime.cmp(&b.datetime))
-                }),
-                (SortField::Tokens, SortDirection::Descending) => indices.sort_by(|a, b| {
-                    let a = &self.data.minutely[*a];
-                    let b = &self.data.minutely[*b];
-                    b.tokens
-                        .total()
-                        .cmp(&a.tokens.total())
-                        .then_with(|| a.datetime.cmp(&b.datetime))
-                }),
-                (SortField::Tokens, SortDirection::Ascending) => indices.sort_by(|a, b| {
-                    let a = &self.data.minutely[*a];
-                    let b = &self.data.minutely[*b];
-                    a.tokens
-                        .total()
-                        .cmp(&b.tokens.total())
-                        .then_with(|| a.datetime.cmp(&b.datetime))
-                }),
-                (SortField::Date, SortDirection::Descending) => indices
-                    .sort_by_key(|index| std::cmp::Reverse(self.data.minutely[*index].datetime)),
-                (SortField::Date, SortDirection::Ascending) => {
-                    indices.sort_by_key(|index| self.data.minutely[*index].datetime)
-                }
-            }
-
-            *self.minutely_sort_cache.borrow_mut() = Some(MinutelySortCache {
-                sort_field,
-                sort_direction,
-                data_version,
-                data_len,
-                indices: indices.clone(),
-            });
-
-            indices
-        };
-
-        indices
-            .into_iter()
-            .map(|index| &self.data.minutely[index])
-            .collect()
     }
 
     pub fn is_narrow(&self) -> bool {

@@ -188,7 +188,6 @@ pub fn clear_cache() {
     }
 }
 
-#[cfg_attr(test, allow(dead_code))]
 pub fn load_cache() -> Option<Vec<UsageOutput>> {
     let path = cache_path()?;
     let content = std::fs::read_to_string(&path).ok()?;

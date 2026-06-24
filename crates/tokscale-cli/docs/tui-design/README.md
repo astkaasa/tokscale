@@ -1,73 +1,24 @@
-# TUI Design Mockups
+# TUI Design Notes
 
-These notes and images describe the local TUI redesign branch. They are product and implementation references, not pixel-perfect contracts.
+These notes document the current local-first TUI direction. They are product and implementation references, not pixel-perfect contracts. Verify visible layout with actual TUI renders.
 
-Status labels:
+## Core Documents
 
-- `Implemented`: represented in the current branch.
-- `Design target`: directionally designed, partially implemented or still evolving.
-- `Future`: not intended for the current implementation slice.
-
-## Cross-Cutting Notes
-
-- Navigation and workspace strategy: [navigation.md](navigation.md) (`Design target`)
-- Overview dashboard strategy: [overview.md](overview.md) (`Implemented / Design target`)
-- Local web surface strategy: [local-web-surface.md](local-web-surface.md) (`Implemented / Design target`)
-- Provider color identity rules: [provider-colors.md](provider-colors.md) (`Implemented`)
-- Mouse capture and terminal text selection: [mouse-selection.md](mouse-selection.md) (`Implemented`)
+- [navigation.md](navigation.md): top-level workspaces, Today mode, and drilldown navigation.
+- [overview.md](overview.md): Overview dashboard layout and interaction constraints.
+- [drilldown.md](drilldown.md): model and period detail pages.
+- [provider-colors.md](provider-colors.md): provider identity colors and terminal compatibility.
+- [mouse-selection.md](mouse-selection.md): mouse capture and native terminal text selection.
 
 ## Personal Pulse
 
-Status: `Implemented / Design target`
+- [personal-pulse-architecture.md](personal-pulse-architecture.md): product boundary and module admission rules.
+- [personal-pulse.md](personal-pulse.md): current WeRead Pulse contract.
 
-Product architecture: [personal-pulse-architecture.md](personal-pulse-architecture.md)
+## Companion Surfaces
 
-Detailed WeRead-first plan: [personal-pulse.md](personal-pulse.md)
+- [local-web-surface.md](local-web-surface.md): localhost Overview projection and JSON boundary.
 
-## Overview
+## Assets
 
-Status: `Implemented / Design target`
-
-All-time/range dashboard target for the default Overview mode. Keep this as a written layout contract rather than a stored bitmap mockup; verify implementation from actual TUI renders.
-
-## Today Mode
-
-Status: `Implemented`
-
-Live-focused Overview mode entered with `t` or `--today`.
-
-![Today live dashboard](assets/today-live.svg)
-
-## Models
-
-Status: `Future`
-
-Future model-analysis workspace target: dense table plus selected-row inspector.
-
-## Timeline
-
-Status: `Future`
-
-Future replacement for separate Daily, Hourly, and Minutely top-level tabs.
-
-## Usage
-
-Status: `Implemented / Design target`
-
-Operational account/quota/sync status workspace with readiness, fallback, reset, and Codex multi-account controls.
-
-![Usage status and quota workspace](assets/usage.svg)
-
-## Drilldown
-
-Status: `Implemented / Design target`
-
-Full-page subviews for explaining selected models and selected time periods without adding more top-level tabs.
-
-![Model detail](assets/drilldown-model.svg)
-
-![Period detail](assets/drilldown-period.svg)
-
-![Narrow drilldown layout](assets/drilldown-narrow.svg)
-
-Design notes: [drilldown.md](drilldown.md)
+SVG files under `assets/` are historical design references for major TUI surfaces. Keep an asset only while it still communicates a current layout decision better than prose or render tests.

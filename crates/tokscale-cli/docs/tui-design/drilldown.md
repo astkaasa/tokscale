@@ -34,15 +34,15 @@ Narrow screens keep the same page model but stack sections vertically.
 
 Dense table rows become two-line rows. The top summary remains visible above the breakdown so the page does not collapse into a raw table.
 
-## Scope
+## Current Scope
 
-Implement first:
+Implemented detail page families:
 
 - Model detail
 - Period detail
 
-Defer:
+Not top-level drilldown pages today:
 
 - Provider detail
 - Segment-level chart drilldown
-- Usage account drilldown, because wide Usage already has a selected-account inspector and narrow Usage should be handled during the narrow-screen pass.
+- Usage account drilldown, because Usage already has selected-account inspection inside the workspace.

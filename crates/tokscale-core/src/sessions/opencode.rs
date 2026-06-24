@@ -361,34 +361,11 @@ fn migration_cache_path() -> std::path::PathBuf {
     migration_cache_dir().join(MIGRATION_CACHE_FILENAME)
 }
 
-fn legacy_migration_cache_paths() -> Vec<std::path::PathBuf> {
-    if crate::paths::is_config_dir_overridden() {
-        return Vec::new();
-    }
-
-    [
-        crate::paths::legacy_dirs_cache_dir().map(|d| d.join(MIGRATION_CACHE_FILENAME)),
-        crate::paths::legacy_dot_cache_tokscale_dir().map(|d| d.join(MIGRATION_CACHE_FILENAME)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
-}
-
 /// Load the migration cache from disk. Returns `None` if the file is missing or
 /// unparseable.
 pub fn load_opencode_migration_cache() -> Option<OpenCodeMigrationCache> {
-    let canonical = migration_cache_path();
-    match std::fs::read_to_string(&canonical) {
-        Ok(content) => serde_json::from_str(&content).ok(),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            legacy_migration_cache_paths().into_iter().find_map(|path| {
-                let content = std::fs::read_to_string(path).ok()?;
-                serde_json::from_str(&content).ok()
-            })
-        }
-        Err(_) => None,
-    }
+    let content = std::fs::read_to_string(migration_cache_path()).ok()?;
+    serde_json::from_str(&content).ok()
 }
 
 /// Persist the migration cache atomically (write to temp file, then rename).
@@ -453,21 +430,6 @@ pub fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct EnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (key, previous) in self.0.drain(..) {
-                unsafe {
-                    match previous {
-                        Some(value) => std::env::set_var(key, value),
-                        None => std::env::remove_var(key),
-                    }
-                }
-            }
-        }
-    }
 
     fn create_opencode_sqlite_db(db_path: &Path) -> Connection {
         let conn = Connection::open(db_path).unwrap();
@@ -1395,9 +1357,8 @@ mod tests {
     /// Cache is not loaded when the file is missing (load returns None).
     #[test]
     fn test_migration_cache_missing_returns_none() {
-        // load_opencode_migration_cache reads from ~/.cache/tokscale/opencode-migration.json
-        // We can't easily override the path in a unit test, but we can verify that
-        // serde_json::from_str returns None for invalid input (simulating missing file).
+        // We can verify serde_json::from_str returns None for invalid input,
+        // which is the same observable result as missing cache content.
         let result: Option<OpenCodeMigrationCache> = serde_json::from_str("").ok();
         assert!(
             result.is_none(),
@@ -1430,42 +1391,6 @@ mod tests {
             !is_valid,
             "Cache should not allow skipping when migration_complete=false"
         );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn migration_record_falls_back_to_legacy_path() {
-        use std::env;
-
-        let temp_home = tempfile::tempdir().unwrap();
-        let temp_xdg_cache = tempfile::tempdir().unwrap();
-        let prev_home = env::var_os("HOME");
-        let prev_xdg_cache = env::var_os("XDG_CACHE_HOME");
-        let prev_override = env::var_os("TOKSCALE_CONFIG_DIR");
-        let _guard = EnvGuard(vec![
-            ("TOKSCALE_CONFIG_DIR", prev_override),
-            ("XDG_CACHE_HOME", prev_xdg_cache),
-            ("HOME", prev_home),
-        ]);
-        unsafe {
-            env::set_var("HOME", temp_home.path());
-            env::set_var("XDG_CACHE_HOME", temp_xdg_cache.path());
-            env::remove_var("TOKSCALE_CONFIG_DIR");
-        }
-
-        let legacy_path = crate::paths::legacy_dirs_cache_dir()
-            .unwrap()
-            .join(MIGRATION_CACHE_FILENAME);
-        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &legacy_path,
-            r#"{"migration_complete":true,"json_file_count":2,"json_dir_mtime_secs":3,"checked_at_secs":4}"#,
-        )
-        .unwrap();
-
-        let loaded = load_opencode_migration_cache().unwrap();
-        assert!(loaded.migration_complete);
-        assert_eq!(loaded.json_file_count, 2);
     }
 }
 

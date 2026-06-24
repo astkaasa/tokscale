@@ -1,12 +1,8 @@
 mod bar_chart;
-mod daily;
 pub mod dialog;
 mod drilldown;
 mod footer;
 mod header;
-mod hourly;
-mod hourly_profile;
-mod minutely;
 mod mix;
 mod models;
 mod overview;
@@ -14,6 +10,7 @@ mod overview_today;
 mod pulse;
 pub mod spinner;
 mod text_width;
+mod timeline;
 mod usage;
 pub(crate) mod widgets;
 
@@ -53,9 +50,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Tab::Overview => overview::render(frame, app, chunks[1]),
             Tab::Pulse => pulse::render(frame, app, chunks[1]),
             Tab::Models => models::render(frame, app, chunks[1]),
-            Tab::Daily => daily::render(frame, app, chunks[1]),
-            Tab::Hourly => hourly::render(frame, app, chunks[1]),
-            Tab::Minutely => minutely::render(frame, app, chunks[1]),
+            Tab::Timeline => timeline::render(frame, app, chunks[1]),
             Tab::Usage => usage::render(frame, app, chunks[1]),
         }
     }

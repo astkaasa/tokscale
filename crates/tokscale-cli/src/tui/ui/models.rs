@@ -720,6 +720,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: Some(Tab::Models),
+            initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, Some(data)).unwrap();
         app.terminal_width = width;
@@ -753,6 +754,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: Some(Tab::Models),
+            initial_timeline_granularity: None,
         };
         App::new_with_cached_data(config, Some(UsageData::default())).unwrap()
     }

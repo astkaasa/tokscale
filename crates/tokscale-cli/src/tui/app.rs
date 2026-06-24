@@ -19,8 +19,7 @@ pub(crate) use super::drilldown_state::{
 pub(crate) use super::interaction::ClickAction;
 use super::interaction::ClickArea;
 pub(crate) use super::navigation::{
-    ChartGranularity, HourlyViewMode, OverviewMode, SortDirection, SortField, Tab,
-    TimelineGranularity,
+    ChartGranularity, OverviewMode, SortDirection, SortField, Tab, TimelineGranularity,
 };
 use super::pulse_state::PulseState;
 use super::settings::Settings;
@@ -36,6 +35,7 @@ pub struct TuiConfig {
     pub until: Option<String>,
     pub year: Option<String>,
     pub initial_tab: Option<Tab>,
+    pub initial_timeline_granularity: Option<TimelineGranularity>,
 }
 
 #[cfg(test)]
@@ -44,14 +44,6 @@ type UsageFetcher = fn() -> Vec<crate::commands::usage::UsageOutput>;
 #[cfg(test)]
 fn test_usage_fetcher() -> Vec<crate::commands::usage::UsageOutput> {
     Vec::new()
-}
-
-struct MinutelySortCache {
-    sort_field: SortField,
-    sort_direction: SortDirection,
-    data_version: u64,
-    data_len: usize,
-    indices: Vec<usize>,
 }
 
 pub struct App {
@@ -111,8 +103,6 @@ pub struct App {
 
     pub dialog_needs_reload: Rc<RefCell<bool>>,
 
-    pub hourly_view_mode: HourlyViewMode,
-
     pub model_shade_map: HashMap<String, Color>,
 
     pub subscription_usage: Vec<crate::commands::usage::UsageOutput>,
@@ -135,7 +125,6 @@ pub struct App {
     codex_login_child: Option<CodexLoginChildSlot>,
 
     data_version: u64,
-    minutely_sort_cache: RefCell<Option<MinutelySortCache>>,
 }
 
 mod actions;

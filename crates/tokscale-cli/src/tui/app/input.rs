@@ -2,9 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use crate::tui::drilldown_state::DrilldownView;
 use crate::tui::interaction::ClickAction;
-use crate::tui::navigation::{
-    ChartGranularity, HourlyViewMode, SortField, Tab, TimelineGranularity,
-};
+use crate::tui::navigation::{ChartGranularity, SortField, Tab, TimelineGranularity};
 
 use super::App;
 
@@ -117,7 +115,7 @@ impl App {
                 self.set_sort(SortField::Date);
             }
             KeyCode::Char('d') if self.is_drilldown_active() => {}
-            KeyCode::Char('d') if self.current_tab != Tab::Daily => {
+            KeyCode::Char('d') if self.current_tab != Tab::Timeline => {
                 self.set_sort(SortField::Date);
             }
             KeyCode::Char('j') => {
@@ -161,18 +159,11 @@ impl App {
             KeyCode::Char('M') if self.current_tab == Tab::Overview => {
                 self.set_chart_granularity(ChartGranularity::Monthly);
             }
-            KeyCode::Char('d') if self.current_tab == Tab::Daily => {
+            KeyCode::Char('d') if self.current_tab == Tab::Timeline => {
                 self.set_timeline_granularity(TimelineGranularity::Day);
             }
-            KeyCode::Char('h') if self.current_tab == Tab::Daily => {
+            KeyCode::Char('h') if self.current_tab == Tab::Timeline => {
                 self.set_timeline_granularity(TimelineGranularity::Hour);
-            }
-            KeyCode::Char('v') if self.current_tab == Tab::Hourly => {
-                self.hourly_view_mode = match self.hourly_view_mode {
-                    HourlyViewMode::Table => HourlyViewMode::Profile,
-                    HourlyViewMode::Profile => HourlyViewMode::Table,
-                };
-                self.reset_selection();
             }
             KeyCode::Char('g') => {
                 self.open_group_by_picker();
@@ -193,7 +184,7 @@ impl App {
                 self.open_selected_model_detail();
             }
             KeyCode::Enter
-                if self.current_tab == Tab::Daily
+                if self.current_tab == Tab::Timeline
                     && self.timeline_granularity == TimelineGranularity::Day =>
             {
                 self.open_selected_period_detail();

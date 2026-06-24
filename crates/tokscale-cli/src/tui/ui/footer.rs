@@ -47,10 +47,10 @@ fn current_count_label(app: &App) -> String {
         }
         Tab::Pulse => String::new(),
         Tab::Models => format!(" ({} models)", app.data.models.len()),
-        Tab::Daily if app.is_daily_detail_active() => {
+        Tab::Timeline if app.is_daily_detail_active() => {
             format!(" ({} models)", app.get_sorted_daily_detail_rows().len())
         }
-        Tab::Daily => match app.timeline_granularity {
+        Tab::Timeline => match app.timeline_granularity {
             crate::tui::app::TimelineGranularity::Day => {
                 format!(" ({} days)", app.data.daily.len())
             }
@@ -58,8 +58,6 @@ fn current_count_label(app: &App) -> String {
                 format!(" ({} hours)", app.data.hourly.len())
             }
         },
-        Tab::Hourly => format!(" ({} hours)", app.data.hourly.len()),
-        Tab::Minutely => format!(" ({} minutes)", app.data.minutely.len()),
         Tab::Usage => String::new(),
     }
 }
@@ -450,7 +448,7 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
             );
         }
     }
-    if app.current_tab == Tab::Daily && !app.is_daily_detail_active() {
+    if app.current_tab == Tab::Timeline && !app.is_daily_detail_active() {
         push_key_fit(
             &mut spans,
             "d",
@@ -477,7 +475,7 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
     } else {
         "Date"
     };
-    if app.current_tab != Tab::Daily {
+    if app.current_tab != Tab::Timeline {
         push_sort_key_fit(
             &mut spans,
             app,
@@ -980,6 +978,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: None,
+            initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
         app.current_tab = tab;
@@ -1042,17 +1041,11 @@ mod tests {
             current_count_label(&make_app_on(Tab::Models)),
             " (0 models)"
         );
-        assert_eq!(current_count_label(&make_app_on(Tab::Daily)), " (0 days)");
-        assert_eq!(current_count_label(&make_app_on(Tab::Hourly)), " (0 hours)");
+        assert_eq!(
+            current_count_label(&make_app_on(Tab::Timeline)),
+            " (0 days)"
+        );
         assert_eq!(current_count_label(&make_app_on(Tab::Usage)), "");
-    }
-
-    #[test]
-    fn test_current_count_label_minutely_when_flag_enabled() {
-        let mut app = make_app_on(Tab::Models);
-        app.settings.minutely_tab_enabled = true;
-        app.current_tab = Tab::Minutely;
-        assert_eq!(current_count_label(&app), " (0 minutes)");
     }
 
     #[test]
@@ -1160,7 +1153,7 @@ mod tests {
 
     #[test]
     fn drilldown_hints_scope_sort_keys_to_detail_type() {
-        let mut model_app = make_app_on(Tab::Daily);
+        let mut model_app = make_app_on(Tab::Timeline);
         model_app.open_model_detail(ModelDetailKey {
             provider: "openai".to_string(),
             model: "gpt-5".to_string(),
@@ -1172,7 +1165,7 @@ mod tests {
         assert!(model_hints.contains(" t  Tok"), "{model_hints}");
         assert!(model_hints.contains(" d  Date"), "{model_hints}");
 
-        let mut period_app = make_app_on(Tab::Daily);
+        let mut period_app = make_app_on(Tab::Timeline);
         period_app.open_period_detail(PeriodDetailKey::day(
             NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
         ));
@@ -1185,7 +1178,7 @@ mod tests {
 
     #[test]
     fn drilldown_sort_hints_register_click_areas() {
-        let mut app = make_app_on(Tab::Daily);
+        let mut app = make_app_on(Tab::Timeline);
         app.open_model_detail(ModelDetailKey {
             provider: "openai".to_string(),
             model: "gpt-5".to_string(),
@@ -1216,7 +1209,7 @@ mod tests {
 
     #[test]
     fn drilldown_footer_keeps_cost_and_token_sort_visible_on_wide_panes() {
-        let mut app = make_app_on(Tab::Daily);
+        let mut app = make_app_on(Tab::Timeline);
         app.open_period_detail(PeriodDetailKey::day(
             NaiveDate::from_ymd_opt(2026, 5, 11).unwrap(),
         ));

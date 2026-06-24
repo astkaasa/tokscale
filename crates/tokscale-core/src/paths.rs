@@ -21,8 +21,7 @@ use std::path::PathBuf;
 ///    Absolute paths are recommended; relative paths are accepted and
 ///    resolved against the process CWD. Empty strings are treated as
 ///    unset so the user gets the platform default instead of a surprise
-///    `./` write — keeps the resolver consistent with
-///    [`is_config_dir_overridden`], which also rejects empty strings.
+///    `./` write.
 /// 2. macOS: `$HOME/.config/tokscale` (overrides `dirs::config_dir()`,
 ///    which would return `~/Library/Application Support/` and split state
 ///    across two roots — see module docs).
@@ -59,51 +58,6 @@ pub fn get_config_dir() -> PathBuf {
 /// safe — no durable state mixed in.
 pub fn get_cache_dir() -> PathBuf {
     get_config_dir().join("cache")
-}
-
-/// Whether `TOKSCALE_CONFIG_DIR` is explicitly set in the environment.
-///
-/// Callers that want to read a legacy on-disk location during a path
-/// transition MUST gate that fallback on this returning `false`. When the
-/// override is set (CI sandbox, tests, isolated profile), the user has
-/// asked for an explicit, hermetic root — silently ingesting files from
-/// the historic `~/.cache/tokscale/` or `~/Library/Caches/tokscale/`
-/// locations defeats that contract.
-pub fn is_config_dir_overridden() -> bool {
-    std::env::var_os("TOKSCALE_CONFIG_DIR").is_some_and(|v| !v.is_empty())
-}
-
-/// Pre-#470 cache directory at `dirs::cache_dir()/tokscale`.
-///
-/// On macOS this resolves to `~/Library/Caches/tokscale/` (where the
-/// source-message-cache, pricing caches, and opencode-migration.json
-/// historically lived). On Linux this resolves to `$XDG_CACHE_HOME/tokscale`
-/// or `~/.cache/tokscale/`.
-///
-/// Returns `None` when `TOKSCALE_CONFIG_DIR` is set so the override stays
-/// hermetic (no legacy-data leak into isolated profiles).
-pub fn legacy_dirs_cache_dir() -> Option<PathBuf> {
-    if is_config_dir_overridden() {
-        return None;
-    }
-    dirs::cache_dir().map(|d| d.join("tokscale"))
-}
-
-/// Pre-#470 cache directory at `~/.cache/tokscale`.
-///
-/// This is where the TUI display cache (`tui-data-cache.json`) lived
-/// before #470 consolidated everything under `<config_dir>/cache`.
-/// On Linux this typically equals
-/// [`legacy_dirs_cache_dir`]; on macOS it does NOT (Library/Caches vs
-/// `.cache`), so both legacy probes need to run during migration.
-///
-/// Returns `None` when `TOKSCALE_CONFIG_DIR` is set or HOME cannot be
-/// resolved.
-pub fn legacy_dot_cache_tokscale_dir() -> Option<PathBuf> {
-    if is_config_dir_overridden() {
-        return None;
-    }
-    dirs::home_dir().map(|h| h.join(".cache").join("tokscale"))
 }
 
 #[cfg(test)]
@@ -208,41 +162,10 @@ mod tests {
 
     #[test]
     #[serial]
-    fn legacy_helpers_return_none_when_overridden() {
-        let prev = save_env();
-        unsafe {
-            env::set_var("TOKSCALE_CONFIG_DIR", "/tmp/tokscale-override");
-        }
-        assert!(legacy_dirs_cache_dir().is_none());
-        assert!(legacy_dot_cache_tokscale_dir().is_none());
-        restore_env(prev);
-    }
-
-    #[test]
-    #[serial]
-    fn legacy_helpers_return_some_when_not_overridden() {
-        let prev = save_env();
-        unsafe {
-            env::remove_var("TOKSCALE_CONFIG_DIR");
-        }
-        assert!(
-            legacy_dirs_cache_dir().is_some(),
-            "dirs::cache_dir always resolves on test platforms"
-        );
-        assert!(
-            legacy_dot_cache_tokscale_dir().is_some(),
-            "HOME is set in test environments"
-        );
-        restore_env(prev);
-    }
-
-    #[test]
-    #[serial]
     fn get_config_dir_treats_empty_override_as_unset() {
         // Empty TOKSCALE_CONFIG_DIR previously slipped through and
-        // produced PathBuf::from(""), which silently relocated cache
-        // writes to ./cache and ./.tokscale. The resolver must agree
-        // with `is_config_dir_overridden`: empty == unset.
+        // produced PathBuf::from(""), which silently relocated writes
+        // to the process working directory. Empty must behave as unset.
         let prev = save_env();
         unsafe {
             env::set_var("TOKSCALE_CONFIG_DIR", "");
@@ -257,17 +180,6 @@ mod tests {
             resolved.is_absolute() || resolved == Path::new(".tokscale"),
             "empty override must fall through to platform default, got {resolved:?}"
         );
-        restore_env(prev);
-    }
-
-    #[test]
-    #[serial]
-    fn is_config_dir_overridden_treats_empty_string_as_unset() {
-        let prev = save_env();
-        unsafe {
-            env::set_var("TOKSCALE_CONFIG_DIR", "");
-        }
-        assert!(!is_config_dir_overridden());
         restore_env(prev);
     }
 }

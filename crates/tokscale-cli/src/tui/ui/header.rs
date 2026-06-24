@@ -179,9 +179,9 @@ fn render_workspace_tabs(
 
 fn tab_label(tab: Tab, is_very_narrow: bool) -> &'static str {
     if is_very_narrow {
-        tab.workspace_short_name()
+        tab.short_name()
     } else {
-        tab.workspace_label()
+        tab.as_str()
     }
 }
 
@@ -198,11 +198,7 @@ fn header_tabs_width(tabs: &[Tab], is_very_narrow: bool) -> u16 {
 }
 
 fn header_tabs(app: &App) -> Vec<Tab> {
-    let mut tabs = app.visible_workspaces();
-    if app.is_tab_visible(app.current_tab) && !tabs.contains(&app.current_tab) {
-        tabs.push(app.current_tab);
-    }
-    tabs
+    app.visible_workspaces().to_vec()
 }
 
 fn header_tabs_for_layout(app: &App, is_very_narrow: bool) -> Vec<Tab> {
@@ -258,6 +254,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: None,
+            initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, None).unwrap();
         app.terminal_width = width;
@@ -309,7 +306,7 @@ mod tests {
         let rows = render_header(&mut app, 80);
         click_header(&mut app, rendered_label_column(&rows, "Timeline"));
 
-        assert_eq!(app.current_tab, Tab::Daily);
+        assert_eq!(app.current_tab, Tab::Timeline);
     }
 
     #[test]
@@ -319,32 +316,7 @@ mod tests {
         let rows = render_header(&mut app, 59);
         click_header(&mut app, rendered_label_column(&rows, "Time"));
 
-        assert_eq!(app.current_tab, Tab::Daily);
-    }
-
-    #[test]
-    fn active_non_workspace_tab_gets_temporary_header_item() {
-        let mut app = make_app(96);
-        app.current_tab = Tab::Hourly;
-
-        let rows = render_header(&mut app, 96);
-        let row = row_text(&rows, 1);
-
-        assert!(row.contains("Overview"), "{row}");
-        assert!(row.contains("Timeline"), "{row}");
-        assert!(row.contains("Usage"), "{row}");
-        assert!(row.contains("Hourly"), "{row}");
-        assert_eq!(
-            header_tabs(&app),
-            vec![
-                Tab::Overview,
-                Tab::Pulse,
-                Tab::Models,
-                Tab::Daily,
-                Tab::Usage,
-                Tab::Hourly,
-            ]
-        );
+        assert_eq!(app.current_tab, Tab::Timeline);
     }
 
     #[test]
@@ -396,7 +368,7 @@ mod tests {
         assert_eq!(
             header_tabs_for_layout(&app, true),
             vec![
-                Tab::Daily,
+                Tab::Timeline,
                 Tab::Usage,
                 Tab::Models,
                 Tab::Pulse,

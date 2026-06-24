@@ -1,7 +1,5 @@
 # Local Web Surface
 
-Status: `Implemented / Design target`
-
 The local web surface is a companion surface for Tokscale, not a replacement for the TUI and not a hosted web dashboard. Its first job is to render the Overview screen from the same local telemetry and the same TUI rendering path.
 
 ## Current Slice
@@ -11,7 +9,7 @@ The local web surface is a companion surface for Tokscale, not a replacement for
 - The Overview tab as a styled HTML projection of the Ratatui buffer.
 - A small JSON summary at `/data.json`.
 
-The first implementation intentionally does not include Today mode, authentication setup, long-form Pulse reports, JavaScript interactions, remote assets, or a bundled frontend toolchain.
+The current slice intentionally does not include Today mode, authentication setup, long-form Pulse reports, JavaScript interactions, remote assets, or a bundled frontend toolchain.
 
 The local web surface also intentionally does not embed xterm.js, a PTY, or a real terminal emulator. It renders the TUI output as HTML; it does not run a terminal in the browser.
 
@@ -69,9 +67,9 @@ Current code placement:
 
 Do not add a separate `web::templates` dashboard layout for Overview unless the product explicitly decides to diverge from TUI parity.
 
-## Interaction Path
+## Interaction Boundary
 
-The planned interaction model should keep the TUI as the source of behavior:
+If interaction is added, the TUI should remain the source of behavior:
 
 ```text
 Browser key/click/wheel event
@@ -83,7 +81,7 @@ Browser key/click/wheel event
 
 Keyboard events should map to `App::handle_key_event`. Mouse clicks should convert browser pixels to terminal cell coordinates and then use `App::handle_mouse_event`, which already consumes `click_areas` registered during render.
 
-The first interactive slice should stay low-risk: tab switching, sorting, selection movement, drilldown enter/escape, chart granularity changes, and scrolling. Actions with external side effects, such as login flows or connector refreshes, need explicit product review before being exposed through the web surface.
+Low-risk interactions are tab switching, sorting, selection movement, drilldown enter/escape, chart granularity changes, and scrolling. Actions with external side effects, such as login flows or connector refreshes, need explicit product review before being exposed through the web surface.
 
 ## Security And Privacy
 
@@ -95,11 +93,13 @@ Default behavior must remain local-first:
 - Keep output inspectable as plain HTML and JSON.
 - Treat future LAN or sharing modes as explicit opt-in features.
 
-## Next Steps
+## Out Of Scope For Current Slice
 
-Near-term improvements should be incremental:
+Keep these out until the Overview projection and JSON contract are stable:
 
-- Add a static `--html` export that reuses `web::overview`.
-- Add Pulse/WeRead sections after the Overview renderer is stable.
-- Add a manual refresh route or short-lived background refresh.
-- Consider a richer local web dashboard only after the snapshot contracts are shared with Markdown, JSON, and future MCP surfaces.
+- hosted sync or sharing
+- connector setup and login flows
+- remote assets or analytics
+- a separate hand-authored Overview DOM layout
+- browser-triggered refreshes with external side effects
+- a richer local web dashboard that bypasses the normalized data contracts

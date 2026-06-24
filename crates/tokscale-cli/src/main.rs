@@ -22,7 +22,7 @@ use client_filter::build_client_filter;
 pub(crate) use client_filter::ClientFilter;
 pub(crate) use client_filter::{ClientFlags, DateRangeFlags};
 use std::io::IsTerminal;
-use tui::Tab;
+use tui::{Tab, TimelineGranularity};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -81,6 +81,7 @@ fn main() -> Result<()> {
                     until,
                     year,
                     Some(Tab::Models),
+                    None,
                 )
             }
         }
@@ -123,7 +124,8 @@ fn main() -> Result<()> {
                     since,
                     until,
                     year,
-                    Some(Tab::Daily),
+                    Some(Tab::Timeline),
+                    None,
                 )
             }
         }
@@ -166,7 +168,8 @@ fn main() -> Result<()> {
                     since,
                     until,
                     year,
-                    Some(Tab::Hourly),
+                    Some(Tab::Timeline),
+                    Some(TimelineGranularity::Hour),
                 )
             }
         }
@@ -197,6 +200,7 @@ fn main() -> Result<()> {
                 since,
                 until,
                 year,
+                None,
                 None,
             )
         }
@@ -345,6 +349,7 @@ fn main() -> Result<()> {
                     since,
                     until,
                     year,
+                    None,
                     None,
                 )
             }

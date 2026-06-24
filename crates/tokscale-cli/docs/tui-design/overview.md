@@ -1,6 +1,6 @@
 # TUI Overview Design
 
-This branch treats the Overview tab as an operational dashboard, not a shortened Models table.
+Overview is an operational dashboard, not a shortened Models table.
 
 Keep this document as the layout contract for Overview. Use actual TUI renders for verification instead of preserving bitmap mockups in the repository.
 

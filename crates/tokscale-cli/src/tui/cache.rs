@@ -21,7 +21,7 @@ use super::data::{
 
 /// Cache staleness threshold: 5 minutes.
 const CACHE_STALE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
-const CACHE_SCHEMA_VERSION: u32 = 9;
+const CACHE_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,16 +67,6 @@ fn cache_file() -> Option<PathBuf> {
     cache_dir().map(|d| d.join("tui-data-cache.json"))
 }
 
-fn legacy_cache_files() -> Vec<PathBuf> {
-    if crate::paths::is_config_dir_overridden() {
-        return Vec::new();
-    }
-
-    crate::paths::legacy_dot_cache_tokscale_dir()
-        .map(|dir| vec![dir.join("tui-data-cache.json")])
-        .unwrap_or_default()
-}
-
 /// Cached TUI data structure (serializable)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,8 +75,6 @@ struct CachedTUIData {
     schema_version: u32,
     timestamp: u64,
     enabled_clients: Vec<String>,
-    #[serde(default)]
-    include_synthetic: bool,
     #[serde(default)]
     group_by: Option<String>,
     #[serde(default)]
@@ -150,13 +138,8 @@ struct CachedAgentUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CachedDailyModelInfo {
-    #[serde(default)]
-    client: String,
-    #[serde(default)]
     provider: String,
-    #[serde(default)]
     display_name: String,
-    #[serde(default)]
     color_key: String,
     tokens: CachedTokenBreakdown,
     cost: f64,
@@ -178,9 +161,6 @@ struct CachedDailyUsage {
     date: String, // NaiveDate serialized as string
     tokens: CachedTokenBreakdown,
     cost: f64,
-    #[serde(default)]
-    models: Vec<(String, CachedDailyModelInfo)>,
-    #[serde(default)]
     source_breakdown: Vec<(String, CachedDailySourceInfo)>,
     #[serde(default)]
     message_count: u32,
@@ -191,11 +171,8 @@ struct CachedDailyUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CachedHourlyModelInfo {
-    #[serde(default)]
     provider: String,
-    #[serde(default)]
     display_name: String,
-    #[serde(default)]
     color_key: String,
     tokens: CachedTokenBreakdown,
     cost: f64,
@@ -298,7 +275,6 @@ impl From<CachedAgentUsage> for AgentUsage {
 impl From<&DailyModelInfo> for CachedDailyModelInfo {
     fn from(d: &DailyModelInfo) -> Self {
         Self {
-            client: String::new(),
             provider: d.provider.clone(),
             display_name: d.display_name.clone(),
             color_key: d.color_key.clone(),
@@ -310,24 +286,18 @@ impl From<&DailyModelInfo> for CachedDailyModelInfo {
 }
 
 fn daily_model_info_from_cached(key: &str, value: CachedDailyModelInfo) -> DailyModelInfo {
-    let display_name = if value.display_name.is_empty() {
-        key.to_string()
-    } else {
-        value.display_name
-    };
-    let color_key = if value.color_key.is_empty() {
-        display_name
-            .rsplit_once(" / ")
-            .map(|(_, base_model)| base_model.to_string())
-            .unwrap_or_else(|| display_name.clone())
-    } else {
-        value.color_key
-    };
-
     DailyModelInfo {
         provider: value.provider,
-        display_name,
-        color_key,
+        display_name: if value.display_name.is_empty() {
+            key.to_string()
+        } else {
+            value.display_name
+        },
+        color_key: if value.color_key.is_empty() {
+            key.to_string()
+        } else {
+            value.color_key
+        },
         tokens: value.tokens.into(),
         cost: value.cost,
         messages: value.messages,
@@ -378,24 +348,18 @@ impl From<&HourlyModelInfo> for CachedHourlyModelInfo {
 }
 
 fn hourly_model_info_from_cached(key: &str, value: CachedHourlyModelInfo) -> HourlyModelInfo {
-    let display_name = if value.display_name.is_empty() {
-        key.to_string()
-    } else {
-        value.display_name
-    };
-    let color_key = if value.color_key.is_empty() {
-        display_name
-            .rsplit_once(" / ")
-            .map(|(_, base_model)| base_model.to_string())
-            .unwrap_or_else(|| display_name.clone())
-    } else {
-        value.color_key
-    };
-
     HourlyModelInfo {
         provider: value.provider,
-        display_name,
-        color_key,
+        display_name: if value.display_name.is_empty() {
+            key.to_string()
+        } else {
+            value.display_name
+        },
+        color_key: if value.color_key.is_empty() {
+            key.to_string()
+        } else {
+            value.color_key
+        },
         tokens: value.tokens.into(),
         cost: value.cost,
     }
@@ -449,7 +413,6 @@ impl From<&DailyUsage> for CachedDailyUsage {
             date: d.date.to_string(),
             tokens: (&d.tokens).into(),
             cost: d.cost,
-            models: Vec::new(),
             source_breakdown: d
                 .source_breakdown
                 .iter()
@@ -467,55 +430,15 @@ impl TryFrom<CachedDailyUsage> for DailyUsage {
     fn try_from(d: CachedDailyUsage) -> Result<Self, Self::Error> {
         use chrono::NaiveDate;
 
-        let source_breakdown = if d.source_breakdown.is_empty() {
-            let mut legacy_sources: BTreeMap<String, DailySourceInfo> = BTreeMap::new();
-            for (key, value) in d.models {
-                let client = if value.client.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    value.client.clone()
-                };
-                let model_info = daily_model_info_from_cached(&key, value);
-                let source = legacy_sources
-                    .entry(client)
-                    .or_insert_with(|| DailySourceInfo {
-                        tokens: TokenBreakdown::default(),
-                        cost: 0.0,
-                        models: BTreeMap::new(),
-                    });
-                source.tokens.input = source.tokens.input.saturating_add(model_info.tokens.input);
-                source.tokens.output = source
-                    .tokens
-                    .output
-                    .saturating_add(model_info.tokens.output);
-                source.tokens.cache_read = source
-                    .tokens
-                    .cache_read
-                    .saturating_add(model_info.tokens.cache_read);
-                source.tokens.cache_write = source
-                    .tokens
-                    .cache_write
-                    .saturating_add(model_info.tokens.cache_write);
-                source.tokens.reasoning = source
-                    .tokens
-                    .reasoning
-                    .saturating_add(model_info.tokens.reasoning);
-                source.cost += model_info.cost;
-                source.models.insert(key, model_info);
-            }
-            legacy_sources
-        } else {
-            d.source_breakdown
-                .into_iter()
-                .map(|(key, value)| (key, value.into()))
-                .collect()
-        };
-
         Ok(Self {
             date: NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")?,
             tokens: d.tokens.into(),
             cost: d.cost,
-            source_breakdown,
+            source_breakdown: d
+                .source_breakdown
+                .into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect(),
             message_count: d.message_count,
             turn_count: d.turn_count,
         })
@@ -549,10 +472,6 @@ impl TryFrom<CachedUsageData> for UsageData {
             agents: normalize_cached_agents(u.agents),
             daily: daily?,
             hourly: hourly?,
-            // Minutely data is recomputed on each load (high cardinality,
-            // not worth round-tripping through the on-disk cache); the
-            // first foreground refresh after cache hit will populate it.
-            minutely: Vec::new(),
             total_tokens: u.total_tokens,
             total_cost: u.total_cost,
             loading: false,
@@ -641,11 +560,8 @@ enum ClientMatch {
 /// Returns Fresh/Stale/Miss so the caller can decide whether to
 /// display cached data immediately and/or trigger a background refresh.
 ///
-/// `enabled_clients` is the unified `HashSet<ClientFilter>` (Synthetic
-/// included as a set member). The on-disk format keeps the legacy
-/// `(enabled_clients: Vec<String>, include_synthetic: bool)` shape so
-/// existing user caches keep working across upgrades — projection
-/// happens here.
+/// `enabled_clients` is the unified `HashSet<ClientFilter>`; the on-disk
+/// `enabledClients` list uses the same canonical ids, including `synthetic`.
 pub fn load_cache(
     enabled_clients: &HashSet<ClientFilter>,
     group_by: &GroupBy,
@@ -659,29 +575,19 @@ pub fn load_cache(
             let reader = BufReader::new(file);
             serde_json::from_reader(reader).ok()
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            legacy_cache_files().into_iter().find_map(|path| {
-                let file = File::open(path).ok()?;
-                let reader = BufReader::new(file);
-                serde_json::from_reader(reader).ok()
-            })
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => None,
     };
     let Some(cached) = cached else {
         return CacheResult::Miss;
     };
-    if cached.schema_version > CACHE_SCHEMA_VERSION {
+    if cached.schema_version != CACHE_SCHEMA_VERSION {
         return CacheResult::Miss;
     }
-    let schema_outdated = cached.schema_version < CACHE_SCHEMA_VERSION;
     let cached_group_by = cached
         .group_by
         .as_deref()
         .and_then(|value: &str| value.parse::<GroupBy>().ok());
-    if schema_outdated && cached_group_by.is_none() {
-        return CacheResult::Miss;
-    }
 
     if cached_group_by.as_ref() != Some(group_by) {
         return CacheResult::Miss;
@@ -692,11 +598,7 @@ pub fn load_cache(
     }
 
     // Check how cached clients relate to enabled clients
-    let client_match = check_client_match(
-        enabled_clients,
-        &cached.enabled_clients,
-        cached.include_synthetic,
-    );
+    let client_match = check_client_match(enabled_clients, &cached.enabled_clients);
 
     if client_match == ClientMatch::Mismatch {
         return CacheResult::Miss;
@@ -707,7 +609,7 @@ pub fn load_cache(
         Err(_) => return CacheResult::Miss,
     };
 
-    if schema_outdated || client_match == ClientMatch::Subset {
+    if client_match == ClientMatch::Subset {
         return CacheResult::Stale(data);
     }
 
@@ -725,27 +627,14 @@ pub fn load_cache(
 
 /// Determine how the cached client set relates to the currently enabled set.
 ///
-/// - `Exact`    — same clients, same synthetic flag
+/// - `Exact`    — same clients
 /// - `Subset`   — cached clients ⊆ enabled clients (e.g. update added a new client),
 ///   and cached doesn't carry data the user doesn't want
 /// - `Mismatch` — anything else (superset, disjoint, unwanted synthetic data)
-///
-/// Cached side stays in the legacy `(Vec<String>, bool)` shape so we can
-/// read pre-refactor cache files without a migration step. Enabled side
-/// is the new unified `HashSet<ClientFilter>`.
 fn check_client_match(
     enabled_clients: &HashSet<ClientFilter>,
     cached_clients: &[String],
-    cached_include_synthetic: bool,
 ) -> ClientMatch {
-    let include_synthetic = enabled_clients.contains(&ClientFilter::Synthetic);
-
-    // If cache has synthetic data but user doesn't want it → mismatch
-    // (showing unwanted data is worse than a cache miss)
-    if cached_include_synthetic && !include_synthetic {
-        return ClientMatch::Mismatch;
-    }
-
     // Every cached client must exist in the enabled set. Compare on the
     // canonical lowercase id so we don't have to round-trip through
     // ClientId for clients that map 1:1.
@@ -758,14 +647,7 @@ fn check_client_match(
         }
     }
 
-    // Exact match requires same set membership on BOTH sides:
-    //   |enabled non-synthetic| == |cached_clients|  AND
-    //   include_synthetic == cached_include_synthetic
-    let enabled_non_synthetic = enabled_clients.len() - usize::from(include_synthetic);
-    let same_size = enabled_non_synthetic == cached_clients.len();
-    let same_synthetic = include_synthetic == cached_include_synthetic;
-
-    if same_size && same_synthetic {
+    if enabled_clients.len() == cached_clients.len() {
         ClientMatch::Exact
     } else {
         ClientMatch::Subset
@@ -774,10 +656,8 @@ fn check_client_match(
 
 /// Save TUI data to disk cache.
 ///
-/// On-disk schema keeps the legacy `(Vec<String> enabled_clients, bool
-/// include_synthetic)` pair so caches written by older releases remain
-/// readable across upgrades. We project the unified
-/// `HashSet<ClientFilter>` here.
+/// The cache stores the same canonical client ids used by `ClientFilter`,
+/// including `synthetic`.
 pub fn save_cached_data(
     data: &UsageData,
     enabled_clients: &HashSet<ClientFilter>,
@@ -800,11 +680,8 @@ pub fn save_cached_data(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    // Project unified set into the legacy on-disk shape.
-    let include_synthetic = enabled_clients.contains(&ClientFilter::Synthetic);
     let mut clients_vec: Vec<String> = enabled_clients
         .iter()
-        .filter(|f| !matches!(f, ClientFilter::Synthetic))
         .map(|f| f.as_filter_str().to_string())
         .collect();
     // Sort so the cache key is deterministic across runs / HashSet
@@ -816,7 +693,6 @@ pub fn save_cached_data(
         schema_version: CACHE_SCHEMA_VERSION,
         timestamp,
         enabled_clients: clients_vec,
-        include_synthetic,
         group_by: Some(group_by.to_string()),
         report_scope: report_scope.clone(),
         data: data.into(),
@@ -922,10 +798,7 @@ mod tests {
     fn test_exact_match() {
         let enabled = make_filters(&[ClientFilter::Claude, ClientFilter::Opencode], false);
         let cached = vec!["claude".to_string(), "opencode".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, false),
-            ClientMatch::Exact,
-        );
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Exact,);
     }
 
     #[test]
@@ -940,10 +813,7 @@ mod tests {
             false,
         );
         let cached = vec!["claude".to_string(), "opencode".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, false),
-            ClientMatch::Subset,
-        );
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Subset,);
     }
 
     #[test]
@@ -951,10 +821,7 @@ mod tests {
         // Cache was saved without synthetic, now user enables it
         let enabled = make_filters(&[ClientFilter::Claude], true);
         let cached = vec!["claude".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, false),
-            ClientMatch::Subset,
-        );
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Subset,);
     }
 
     #[test]
@@ -962,41 +829,29 @@ mod tests {
         // Cache has more clients than enabled (user narrowed filter)
         let enabled = make_filters(&[ClientFilter::Claude], false);
         let cached = vec!["claude".to_string(), "opencode".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, false),
-            ClientMatch::Mismatch,
-        );
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Mismatch,);
     }
 
     #[test]
     fn test_mismatch_disjoint() {
         let enabled = make_filters(&[ClientFilter::Claude], false);
         let cached = vec!["opencode".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, false),
-            ClientMatch::Mismatch,
-        );
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Mismatch,);
     }
 
     #[test]
     fn test_mismatch_unwanted_synthetic() {
         // Cache has synthetic data but user doesn't want it
         let enabled = make_filters(&[ClientFilter::Claude], false);
-        let cached = vec!["claude".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, true),
-            ClientMatch::Mismatch,
-        );
+        let cached = vec!["claude".to_string(), "synthetic".to_string()];
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Mismatch,);
     }
 
     #[test]
     fn test_exact_with_synthetic() {
         let enabled = make_filters(&[ClientFilter::Claude], true);
-        let cached = vec!["claude".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, true),
-            ClientMatch::Exact,
-        );
+        let cached = vec!["claude".to_string(), "synthetic".to_string()];
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Exact,);
     }
 
     #[test]
@@ -1004,20 +859,14 @@ mod tests {
         // Update added new client AND user also enabled synthetic
         let enabled = make_filters(&[ClientFilter::Claude, ClientFilter::Qwen], true);
         let cached = vec!["claude".to_string()];
-        assert_eq!(
-            check_client_match(&enabled, &cached, false),
-            ClientMatch::Subset,
-        );
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Subset,);
     }
 
     #[test]
     fn test_empty_cache_is_subset() {
         let enabled = make_filters(&[ClientFilter::Claude], false);
         let cached: Vec<String> = vec![];
-        assert_eq!(
-            check_client_match(&enabled, &cached, false),
-            ClientMatch::Subset,
-        );
+        assert_eq!(check_client_match(&enabled, &cached), ClientMatch::Subset,);
     }
 
     #[test]
@@ -1034,10 +883,9 @@ mod tests {
         fs::write(
             &cache_path,
             r#"{
-  "schemaVersion": 9,
+  "schemaVersion": 10,
   "timestamp": 9999999999999,
   "enabledClients": ["claude"],
-  "includeSynthetic": false,
   "groupBy": "model",
   "reportScope": {
     "since": "2026-05-01",
@@ -1125,7 +973,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn old_cache_without_report_scope_is_stale_for_unfiltered_scope() {
+    fn outdated_cache_schema_misses() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
         unsafe {
@@ -1140,60 +988,12 @@ mod tests {
   "schemaVersion": 8,
   "timestamp": 9999999999999,
   "enabledClients": ["claude"],
-  "includeSynthetic": false,
   "groupBy": "model",
   "data": {
     "models": [],
     "agents": [],
     "daily": [],
     "hourly": [],
-    "totalTokens": 0,
-    "totalCost": 0.0,
-    "currentStreak": 0,
-    "longestStreak": 0
-  }
-}"#,
-        )
-        .unwrap();
-
-        let clients = make_filters(&[ClientFilter::Claude], false);
-        assert!(matches!(
-            load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()),
-            CacheResult::Stale(_)
-        ));
-
-        let filtered_scope = CacheReportScope::new(Some("2026-05-01".to_string()), None, None);
-        assert!(matches!(
-            load_cache(&clients, &GroupBy::Model, &filtered_scope),
-            CacheResult::Miss
-        ));
-
-        match previous_home {
-            Some(home) => unsafe { env::set_var("HOME", home) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_load_cache_misses_for_legacy_schema_without_group_by() {
-        let temp_dir = TempDir::new().unwrap();
-        let previous_home = env::var_os("HOME");
-        unsafe {
-            env::set_var("HOME", temp_dir.path());
-        }
-
-        let cache_path = cache_file().unwrap();
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(
-            &cache_path,
-            r#"{
-  "timestamp": 9999999999999,
-  "enabledClients": ["claude"],
-  "includeSynthetic": false,
-  "data": {
-    "models": [],
-    "daily": [],
     "totalTokens": 0,
     "totalCost": 0.0,
     "currentStreak": 0,
@@ -1229,10 +1029,9 @@ mod tests {
         fs::write(
             &cache_path,
             r#"{
-  "schemaVersion": 4,
+  "schemaVersion": 10,
   "timestamp": 9999999999999,
   "enabledClients": ["claude"],
-  "includeSynthetic": false,
   "groupBy": "model",
   "data": {
     "models": [],
@@ -1264,82 +1063,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_load_cache_stale_legacy_daily_models_without_display_fields() {
-        let temp_dir = TempDir::new().unwrap();
-        let previous_home = env::var_os("HOME");
-        unsafe {
-            env::set_var("HOME", temp_dir.path());
-        }
-
-        let cache_path = cache_file().unwrap();
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(
-            &cache_path,
-            r#"{
-  "schemaVersion": 3,
-  "timestamp": 9999999999999,
-  "enabledClients": ["claude"],
-  "includeSynthetic": false,
-  "groupBy": "model",
-  "data": {
-    "models": [],
-    "agents": [],
-    "daily": [{
-      "date": "2026-03-18",
-      "tokens": {
-        "input": 10,
-        "output": 5,
-        "cacheRead": 0,
-        "cacheWrite": 0,
-        "reasoning": 0
-      },
-      "cost": 1.25,
-      "models": [[
-        "claude-sonnet-4-5",
-        {
-          "client": "claude",
-          "tokens": {
-            "input": 10,
-            "output": 5,
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "reasoning": 0
-          },
-          "cost": 1.25
-        }
-      ]]
-    }],
-    "totalTokens": 15,
-    "totalCost": 1.25,
-    "currentStreak": 1,
-    "longestStreak": 1
-  }
-}"#,
-        )
-        .unwrap();
-
-        let clients = make_filters(&[ClientFilter::Claude], false);
-        match load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()) {
-            CacheResult::Stale(data) => {
-                let source = data.daily[0].source_breakdown.get("claude").unwrap();
-                let daily_model = source.models.get("claude-sonnet-4-5").unwrap();
-                assert_eq!(daily_model.display_name, "claude-sonnet-4-5");
-                assert_eq!(daily_model.color_key, "claude-sonnet-4-5");
-            }
-            other => panic!(
-                "expected stale legacy cache, got {:?}",
-                other_variant_name(&other)
-            ),
-        }
-
-        match previous_home {
-            Some(home) => unsafe { env::set_var("HOME", home) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-    }
-
-    #[test]
-    #[serial]
     fn test_load_cache_reads_source_breakdown_from_current_schema() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
@@ -1352,10 +1075,9 @@ mod tests {
         fs::write(
             &cache_path,
             r#"{
-  "schemaVersion": 9,
+  "schemaVersion": 10,
   "timestamp": 9999999999999,
   "enabledClients": ["claude", "cursor"],
-  "includeSynthetic": false,
   "groupBy": "model",
   "data": {
     "models": [],
@@ -1460,270 +1182,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_load_cache_stale_legacy_hourly_models_without_display_fields() {
-        let temp_dir = TempDir::new().unwrap();
-        let previous_home = env::var_os("HOME");
-        unsafe {
-            env::set_var("HOME", temp_dir.path());
-        }
-
-        let cache_path = cache_file().unwrap();
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(
-            &cache_path,
-            r#"{
-  "schemaVersion": 5,
-  "timestamp": 9999999999999,
-  "enabledClients": ["claude"],
-  "includeSynthetic": false,
-  "groupBy": "model",
-  "data": {
-    "models": [],
-    "agents": [],
-    "daily": [],
-    "hourly": [{
-      "datetime": "2026-03-18 10:00:00",
-      "tokens": {
-        "input": 10,
-        "output": 5,
-        "cacheRead": 0,
-        "cacheWrite": 0,
-        "reasoning": 0
-      },
-      "cost": 1.25,
-      "clients": ["claude"],
-      "models": [[
-        "claude-sonnet-4-5",
-        {
-          "tokens": {
-            "input": 10,
-            "output": 5,
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "reasoning": 0
-          },
-          "cost": 1.25
-        }
-      ]],
-      "messageCount": 1,
-      "turnCount": 1
-    }],
-    "totalTokens": 15,
-    "totalCost": 1.25,
-    "currentStreak": 1,
-    "longestStreak": 1
-  }
-}"#,
-        )
-        .unwrap();
-
-        let clients = make_filters(&[ClientFilter::Claude], false);
-        match load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()) {
-            CacheResult::Fresh(data) | CacheResult::Stale(data) => {
-                let hourly_model = data.hourly[0].models.get("claude-sonnet-4-5").unwrap();
-                assert_eq!(hourly_model.display_name, "claude-sonnet-4-5");
-                assert_eq!(hourly_model.color_key, "claude-sonnet-4-5");
-            }
-            other => panic!("expected cache data, got {:?}", other_variant_name(&other)),
-        }
-
-        match previous_home {
-            Some(home) => unsafe { env::set_var("HOME", home) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_load_cache_legacy_empty_client_falls_back_to_unknown() {
-        let temp_dir = TempDir::new().unwrap();
-        let previous_home = env::var_os("HOME");
-        unsafe {
-            env::set_var("HOME", temp_dir.path());
-        }
-
-        let cache_path = cache_file().unwrap();
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(
-            &cache_path,
-            r#"{
-  "schemaVersion": 3,
-  "timestamp": 9999999999999,
-  "enabledClients": ["claude"],
-  "includeSynthetic": false,
-  "groupBy": "model",
-  "data": {
-    "models": [],
-    "agents": [],
-    "daily": [{
-      "date": "2026-03-18",
-      "tokens": {
-        "input": 10,
-        "output": 5,
-        "cacheRead": 0,
-        "cacheWrite": 0,
-        "reasoning": 0
-      },
-      "cost": 1.25,
-      "models": [[
-        "claude-sonnet-4-5",
-        {
-          "client": "",
-          "tokens": {
-            "input": 10,
-            "output": 5,
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "reasoning": 0
-          },
-          "cost": 1.25
-        }
-      ]]
-    }],
-    "totalTokens": 15,
-    "totalCost": 1.25,
-    "currentStreak": 1,
-    "longestStreak": 1
-  }
-}"#,
-        )
-        .unwrap();
-
-        let clients = make_filters(&[ClientFilter::Claude], false);
-        match load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()) {
-            CacheResult::Stale(data) => {
-                assert!(
-                    data.daily[0].source_breakdown.contains_key("unknown"),
-                    "empty client should fall back to 'unknown'"
-                );
-                let unknown = data.daily[0].source_breakdown.get("unknown").unwrap();
-                assert_eq!(unknown.models.len(), 1);
-                let model = unknown.models.get("claude-sonnet-4-5").unwrap();
-                assert_eq!(model.tokens.total(), 15);
-            }
-            other => panic!(
-                "expected stale legacy cache, got {:?}",
-                other_variant_name(&other)
-            ),
-        }
-
-        match previous_home {
-            Some(home) => unsafe { env::set_var("HOME", home) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn load_cache_falls_back_to_legacy_dot_cache_path() {
-        let temp_dir = TempDir::new().unwrap();
-        let previous_home = env::var_os("HOME");
-        let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
-        let previous_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
-        unsafe {
-            env::set_var("HOME", temp_dir.path());
-            env::remove_var("TOKSCALE_CONFIG_DIR");
-            env::set_var("XDG_CONFIG_HOME", temp_dir.path().join(".xdg-config"));
-        }
-
-        let legacy_path = temp_dir.path().join(".cache/tokscale/tui-data-cache.json");
-        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        fs::write(
-            &legacy_path,
-            r#"{
-  "schemaVersion": 9,
-  "timestamp": 9999999999999,
-  "enabledClients": ["claude"],
-  "includeSynthetic": false,
-  "groupBy": "model",
-  "data": {
-    "models": [],
-    "agents": [],
-    "daily": [],
-    "hourly": [],
-    "totalTokens": 0,
-    "totalCost": 0.0,
-    "currentStreak": 0,
-    "longestStreak": 0
-  }
-}"#,
-        )
-        .unwrap();
-
-        let clients = make_filters(&[ClientFilter::Claude], false);
-        assert!(matches!(
-            load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()),
-            CacheResult::Fresh(_)
-        ));
-
-        match previous_home {
-            Some(home) => unsafe { env::set_var("HOME", home) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        match previous_override {
-            Some(value) => unsafe { env::set_var("TOKSCALE_CONFIG_DIR", value) },
-            None => unsafe { env::remove_var("TOKSCALE_CONFIG_DIR") },
-        }
-        match previous_xdg_config_home {
-            Some(value) => unsafe { env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { env::remove_var("XDG_CONFIG_HOME") },
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn load_cache_skips_legacy_when_overridden() {
-        let temp_dir = TempDir::new().unwrap();
-        let override_dir = TempDir::new().unwrap();
-        let previous_home = env::var_os("HOME");
-        let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
-        unsafe {
-            env::set_var("HOME", temp_dir.path());
-            env::set_var("TOKSCALE_CONFIG_DIR", override_dir.path());
-        }
-
-        let legacy_path = temp_dir.path().join(".cache/tokscale/tui-data-cache.json");
-        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        fs::write(
-            &legacy_path,
-            r#"{
-  "schemaVersion": 6,
-  "timestamp": 9999999999999,
-  "enabledClients": ["claude"],
-  "includeSynthetic": false,
-  "groupBy": "model",
-  "data": {
-    "models": [],
-    "agents": [],
-    "daily": [],
-    "hourly": [],
-    "totalTokens": 0,
-    "totalCost": 0.0,
-    "currentStreak": 0,
-    "longestStreak": 0
-  }
-}"#,
-        )
-        .unwrap();
-
-        let clients = make_filters(&[ClientFilter::Claude], false);
-        assert!(matches!(
-            load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()),
-            CacheResult::Miss
-        ));
-
-        match previous_home {
-            Some(home) => unsafe { env::set_var("HOME", home) },
-            None => unsafe { env::remove_var("HOME") },
-        }
-        match previous_override {
-            Some(value) => unsafe { env::set_var("TOKSCALE_CONFIG_DIR", value) },
-            None => unsafe { env::remove_var("TOKSCALE_CONFIG_DIR") },
-        }
-    }
-
-    #[test]
-    #[serial]
     fn save_cached_data_does_not_delete_destination() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
@@ -1743,10 +1201,9 @@ mod tests {
             &cache_path,
             format!(
                 r#"{{
-  "schemaVersion": 6,
+  "schemaVersion": 10,
   "timestamp": {old_timestamp},
   "enabledClients": ["claude"],
-  "includeSynthetic": false,
   "groupBy": "model",
   "data": {{
     "models": [],

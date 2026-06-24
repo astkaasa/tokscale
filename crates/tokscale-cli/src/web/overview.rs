@@ -98,6 +98,7 @@ pub(crate) fn render_overview_html(
             until: options.until,
             year: options.year,
             initial_tab: Some(crate::tui::Tab::Overview),
+            initial_timeline_granularity: None,
         },
         Some(data),
     )?;

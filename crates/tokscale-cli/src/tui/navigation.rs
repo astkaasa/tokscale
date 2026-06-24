@@ -4,9 +4,7 @@ pub(crate) enum Tab {
     Pulse,
     Usage,
     Models,
-    Daily,
-    Hourly,
-    Minutely,
+    Timeline,
 }
 
 impl Tab {
@@ -15,8 +13,7 @@ impl Tab {
             Tab::Overview,
             Tab::Pulse,
             Tab::Models,
-            Tab::Daily,
-            Tab::Minutely,
+            Tab::Timeline,
             Tab::Usage,
         ]
     }
@@ -27,9 +24,7 @@ impl Tab {
             Tab::Pulse => "Pulse",
             Tab::Usage => "Usage",
             Tab::Models => "Models",
-            Tab::Daily => "Daily",
-            Tab::Hourly => "Hourly",
-            Tab::Minutely => "Minutely",
+            Tab::Timeline => "Timeline",
         }
     }
 
@@ -39,25 +34,7 @@ impl Tab {
             Tab::Pulse => "Pul",
             Tab::Usage => "Use",
             Tab::Models => "Mod",
-            Tab::Daily => "Day",
-            Tab::Hourly => "Hr",
-            Tab::Minutely => "Min",
-        }
-    }
-
-    pub(crate) fn workspace_label(&self) -> &'static str {
-        match self {
-            Tab::Daily => "Timeline",
-            Tab::Pulse => "Pulse",
-            _ => self.as_str(),
-        }
-    }
-
-    pub(crate) fn workspace_short_name(&self) -> &'static str {
-        match self {
-            Tab::Daily => "Time",
-            Tab::Pulse => "Pul",
-            _ => self.short_name(),
+            Tab::Timeline => "Time",
         }
     }
 }
@@ -123,13 +100,6 @@ pub(crate) enum SortField {
     Cost,
     Tokens,
     Date,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum HourlyViewMode {
-    #[default]
-    Table,
-    Profile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

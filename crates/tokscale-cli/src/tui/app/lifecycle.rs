@@ -11,7 +11,7 @@ use crate::tui::background_job::{BackgroundJob, BackgroundJobPoll};
 use crate::tui::codex_login::{CodexLoginEvent, CodexLoginOutcome};
 use crate::tui::data::{DataLoader, UsageData};
 use crate::tui::drilldown_state::DrilldownView;
-use crate::tui::navigation::{ChartGranularity, HourlyViewMode, Tab, TimelineGranularity};
+use crate::tui::navigation::{ChartGranularity, Tab};
 use crate::tui::pulse_state::PulseState;
 use crate::tui::settings::Settings;
 use crate::tui::themes::Theme;
@@ -72,8 +72,7 @@ impl App {
 
         let overview_mode = Self::initial_overview_mode(&config.since, &config.until, &config.year);
 
-        let data_loader = DataLoader::with_filters(config.since, config.until, config.year)
-            .with_minutely_enabled(settings.minutely_tab_enabled);
+        let data_loader = DataLoader::with_filters(config.since, config.until, config.year);
 
         let data = cached_data.unwrap_or_default();
         let has_data = !data.models.is_empty();
@@ -83,12 +82,9 @@ impl App {
         let confirmed_codex_remove_account_id = Rc::new(RefCell::new(None));
         let confirmed_codex_reset_account_id = Rc::new(RefCell::new(None));
         let requested_tab = config.initial_tab.unwrap_or(Tab::Overview);
-        let current_tab = if Self::tab_visible(&settings, requested_tab) {
-            requested_tab
-        } else {
-            Tab::Overview
-        };
+        let current_tab = requested_tab;
         let (sort_field, sort_direction) = Self::default_sort_for_tab(current_tab);
+        let timeline_granularity = config.initial_timeline_granularity.unwrap_or_default();
         let pulse = PulseState::new(&settings);
 
         let mut app = Self {
@@ -106,7 +102,7 @@ impl App {
             tab_sort_state: HashMap::new(),
             chart_granularity: ChartGranularity::default(),
             overview_chart_scroll_offset: usize::MAX,
-            timeline_granularity: TimelineGranularity::default(),
+            timeline_granularity,
             overview_mode,
             scroll_offset: 0,
             selected_index: 0,
@@ -132,7 +128,6 @@ impl App {
             needs_reload: false,
             dialog_stack,
             dialog_needs_reload,
-            hourly_view_mode: HourlyViewMode::default(),
             model_shade_map: HashMap::new(),
             subscription_usage: {
                 #[cfg(not(test))]
@@ -159,7 +154,6 @@ impl App {
             codex_login_rx: None,
             codex_login_child: None,
             data_version: 0,
-            minutely_sort_cache: RefCell::new(None),
         };
         app.build_model_shade_map();
         if fetch_on_entry {
@@ -179,7 +173,6 @@ impl App {
         self.data_version = self.data_version.saturating_add(1);
         self.last_refresh = Instant::now();
         self.build_model_shade_map();
-        self.minutely_sort_cache.borrow_mut().take();
 
         if let Some(DrilldownView::Period(key)) = self.drilldown_view().cloned() {
             if !self

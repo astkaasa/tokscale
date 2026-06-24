@@ -17,7 +17,7 @@ pub(crate) mod surface;
 mod themes;
 mod ui;
 
-pub(crate) use app::{App, Tab, TuiConfig};
+pub(crate) use app::{App, Tab, TimelineGranularity, TuiConfig};
 pub(crate) use cache::{
     load_cache, save_cached_data, CacheReportScope, CacheResult, TUI_DEFAULT_GROUP_BY,
 };
@@ -65,9 +65,8 @@ fn background_data_loader(
     since: Option<String>,
     until: Option<String>,
     year: Option<String>,
-    minutely_enabled: bool,
 ) -> DataLoader {
-    DataLoader::with_filters(since, until, year).with_minutely_enabled(minutely_enabled)
+    DataLoader::with_filters(since, until, year)
 }
 
 fn background_cache_scope(
@@ -88,6 +87,7 @@ pub fn run(
     until: Option<String>,
     year: Option<String>,
     initial_tab: Option<Tab>,
+    initial_timeline_granularity: Option<TimelineGranularity>,
 ) -> Result<()> {
     if debug {
         let _ = tracing_subscriber::fmt()
@@ -103,6 +103,7 @@ pub fn run(
         until: until.clone(),
         year: year.clone(),
         initial_tab,
+        initial_timeline_granularity,
     };
 
     // Build the unified filter set used by the cache key, the App
@@ -188,10 +189,9 @@ pub fn run(
         let bg_enabled_clients = enabled_clients.clone();
         let bg_group_by = app.group_by.borrow().clone();
         let bg_report_scope = background_cache_scope(&since, &until, &year);
-        let bg_minutely_enabled = app.settings.minutely_tab_enabled;
 
         thread::spawn(move || {
-            let loader = background_data_loader(bg_since, bg_until, bg_year, bg_minutely_enabled);
+            let loader = background_data_loader(bg_since, bg_until, bg_year);
             let result = loader.load(&bg_clients, &bg_group_by, bg_include_synthetic);
 
             if let Ok(ref data) = result {
@@ -311,10 +311,9 @@ fn run_loop_with_background(
             let enabled_clients = app.enabled_clients.borrow().clone();
             let group_by = app.group_by.borrow().clone();
             let report_scope = background_cache_scope(&since, &until, &year);
-            let minutely_enabled = app.settings.minutely_tab_enabled;
 
             thread::spawn(move || {
-                let loader = background_data_loader(since, until, year, minutely_enabled);
+                let loader = background_data_loader(since, until, year);
                 let result = loader.load(&clients, &group_by, include_synthetic);
                 if let Ok(ref data) = result {
                     save_cached_data(data, &enabled_clients, &group_by, &report_scope);
@@ -352,7 +351,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn launches_with_24h_old_cache_renders_immediately() {
+    fn launches_with_stale_cache_renders_immediately() {
         let (cached_data, needs_background_load) =
             decide_initial_data(CacheResult::Stale(UsageData::default()));
 
@@ -366,15 +365,6 @@ mod tests {
 
         assert!(cached_data.is_none());
         assert!(needs_background_load);
-    }
-
-    #[test]
-    fn background_loader_preserves_minutely_toggle() {
-        let enabled = background_data_loader(None, None, None, true);
-        assert!(enabled.minutely_enabled);
-
-        let disabled = background_data_loader(None, None, None, false);
-        assert!(!disabled.minutely_enabled);
     }
 
     #[test]

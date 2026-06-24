@@ -1369,6 +1369,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: Some(Tab::Overview),
+            initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
         app.terminal_width = width;
@@ -2051,6 +2052,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: Some(Tab::Overview),
+            initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
         let today = chrono::Local::now().date_naive();
@@ -2104,6 +2106,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: Some(Tab::Overview),
+            initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
         app.overview_mode = OverviewMode::Today;

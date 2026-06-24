@@ -6,7 +6,6 @@ use crate::tui::interaction::{ClickAction, ClickArea};
 use crate::tui::navigation::{
     ChartGranularity, OverviewMode, SortDirection, SortField, Tab, TimelineGranularity,
 };
-use crate::tui::settings::Settings;
 use crate::tui::ui::dialog::ClientPickerDialog;
 
 use super::App;
@@ -58,7 +57,7 @@ impl App {
 
         self.current_tab = target;
         self.drilldown = None;
-        if target != Tab::Daily {
+        if target != Tab::Timeline {
             self.selected_daily_detail_date = None;
         }
 
@@ -75,30 +74,15 @@ impl App {
     }
 
     pub(crate) fn default_sort_for_tab(tab: Tab) -> (SortField, SortDirection) {
-        if matches!(tab, Tab::Pulse | Tab::Daily | Tab::Hourly | Tab::Minutely) {
+        if matches!(tab, Tab::Pulse | Tab::Timeline) {
             (SortField::Date, SortDirection::Descending)
         } else {
             (SortField::Cost, SortDirection::Descending)
         }
     }
 
-    pub(crate) fn tab_visible(settings: &Settings, tab: Tab) -> bool {
-        match tab {
-            Tab::Minutely => settings.minutely_tab_enabled,
-            _ => true,
-        }
-    }
-
-    pub(crate) fn is_tab_visible(&self, tab: Tab) -> bool {
-        Self::tab_visible(&self.settings, tab)
-    }
-
-    pub(crate) fn visible_workspaces(&self) -> Vec<Tab> {
+    pub(crate) fn visible_workspaces(&self) -> &'static [Tab] {
         Tab::workspaces()
-            .iter()
-            .copied()
-            .filter(|t| self.is_tab_visible(*t))
-            .collect()
     }
 
     pub(crate) fn next_visible_tab(&self) -> Tab {
@@ -217,15 +201,13 @@ impl App {
             Tab::Overview => self.overview_model_len(),
             Tab::Pulse => 0,
             Tab::Models => self.data.models.len(),
-            Tab::Daily if self.is_daily_detail_active() => {
+            Tab::Timeline if self.is_daily_detail_active() => {
                 self.get_sorted_daily_detail_rows().len()
             }
-            Tab::Daily => match self.timeline_granularity {
+            Tab::Timeline => match self.timeline_granularity {
                 TimelineGranularity::Day => self.data.daily.len(),
                 TimelineGranularity::Hour => self.data.hourly.len(),
             },
-            Tab::Hourly => self.data.hourly.len(),
-            Tab::Minutely => self.data.minutely.len(),
             Tab::Usage => self.subscription_usage.len(),
         }
     }
@@ -250,7 +232,7 @@ impl App {
             self.persist_current_sort();
         }
         if self.is_drilldown_active()
-            || (self.current_tab == Tab::Daily && self.is_daily_detail_active())
+            || (self.current_tab == Tab::Timeline && self.is_daily_detail_active())
         {
             self.selected_index = 0;
             self.scroll_offset = 0;
@@ -327,7 +309,7 @@ impl App {
     }
 
     pub(crate) fn set_timeline_granularity(&mut self, granularity: TimelineGranularity) {
-        if self.current_tab != Tab::Daily {
+        if self.current_tab != Tab::Timeline {
             return;
         }
         self.timeline_granularity = granularity;
@@ -340,7 +322,7 @@ impl App {
     }
 
     pub(crate) fn jump_to_today(&mut self) {
-        if self.current_tab != Tab::Daily {
+        if self.current_tab != Tab::Timeline {
             return;
         }
         self.selected_daily_detail_date = None;

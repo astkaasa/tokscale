@@ -15,7 +15,7 @@ local connectors
   -> normalized local signals
   -> TUI cockpit
   -> Markdown / JSON digests
-  -> future MCP / local web / companion surfaces
+  -> local web / future MCP / companion surfaces
 ```
 
 Current priorities:
@@ -81,7 +81,7 @@ Minimal example:
 
 ```json
 {
-  "colorPalette": "blue",
+  "uiTheme": "dark",
   "defaultClients": ["codex", "claude"],
   "env": {
     "WEREAD_API_KEY": "<your-weread-api-key>"
@@ -100,13 +100,12 @@ Important settings:
 
 | Setting | Purpose |
 | --- | --- |
-| `colorPalette` | TUI theme. |
+| `uiTheme` | TUI theme: `dark`, `light`, or `auto`. |
 | `defaultClients` | Default client filter when no `--client` flag is passed. |
 | `env` | Persistent per-user integration secrets. Process environment variables still take precedence. |
 | `env.WEREAD_API_KEY` | Enables WeRead Pulse and `tokscale pulse` refreshes. |
 | `scanner.extraScanPaths` | Additional per-client local scan roots. |
 | `light.writeCache` | Lets `--light` refresh the TUI startup cache. |
-| `minutelyTabEnabled` | Enables the diagnostic per-minute view. |
 
 Secrets in `settings.json` are local to your machine. Tokscale should not require cloud upload for Personal Pulse features.
 
@@ -124,20 +123,11 @@ Configure:
 }
 ```
 
-Then run:
+Then run the TUI and open the Pulse workspace:
 
 ```bash
 ./target/debug/tokscale tui
 ```
-
-Open the Pulse workspace. It shows:
-
-- weekly read-day checkmarks
-- weekly total, daily average, and week-over-week change
-- focus book
-- month rhythm and preferred category
-- notes and library signals
-- sync/auth/stale/error state
 
 Digest exports:
 
@@ -147,27 +137,6 @@ Digest exports:
 ```
 
 If `WEREAD_API_KEY` is set in the real process environment, it overrides `settings.json` for that run.
-
-## Product Boundary
-
-Good TUI responsibilities:
-
-- show current state
-- surface anomalies
-- explain likely causes with evidence
-- trigger quick actions
-- inspect compact details
-
-Poor TUI-only responsibilities:
-
-- long-form report reading
-- full note review or editing
-- complex onboarding/auth flows
-- large knowledge graph browsing
-- cross-device reminders
-- general dashboard configuration
-
-Long content should leave the TUI through Markdown, JSON, local web, MCP, or a dedicated companion surface.
 
 ## Repository Map
 
@@ -213,7 +182,7 @@ cargo build -p tokscale-cli
 
 Some tests open local listeners. If they fail under a restricted sandbox with permission errors, rerun them in a normal shell before treating the failure as a code regression.
 
-## Design Docs
+## Design Notes
 
 The active product notes live under:
 
@@ -223,8 +192,9 @@ crates/tokscale-cli/docs/tui-design/
 
 Start with:
 
-- `personal-pulse-architecture.md`
+- `README.md`
 - `personal-pulse.md`
+- `personal-pulse-architecture.md`
 - `navigation.md`
 - `overview.md`
 - `provider-colors.md`

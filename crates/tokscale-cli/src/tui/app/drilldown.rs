@@ -127,7 +127,8 @@ impl App {
         self.sort_direction = state.parent_sort_direction;
         let restored_index = match &state.view {
             DrilldownView::Period(key)
-                if state.parent_tab == Tab::Daily && key.granularity == PeriodGranularity::Day =>
+                if state.parent_tab == Tab::Timeline
+                    && key.granularity == PeriodGranularity::Day =>
             {
                 self.get_sorted_daily()
                     .iter()

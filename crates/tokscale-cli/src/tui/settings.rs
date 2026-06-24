@@ -52,8 +52,6 @@ pub struct Settings {
     pub auto_refresh_enabled: bool,
     #[serde(default = "default_auto_refresh_ms")]
     pub auto_refresh_ms: u64,
-    #[serde(default)]
-    pub include_unused_models: bool,
     #[serde(default = "default_native_timeout_ms")]
     pub native_timeout_ms: u64,
     /// Persistent scanner configuration. Allows users to pin additional
@@ -88,13 +86,6 @@ pub struct Settings {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub env: BTreeMap<String, String>,
-    /// Opt-in toggle for the per-minute breakdown tab. Default is `false`
-    /// to keep the tab strip focused on the daily/hourly views most users
-    /// want and to skip the minute-bucket aggregation cost in DataLoader
-    /// for users who never need it. Set to `true` to surface the Minutely
-    /// tab and enable its aggregation in subsequent loads.
-    #[serde(default)]
-    pub minutely_tab_enabled: bool,
 }
 
 /// Lossy deserializer for `defaultClients`: accepts an array of arbitrary
@@ -130,13 +121,11 @@ impl Default for Settings {
             ui_theme: ThemePreference::Dark,
             auto_refresh_enabled: false,
             auto_refresh_ms: DEFAULT_AUTO_REFRESH_MS,
-            include_unused_models: false,
             native_timeout_ms: DEFAULT_NATIVE_TIMEOUT_MS,
             scanner: ScannerSettings::default(),
             default_clients: Vec::new(),
             light: LightSettings::default(),
             env: BTreeMap::new(),
-            minutely_tab_enabled: false,
         }
     }
 }
@@ -213,36 +202,10 @@ impl Settings {
         Self::explicit_home_config_path_for_layout(home_dir, ExplicitHomeConfigLayout::current())
     }
 
-    fn explicit_home_legacy_macos_path(home_dir: &Path) -> PathBuf {
-        home_dir.join("Library/Application Support/tokscale/settings.json")
-    }
-
-    /// Returns the legacy `~/Library/Application Support/tokscale/settings.json`
-    /// path on macOS so `load()` can fall back to it during the transition.
-    /// Returns `None` on other platforms or when HOME cannot be resolved.
-    fn legacy_macos_path() -> Option<PathBuf> {
-        crate::paths::legacy_macos_config_dir().map(|d| d.join("settings.json"))
-    }
-
     pub fn load() -> Self {
-        let primary = Self::config_path()
+        let raw = Self::config_path()
             .ok()
             .and_then(|path| fs::read_to_string(path).ok());
-
-        // Transparent macOS fallback: pre-fix releases wrote settings.json under
-        // `~/Library/Application Support/tokscale/`. Read it once if the new
-        // path is empty so users don't lose scanner / defaultClients
-        // preferences after upgrading. The next `save()` lands at the new
-        // canonical path under `~/.config/tokscale/`. Skipped when the user
-        // has explicitly pinned a config root via `TOKSCALE_CONFIG_DIR` so
-        // CI sandboxes and isolated profiles stay hermetic instead of
-        // silently ingesting personal settings from the legacy macOS path.
-        let raw = primary.or_else(|| {
-            if crate::paths::is_config_dir_overridden() {
-                return None;
-            }
-            Self::legacy_macos_path().and_then(|legacy| fs::read_to_string(legacy).ok())
-        });
 
         raw.and_then(|content| serde_json::from_str(&content).ok())
             .map(Settings::normalize)
@@ -254,9 +217,7 @@ impl Settings {
             return Self::load();
         };
 
-        let raw = fs::read_to_string(Self::explicit_home_config_path(home_dir))
-            .ok()
-            .or_else(|| fs::read_to_string(Self::explicit_home_legacy_macos_path(home_dir)).ok());
+        let raw = fs::read_to_string(Self::explicit_home_config_path(home_dir)).ok();
 
         raw.and_then(|content| serde_json::from_str(&content).ok())
             .map(Settings::normalize)
@@ -403,114 +364,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_ignores_legacy_color_palette_when_saving() {
-        let json = r#"{"theme":"blue","colorPalette":"dark"}"#;
-        let parsed: Settings = serde_json::from_str(json).unwrap();
-
-        let serialized = serde_json::to_value(&parsed).unwrap();
-        assert!(serialized.get("theme").is_none());
-        assert!(serialized.get("colorPalette").is_none());
-        assert!(serialized.get("uiTheme").is_some());
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    #[serial_test::serial]
-    fn load_falls_back_to_legacy_macos_path_when_new_path_missing() {
-        // Sandbox HOME so the test never reads or writes a real user's
-        // settings.json. Existing macOS users upgrading to the unified
-        // path must keep the scanner settings they already have
-        // under `~/Library/Application Support/tokscale/`.
-        use std::env;
-        let temp = tempfile::TempDir::new().unwrap();
-        let prev_home = env::var_os("HOME");
-        let prev_override = env::var_os("TOKSCALE_CONFIG_DIR");
-        unsafe {
-            env::set_var("HOME", temp.path());
-            env::remove_var("TOKSCALE_CONFIG_DIR");
-        }
-
-        let legacy_dir = temp.path().join("Library/Application Support/tokscale");
-        fs::create_dir_all(&legacy_dir).unwrap();
-        fs::write(
-            legacy_dir.join("settings.json"),
-            r#"{"defaultClients":["opencode"]}"#,
-        )
-        .unwrap();
-
-        // Sanity: new path must be empty so the fallback is what we exercise.
-        let new_path = temp.path().join(".config/tokscale/settings.json");
-        assert!(!new_path.exists());
-
-        let loaded = Settings::load();
-        assert_eq!(loaded.default_clients, vec!["opencode".to_string()]);
-
-        unsafe {
-            match prev_home {
-                Some(v) => env::set_var("HOME", v),
-                None => env::remove_var("HOME"),
-            }
-            match prev_override {
-                Some(v) => env::set_var("TOKSCALE_CONFIG_DIR", v),
-                None => env::remove_var("TOKSCALE_CONFIG_DIR"),
-            }
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    #[serial_test::serial]
-    fn load_skips_legacy_macos_fallback_when_config_dir_overridden() {
-        // The whole point of TOKSCALE_CONFIG_DIR is hermeticity. CI sandboxes,
-        // tests, and isolated profiles MUST NOT silently inherit scanner /
-        // defaultClients from `~/Library/Application Support/`
-        // when the user explicitly pinned a config root.
-        use std::env;
-        let temp = tempfile::TempDir::new().unwrap();
-        let legacy_root = tempfile::TempDir::new().unwrap();
-        let prev_home = env::var_os("HOME");
-        let prev_override = env::var_os("TOKSCALE_CONFIG_DIR");
-        unsafe {
-            env::set_var("HOME", legacy_root.path());
-            env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
-        }
-
-        let legacy_dir = legacy_root
-            .path()
-            .join("Library/Application Support/tokscale");
-        fs::create_dir_all(&legacy_dir).unwrap();
-        fs::write(
-            legacy_dir.join("settings.json"),
-            r#"{"defaultClients":["opencode"]}"#,
-        )
-        .unwrap();
-
-        let loaded = Settings::load();
-        assert!(
-            loaded.default_clients.is_empty(),
-            "override must not leak defaultClients from the legacy macOS path"
-        );
-
-        unsafe {
-            match prev_home {
-                Some(v) => env::set_var("HOME", v),
-                None => env::remove_var("HOME"),
-            }
-            match prev_override {
-                Some(v) => env::set_var("TOKSCALE_CONFIG_DIR", v),
-                None => env::remove_var("TOKSCALE_CONFIG_DIR"),
-            }
-        }
-    }
-
-    #[test]
     fn settings_load_backfills_scanner_when_missing_from_json() {
         // Older settings.json files predate the `scanner` key. They must
         // still deserialize cleanly and fall through to ScannerSettings::default.
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000
         }"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();
@@ -522,7 +381,6 @@ mod tests {
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000,
             "scanner": {
                 "opencodeDbPaths": [
@@ -546,7 +404,6 @@ mod tests {
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000,
             "scanner": {
                 "extraScanPaths": {
@@ -574,7 +431,6 @@ mod tests {
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000,
             "scanner": {}
         }"#;
@@ -601,7 +457,6 @@ mod tests {
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000,
             "scanner": {
                 "extraScanPaths": {
@@ -627,7 +482,6 @@ mod tests {
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000
         }"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();
@@ -642,7 +496,6 @@ mod tests {
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000,
             "defaultClients": ["opencode", "claude", "synthetic"]
         }"#;
@@ -677,11 +530,10 @@ mod tests {
     }
 
     #[test]
-    fn settings_load_accepts_legacy_json_without_light_section() {
+    fn settings_defaults_light_section_when_missing() {
         let json = r#"{
             "autoRefreshEnabled": false,
             "autoRefreshMs": 60000,
-            "includeUnusedModels": false,
             "nativeTimeoutMs": 300000
         }"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();
@@ -752,29 +604,5 @@ mod tests {
                 None => std::env::remove_var("TOKSCALE_TEST_SETTINGS_ENV"),
             }
         }
-    }
-
-    #[test]
-    fn settings_minutely_tab_enabled_defaults_to_false() {
-        let json = r#"{}"#;
-        let parsed: Settings = serde_json::from_str(json).unwrap();
-        assert!(!parsed.minutely_tab_enabled);
-        assert!(!Settings::default().minutely_tab_enabled);
-    }
-
-    #[test]
-    fn settings_minutely_tab_enabled_round_trips_when_set() {
-        let json = r#"{
-            "minutelyTabEnabled": true
-        }"#;
-        let parsed: Settings = serde_json::from_str(json).unwrap();
-        assert!(parsed.minutely_tab_enabled);
-
-        let serialized = serde_json::to_string(&parsed).unwrap();
-        let round_trip: serde_json::Value = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(
-            round_trip["minutelyTabEnabled"],
-            serde_json::Value::Bool(true)
-        );
     }
 }

@@ -21,7 +21,7 @@ const FINGERPRINT_SAMPLE_POINTS: usize = 5;
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
 
 fn cache_dir() -> Option<PathBuf> {
-    if crate::paths::is_config_dir_overridden()
+    if config_dir_override_is_set()
         || dirs::config_dir().is_some()
         || cfg!(target_os = "macos") && dirs::home_dir().is_some()
     {
@@ -39,18 +39,8 @@ fn cache_lock_path() -> Option<PathBuf> {
     Some(cache_dir()?.join(CACHE_LOCK_FILENAME))
 }
 
-fn legacy_cache_paths() -> Vec<PathBuf> {
-    if crate::paths::is_config_dir_overridden() {
-        return Vec::new();
-    }
-
-    [
-        crate::paths::legacy_dirs_cache_dir().map(|d| d.join(CACHE_FILENAME)),
-        crate::paths::legacy_dot_cache_tokscale_dir().map(|d| d.join(CACHE_FILENAME)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+fn config_dir_override_is_set() -> bool {
+    std::env::var_os("TOKSCALE_CONFIG_DIR").is_some_and(|value| !value.is_empty())
 }
 
 fn fallback_cache_dir() -> Option<PathBuf> {
@@ -323,9 +313,7 @@ impl SourceMessageCache {
 
         let store = match read_store_from_path_status(&path) {
             CacheReadStatus::Loaded(store) => Some(store),
-            CacheReadStatus::Missing => legacy_cache_paths()
-                .into_iter()
-                .find_map(|path| read_store_from_path(&path)),
+            CacheReadStatus::Missing => None,
             CacheReadStatus::Invalid => None,
         };
         let Some(store) = store else {
@@ -726,8 +714,8 @@ mod tests {
     /// Pin every env var the cache resolvers consult so the test stays
     /// inside `temp_home`. CI runners can leak `XDG_CONFIG_HOME` /
     /// `XDG_CACHE_HOME` from the host, in which case `paths::get_cache_dir`
-    /// resolves outside the sandbox and the legacy fallback never gets
-    /// exercised. Returns the previous values so the caller can restore.
+    /// resolves outside the sandbox. Returns the previous values so the
+    /// caller can restore.
     fn sandbox_cache_env(
         temp_home: &std::path::Path,
     ) -> (
@@ -1280,93 +1268,6 @@ mod tests {
         }
 
         restore_cache_env(prev_env);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn load_falls_back_to_legacy_dirs_cache_path() {
-        let temp_home = TempDir::new().unwrap();
-        let temp_xdg_cache = TempDir::new().unwrap();
-        let original_home = std::env::var_os("HOME");
-        let original_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
-        let original_xdg_config = std::env::var_os("XDG_CONFIG_HOME");
-        let original_override = std::env::var_os("TOKSCALE_CONFIG_DIR");
-
-        restore_env_var("HOME", Some(temp_home.path()));
-        restore_env_var("XDG_CACHE_HOME", Some(temp_xdg_cache.path()));
-        restore_env_var("XDG_CONFIG_HOME", Some(temp_home.path().join(".config")));
-        restore_env_var("TOKSCALE_CONFIG_DIR", None::<&str>);
-
-        let source = write_temp_file(b"legacy-dirs\n");
-        let entry = CachedSourceEntry::new(
-            source.path(),
-            SourceFingerprint::from_path(source.path()).unwrap(),
-            Vec::new(),
-            Vec::new(),
-            None,
-        );
-
-        let legacy_path = crate::paths::legacy_dirs_cache_dir()
-            .unwrap()
-            .join(CACHE_FILENAME);
-        ensure_cache_dir(legacy_path.parent().unwrap()).unwrap();
-        let store = CachedSourceStore {
-            schema_version: CACHE_SCHEMA_VERSION,
-            entries: vec![entry],
-        };
-        let writer = BufWriter::new(File::create(&legacy_path).unwrap());
-        bincode::options().serialize_into(writer, &store).unwrap();
-
-        let loaded = SourceMessageCache::load();
-        assert!(loaded.get(source.path()).is_some());
-
-        restore_env_var("HOME", original_home);
-        restore_env_var("XDG_CACHE_HOME", original_xdg_cache);
-        restore_env_var("XDG_CONFIG_HOME", original_xdg_config);
-        restore_env_var("TOKSCALE_CONFIG_DIR", original_override);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn load_falls_back_to_legacy_dot_cache_path() {
-        let temp_home = TempDir::new().unwrap();
-        let original_home = std::env::var_os("HOME");
-        let original_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
-        let original_xdg_config = std::env::var_os("XDG_CONFIG_HOME");
-        let original_override = std::env::var_os("TOKSCALE_CONFIG_DIR");
-
-        restore_env_var("HOME", Some(temp_home.path()));
-        restore_env_var("XDG_CACHE_HOME", None::<&str>);
-        restore_env_var("XDG_CONFIG_HOME", Some(temp_home.path().join(".config")));
-        restore_env_var("TOKSCALE_CONFIG_DIR", None::<&str>);
-
-        let source = write_temp_file(b"legacy-dot\n");
-        let entry = CachedSourceEntry::new(
-            source.path(),
-            SourceFingerprint::from_path(source.path()).unwrap(),
-            Vec::new(),
-            Vec::new(),
-            None,
-        );
-
-        let legacy_path = crate::paths::legacy_dot_cache_tokscale_dir()
-            .unwrap()
-            .join(CACHE_FILENAME);
-        ensure_cache_dir(legacy_path.parent().unwrap()).unwrap();
-        let store = CachedSourceStore {
-            schema_version: CACHE_SCHEMA_VERSION,
-            entries: vec![entry],
-        };
-        let writer = BufWriter::new(File::create(&legacy_path).unwrap());
-        bincode::options().serialize_into(writer, &store).unwrap();
-
-        let loaded = SourceMessageCache::load();
-        assert!(loaded.get(source.path()).is_some());
-
-        restore_env_var("HOME", original_home);
-        restore_env_var("XDG_CACHE_HOME", original_xdg_cache);
-        restore_env_var("XDG_CONFIG_HOME", original_xdg_config);
-        restore_env_var("TOKSCALE_CONFIG_DIR", original_override);
     }
 
     #[cfg(unix)]

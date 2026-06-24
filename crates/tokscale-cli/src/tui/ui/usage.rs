@@ -2246,6 +2246,7 @@ mod tests {
             until: None,
             year: None,
             initial_tab: None,
+            initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
         app.current_tab = Tab::Usage;
