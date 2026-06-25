@@ -4,7 +4,7 @@ use crate::tui::drilldown_state::DrilldownView;
 use crate::tui::interaction::ClickAction;
 use crate::tui::navigation::{ChartGranularity, SortField, Tab, TimelineGranularity};
 
-use super::App;
+use super::{App, RefreshTrigger};
 
 impl App {
     pub fn handle_key_event(&mut self, key: KeyEvent) -> bool {
@@ -122,15 +122,7 @@ impl App {
                 self.jump_to_today();
             }
             KeyCode::Char('r') => {
-                if self.current_tab == Tab::Usage {
-                    self.refresh_usage();
-                } else if self.current_tab == Tab::Pulse {
-                    self.refresh_weread();
-                } else if self.background_loading {
-                    self.set_status("Refresh already in progress");
-                } else {
-                    self.needs_reload = true;
-                }
+                self.refresh_current_surface(RefreshTrigger::Manual);
             }
             KeyCode::Char('R') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.toggle_auto_refresh();
@@ -242,7 +234,7 @@ impl App {
                             self.open_period_detail(key);
                         }
                         ClickAction::UsageRefresh => {
-                            self.refresh_usage();
+                            self.refresh_current_surface(RefreshTrigger::Manual);
                         }
                         ClickAction::CodexStartLogin => {
                             self.start_codex_login();
@@ -254,7 +246,7 @@ impl App {
                             self.toggle_usage_email_privacy();
                         }
                         ClickAction::WeReadRefresh => {
-                            self.refresh_weread();
+                            self.refresh_current_surface(RefreshTrigger::Manual);
                         }
                         ClickAction::UsageSelect { index } => {
                             self.selected_index = index;

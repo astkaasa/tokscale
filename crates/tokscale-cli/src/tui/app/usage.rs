@@ -1,3 +1,4 @@
+use crate::commands::usage::UsageOutput;
 use crate::tui::codex_login::{
     cancel_codex_login_child, run_codex_login_worker, CodexLoginChildSlot,
 };
@@ -58,6 +59,9 @@ impl App {
     }
 
     pub(crate) fn maybe_fetch_weread_on_entry(&mut self) {
+        if self.current_tab != Tab::Pulse {
+            return;
+        }
         if let Some(status) = self.pulse.maybe_fetch_weread_on_entry(&self.settings) {
             self.set_status(status);
         }
@@ -272,6 +276,7 @@ impl App {
         match crate::commands::usage::codex::switch_active_account(account_id) {
             Ok(info) => {
                 self.mark_active_codex_account(&info.id);
+                self.sort_codex_subscription_usage();
                 if let Some(index) = self.subscription_usage.iter().position(|usage| {
                     usage
                         .account
@@ -310,6 +315,7 @@ impl App {
                     .find(|account| account.is_active)
                 {
                     self.mark_active_codex_account(&active.id);
+                    self.sort_codex_subscription_usage();
                 } else {
                     self.clear_active_codex_accounts();
                 }
@@ -366,6 +372,67 @@ impl App {
             }
         }
     }
+
+    pub(crate) fn sort_codex_subscription_usage(&mut self) {
+        let mut codex_outputs = self
+            .subscription_usage
+            .iter()
+            .filter(|usage| usage.provider == "Codex")
+            .cloned()
+            .collect::<Vec<_>>();
+        if codex_outputs.len() < 2 {
+            return;
+        }
+
+        codex_outputs.sort_by(compare_codex_usage_outputs);
+        let mut sorted = codex_outputs.into_iter();
+        for usage in &mut self.subscription_usage {
+            if usage.provider == "Codex" {
+                if let Some(next) = sorted.next() {
+                    *usage = next;
+                }
+            }
+        }
+    }
+}
+
+fn compare_codex_usage_outputs(a: &UsageOutput, b: &UsageOutput) -> std::cmp::Ordering {
+    let active_order = codex_usage_is_active(b).cmp(&codex_usage_is_active(a));
+    if active_order != std::cmp::Ordering::Equal {
+        return active_order;
+    }
+
+    codex_usage_sort_key(a)
+        .cmp(&codex_usage_sort_key(b))
+        .then_with(|| codex_usage_account_id(a).cmp(codex_usage_account_id(b)))
+}
+
+fn codex_usage_is_active(output: &UsageOutput) -> bool {
+    output
+        .account
+        .as_ref()
+        .is_some_and(|account| account.is_active)
+}
+
+fn codex_usage_sort_key(output: &UsageOutput) -> String {
+    output
+        .account
+        .as_ref()
+        .map(|account| {
+            account
+                .label_name()
+                .unwrap_or(account.id.as_str())
+                .to_lowercase()
+        })
+        .unwrap_or_else(|| output.display_name().to_lowercase())
+}
+
+fn codex_usage_account_id(output: &UsageOutput) -> &str {
+    output
+        .account
+        .as_ref()
+        .map(|account| account.id.as_str())
+        .unwrap_or_default()
 }
 
 fn short_account_id(account_id: &str) -> String {

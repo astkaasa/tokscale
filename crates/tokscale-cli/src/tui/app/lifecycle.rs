@@ -20,7 +20,7 @@ use crate::tui::ui::widgets::get_provider_shade;
 
 #[cfg(test)]
 use super::test_usage_fetcher;
-use super::{App, TuiConfig};
+use super::{App, RefreshTrigger, TuiConfig};
 
 impl App {
     pub fn new_with_cached_data(config: TuiConfig, cached_data: Option<UsageData>) -> Result<Self> {
@@ -110,6 +110,7 @@ impl App {
             drilldown: None,
             auto_refresh,
             auto_refresh_interval,
+            last_auto_refresh: Instant::now(),
             last_refresh: Instant::now(),
             status_message: if has_data {
                 Some("Loaded from cache".to_string())
@@ -222,11 +223,9 @@ impl App {
             }
         }
 
-        if self.auto_refresh
-            && !self.background_loading
-            && self.last_refresh.elapsed() >= self.auto_refresh_interval
-        {
-            self.needs_reload = true;
+        if self.auto_refresh && self.last_auto_refresh.elapsed() >= self.auto_refresh_interval {
+            self.last_auto_refresh = Instant::now();
+            self.refresh_current_surface(RefreshTrigger::Auto);
         }
 
         if *self.dialog_needs_reload.borrow() {

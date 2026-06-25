@@ -399,6 +399,19 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         );
         push_key_fit(
             &mut spans,
+            "R",
+            "Auto",
+            Some("Auto"),
+            if app.auto_refresh {
+                Color::Green
+            } else {
+                Color::Blue
+            },
+            app.theme.muted,
+            width,
+        );
+        push_key_fit(
+            &mut spans,
             "q",
             "Quit",
             Some("Quit"),
@@ -699,6 +712,21 @@ fn render_scope_summary(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
 }
 
+fn auto_refresh_label(app: &App) -> String {
+    if app.auto_refresh {
+        format!("Auto {}s", app.auto_refresh_interval.as_secs())
+    } else {
+        "Auto off".to_string()
+    }
+}
+
+fn auto_refresh_field(app: &App) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        auto_refresh_label(app),
+        app.theme.subtle_text_style(),
+    )]
+}
+
 fn scope_summary_line(app: &App, width: u16) -> Line<'static> {
     let (total_tokens, total_cost, _) = if app.current_tab == Tab::Overview {
         app.overview_totals()
@@ -713,13 +741,8 @@ fn scope_summary_line(app: &App, width: u16) -> Line<'static> {
         (Tab::Overview, OverviewMode::Today) => "Today",
         _ => "All Time",
     };
-    let auto_label = if app.auto_refresh {
-        format!("Auto {}s", app.auto_refresh_interval.as_secs())
-    } else {
-        "Auto off".to_string()
-    };
     let scope_prefix = if width >= 46 { "Range: " } else { "" };
-    let auto_field = vec![Span::styled(auto_label, app.theme.subtle_text_style())];
+    let auto_field = auto_refresh_field(app);
     let scope_field = vec![
         Span::styled(scope_prefix, app.theme.subtle_text_style()),
         Span::styled(
@@ -814,6 +837,7 @@ fn usage_summary_line(app: &App, width: u16) -> Line<'static> {
             Span::styled("Usage: ", app.theme.subtle_text_style()),
             Span::styled(status.to_string(), Style::default().fg(color)),
         ],
+        auto_refresh_field(app),
         vec![Span::styled(
             format!("{provider_count} providers"),
             app.theme.subtle_text_style(),
@@ -884,6 +908,7 @@ fn pulse_summary_line(app: &App, width: u16) -> Line<'static> {
                     .add_modifier(Modifier::BOLD),
             ),
         ],
+        auto_refresh_field(app),
         vec![Span::styled(week, app.theme.subtle_text_style())],
         vec![Span::styled(notes, app.theme.subtle_text_style())],
     ];
@@ -1053,6 +1078,7 @@ mod tests {
     #[test]
     fn usage_summary_drops_fields_without_orphan_separator() {
         let mut app = make_app_on(Tab::Usage);
+        app.auto_refresh = false;
         app.subscription_usage = vec![
             usage_output(
                 "Codex",
@@ -1067,12 +1093,18 @@ mod tests {
 
         let compact = line_text(&usage_summary_line(&app, 44));
         assert!(compact.contains("Usage: Loaded"), "{compact}");
+        assert!(compact.contains("Auto off"), "{compact}");
         assert!(compact.contains("2 providers"), "{compact}");
         assert!(!compact.ends_with("  |  "), "{compact}");
 
-        let wide = line_text(&usage_summary_line(&app, 70));
+        let wide = line_text(&usage_summary_line(&app, 92));
         assert!(wide.contains("1 saved · 1 managed"), "{wide}");
         assert!(wide.contains("2 limits"), "{wide}");
+
+        app.auto_refresh = true;
+        app.auto_refresh_interval = std::time::Duration::from_secs(90);
+        let with_auto = line_text(&usage_summary_line(&app, 92));
+        assert!(with_auto.contains("Auto 90s"), "{with_auto}");
     }
 
     #[test]
@@ -1085,6 +1117,21 @@ mod tests {
         app.usage_fetch_attempted = true;
         let no_data = line_text(&usage_summary_line(&app, 70));
         assert!(no_data.contains("Usage: No data"), "{no_data}");
+    }
+
+    #[test]
+    fn pulse_summary_includes_auto_refresh_state() {
+        let mut app = make_app_on(Tab::Pulse);
+        app.auto_refresh = false;
+
+        let off = line_text(&pulse_summary_line(&app, 70));
+        assert!(off.contains("WeRead:"), "{off}");
+        assert!(off.contains("Auto off"), "{off}");
+
+        app.auto_refresh = true;
+        app.auto_refresh_interval = std::time::Duration::from_secs(75);
+        let on = line_text(&pulse_summary_line(&app, 70));
+        assert!(on.contains("Auto 75s"), "{on}");
     }
 
     #[test]
@@ -1314,7 +1361,10 @@ mod tests {
     #[test]
     fn background_refresh_keeps_action_hints_when_data_is_visible() {
         let mut app = make_app_on(Tab::Overview);
+        app.auto_refresh = false;
         app.background_loading = true;
+        app.status_message = None;
+        app.status_message_time = None;
         app.data.total_tokens = 42;
 
         let body = render_footer_text(&mut app, 120);

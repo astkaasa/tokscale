@@ -16,6 +16,7 @@ use ratatui::style::Color;
 use std::collections::BTreeMap;
 use std::env;
 use std::time::{Duration, Instant};
+use tokscale_core::pulse::weread::{WeReadNotesSummary, WeReadState, WeReadStatus};
 
 #[test]
 fn test_tab_workspaces() {
@@ -23,10 +24,10 @@ fn test_tab_workspaces() {
         Tab::workspaces(),
         &[
             Tab::Overview,
-            Tab::Pulse,
             Tab::Models,
             Tab::Timeline,
-            Tab::Usage
+            Tab::Usage,
+            Tab::Pulse
         ]
     );
 }
@@ -361,6 +362,67 @@ fn sample_subscription_usage() -> Vec<UsageOutput> {
     }]
 }
 
+#[test]
+fn test_codex_usage_sort_moves_active_account_to_first_codex_row() {
+    fn output(provider: &str, account: Option<UsageAccount>) -> UsageOutput {
+        UsageOutput {
+            provider: provider.to_string(),
+            account,
+            plan: None,
+            email: None,
+            metrics: vec![UsageMetric {
+                label: "Session".to_string(),
+                used_percent: 40.0,
+                remaining_percent: 60.0,
+                remaining_label: Some("60% left".to_string()),
+                resets_at: None,
+            }],
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        }
+    }
+
+    let mut app = make_app();
+    app.subscription_usage = vec![
+        output("Claude", None),
+        output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        ),
+        output("Warp/Oz", None),
+        output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_personal".to_string(),
+                label: Some("personal".to_string()),
+                is_active: false,
+            }),
+        ),
+    ];
+
+    app.mark_active_codex_account("acct_personal");
+    app.sort_codex_subscription_usage();
+
+    assert_eq!(app.subscription_usage[0].provider, "Claude");
+    assert_eq!(app.subscription_usage[2].provider, "Warp/Oz");
+    let codex_ids = app
+        .subscription_usage
+        .iter()
+        .filter(|usage| usage.provider == "Codex")
+        .filter_map(|usage| usage.account.as_ref().map(|account| account.id.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(codex_ids, vec!["acct_personal", "acct_work"]);
+    assert!(app.subscription_usage[1]
+        .account
+        .as_ref()
+        .is_some_and(|account| account.is_active));
+}
+
 fn sample_usage_fetcher() -> Vec<UsageOutput> {
     sample_subscription_usage()
 }
@@ -450,9 +512,6 @@ fn test_handle_key_tab_switch() {
     assert_eq!(app.current_tab, Tab::Overview);
 
     app.handle_key_event(key(KeyCode::Tab));
-    assert_eq!(app.current_tab, Tab::Pulse);
-
-    app.handle_key_event(key(KeyCode::Tab));
     assert_eq!(app.current_tab, Tab::Models);
 
     app.handle_key_event(key(KeyCode::Tab));
@@ -460,6 +519,9 @@ fn test_handle_key_tab_switch() {
 
     app.handle_key_event(key(KeyCode::Tab));
     assert_eq!(app.current_tab, Tab::Usage);
+
+    app.handle_key_event(key(KeyCode::Tab));
+    assert_eq!(app.current_tab, Tab::Pulse);
 
     app.handle_key_event(key(KeyCode::Tab));
     assert_eq!(app.current_tab, Tab::Overview);
@@ -471,6 +533,9 @@ fn test_handle_key_backtab_switch() {
     assert_eq!(app.current_tab, Tab::Overview);
 
     app.handle_key_event(key(KeyCode::BackTab));
+    assert_eq!(app.current_tab, Tab::Pulse);
+
+    app.handle_key_event(key(KeyCode::BackTab));
     assert_eq!(app.current_tab, Tab::Usage);
 
     app.handle_key_event(key(KeyCode::BackTab));
@@ -480,9 +545,6 @@ fn test_handle_key_backtab_switch() {
     assert_eq!(app.current_tab, Tab::Models);
 
     app.handle_key_event(key(KeyCode::BackTab));
-    assert_eq!(app.current_tab, Tab::Pulse);
-
-    app.handle_key_event(key(KeyCode::BackTab));
     assert_eq!(app.current_tab, Tab::Overview);
 }
 
@@ -490,16 +552,16 @@ fn test_handle_key_backtab_switch() {
 fn test_handle_key_left_right_switch() {
     let mut app = make_app();
     app.handle_key_event(key(KeyCode::Right));
-    assert_eq!(app.current_tab, Tab::Pulse);
-
-    app.handle_key_event(key(KeyCode::Right));
     assert_eq!(app.current_tab, Tab::Models);
 
     app.handle_key_event(key(KeyCode::Right));
     assert_eq!(app.current_tab, Tab::Timeline);
 
+    app.handle_key_event(key(KeyCode::Right));
+    assert_eq!(app.current_tab, Tab::Usage);
+
     app.handle_key_event(key(KeyCode::Left));
-    assert_eq!(app.current_tab, Tab::Models);
+    assert_eq!(app.current_tab, Tab::Timeline);
 }
 
 #[test]
@@ -1307,11 +1369,150 @@ fn test_handle_key_unrecognized_returns_false() {
 }
 
 #[test]
+#[serial_test::serial]
 fn test_handle_key_auto_refresh_toggle() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let prev_override = env::var_os("TOKSCALE_CONFIG_DIR");
+    unsafe {
+        env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+    }
+
     let mut app = make_app();
     let initial = app.auto_refresh;
     app.handle_key_event(key_with_mod(KeyCode::Char('R'), KeyModifiers::SHIFT));
     assert_ne!(app.auto_refresh, initial);
+
+    unsafe {
+        match prev_override {
+            Some(value) => env::set_var("TOKSCALE_CONFIG_DIR", value),
+            None => env::remove_var("TOKSCALE_CONFIG_DIR"),
+        }
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn test_enabling_auto_refresh_waits_for_next_interval() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let prev_override = env::var_os("TOKSCALE_CONFIG_DIR");
+    unsafe {
+        env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+    }
+
+    let mut app = make_app();
+    app.auto_refresh = false;
+    app.auto_refresh_interval = Duration::from_secs(60);
+    app.last_auto_refresh = Instant::now() - Duration::from_secs(120);
+
+    app.handle_key_event(key_with_mod(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    app.on_tick();
+
+    assert!(app.auto_refresh);
+    assert!(!app.needs_reload);
+
+    unsafe {
+        match prev_override {
+            Some(value) => env::set_var("TOKSCALE_CONFIG_DIR", value),
+            None => env::remove_var("TOKSCALE_CONFIG_DIR"),
+        }
+    }
+}
+
+#[test]
+fn test_manual_refresh_resets_auto_refresh_interval() {
+    let mut app = make_app();
+    app.auto_refresh = true;
+    app.auto_refresh_interval = Duration::from_secs(60);
+    app.last_auto_refresh = Instant::now() - Duration::from_secs(120);
+
+    app.handle_key_event(key(KeyCode::Char('r')));
+    assert!(app.needs_reload);
+
+    app.needs_reload = false;
+    app.on_tick();
+
+    assert!(!app.needs_reload);
+}
+
+#[test]
+fn test_auto_refresh_on_overview_refreshes_token_data_only() {
+    let mut app = make_app();
+    app.current_tab = Tab::Overview;
+    app.usage_fetcher = sample_usage_fetcher;
+    app.auto_refresh = true;
+    app.auto_refresh_interval = Duration::from_millis(1);
+    app.last_auto_refresh = Instant::now() - Duration::from_secs(1);
+
+    app.on_tick();
+
+    assert!(app.needs_reload);
+    assert!(!app.usage_fetch_attempted);
+    assert!(!app.is_fetching_usage());
+}
+
+#[test]
+fn test_auto_refresh_on_usage_refreshes_usage_only() {
+    let mut app = make_app();
+    app.current_tab = Tab::Usage;
+    app.usage_fetcher = sample_usage_fetcher;
+    app.auto_refresh = true;
+    app.auto_refresh_interval = Duration::from_millis(1);
+    app.last_auto_refresh = Instant::now() - Duration::from_secs(1);
+
+    app.on_tick();
+
+    assert!(!app.needs_reload);
+    assert!(app.usage_fetch_attempted);
+    assert!(app.is_fetching_usage() || !app.subscription_usage.is_empty());
+}
+
+#[test]
+#[serial_test::serial]
+fn test_auto_refresh_on_pulse_checks_stale_weread_only() {
+    let prev_api_key = env::var_os("WEREAD_API_KEY");
+    let prev_config_dir = env::var_os("TOKSCALE_CONFIG_DIR");
+    let temp = tempfile::TempDir::new().unwrap();
+    unsafe {
+        env::remove_var("WEREAD_API_KEY");
+        env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+    }
+
+    let mut app = make_app();
+    app.settings.env.remove("WEREAD_API_KEY");
+    app.current_tab = Tab::Pulse;
+    app.auto_refresh = true;
+    app.auto_refresh_interval = Duration::from_millis(1);
+    app.last_auto_refresh = Instant::now() - Duration::from_secs(1);
+    app.pulse.weread = WeReadState {
+        weekly: None,
+        monthly: None,
+        shelf: None,
+        notes: Some(WeReadNotesSummary {
+            total_books: 1,
+            total_notes: 2,
+            top_books: Vec::new(),
+        }),
+        status: WeReadStatus::Fresh,
+        last_refresh_ms: Some(0),
+        error: None,
+    };
+
+    app.on_tick();
+
+    assert!(!app.needs_reload);
+    assert_eq!(app.pulse.weread.status, WeReadStatus::Stale);
+    assert!(!app.is_fetching_weread());
+
+    unsafe {
+        match prev_api_key {
+            Some(value) => env::set_var("WEREAD_API_KEY", value),
+            None => env::remove_var("WEREAD_API_KEY"),
+        }
+        match prev_config_dir {
+            Some(value) => env::set_var("TOKSCALE_CONFIG_DIR", value),
+            None => env::remove_var("TOKSCALE_CONFIG_DIR"),
+        }
+    }
 }
 
 #[test]
@@ -1509,6 +1710,7 @@ fn test_handle_mouse_click_codex_use_opens_confirmation_dialog() {
 fn test_handle_mouse_click_usage_refresh_uses_subscription_refresh() {
     let mut app = make_app();
     app.usage_fetcher = sample_usage_fetcher;
+    app.current_tab = Tab::Usage;
     app.add_click_area(Rect::new(0, 0, 10, 2), ClickAction::UsageRefresh);
 
     let event = MouseEvent {
@@ -1519,6 +1721,7 @@ fn test_handle_mouse_click_usage_refresh_uses_subscription_refresh() {
     };
     app.handle_mouse_event(event);
 
+    assert!(!app.needs_reload);
     assert!(app.is_fetching_usage());
     assert_eq!(
         app.status_message.as_deref(),

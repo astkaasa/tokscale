@@ -5,10 +5,50 @@ use crate::tui::themes::Theme;
 
 use super::App;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefreshTrigger {
+    Manual,
+    Auto,
+}
+
 impl App {
+    pub(crate) fn refresh_current_surface(&mut self, trigger: RefreshTrigger) {
+        match self.current_tab {
+            Tab::Usage => match trigger {
+                RefreshTrigger::Manual => self.refresh_usage(),
+                RefreshTrigger::Auto => self.fetch_subscription_usage(),
+            },
+            Tab::Pulse => match trigger {
+                RefreshTrigger::Manual => self.refresh_weread(),
+                RefreshTrigger::Auto => self.maybe_fetch_weread_on_entry(),
+            },
+            Tab::Overview | Tab::Models | Tab::Timeline => {
+                self.refresh_token_usage(trigger);
+            }
+        }
+
+        if trigger == RefreshTrigger::Manual {
+            self.last_auto_refresh = Instant::now();
+        }
+    }
+
+    fn refresh_token_usage(&mut self, trigger: RefreshTrigger) {
+        if self.background_loading {
+            if trigger == RefreshTrigger::Manual {
+                self.set_status("Refresh already in progress");
+            }
+            return;
+        }
+
+        self.needs_reload = true;
+    }
+
     pub(crate) fn toggle_auto_refresh(&mut self) {
         self.auto_refresh = !self.auto_refresh;
         self.settings.auto_refresh_enabled = self.auto_refresh;
+        if self.auto_refresh {
+            self.last_auto_refresh = Instant::now();
+        }
         let save_result = self.settings.save();
         let msg = if self.auto_refresh {
             format!(
@@ -29,6 +69,7 @@ impl App {
         let ms = self.auto_refresh_interval.as_millis() as u64;
         let new_ms = ms.saturating_add(10_000).min(300_000);
         self.auto_refresh_interval = Duration::from_millis(new_ms);
+        self.last_auto_refresh = Instant::now();
         self.settings.auto_refresh_ms = new_ms;
         let save_result = self.settings.save();
         let msg = format!("Refresh interval: {}s", new_ms / 1000);
@@ -43,6 +84,7 @@ impl App {
         let ms = self.auto_refresh_interval.as_millis() as u64;
         let new_ms = ms.saturating_sub(10_000).max(30_000);
         self.auto_refresh_interval = Duration::from_millis(new_ms);
+        self.last_auto_refresh = Instant::now();
         self.settings.auto_refresh_ms = new_ms;
         let save_result = self.settings.save();
         let msg = format!("Refresh interval: {}s", new_ms / 1000);

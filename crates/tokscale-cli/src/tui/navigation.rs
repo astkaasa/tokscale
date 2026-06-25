@@ -11,10 +11,10 @@ impl Tab {
     pub(crate) fn workspaces() -> &'static [Tab] {
         &[
             Tab::Overview,
-            Tab::Pulse,
             Tab::Models,
             Tab::Timeline,
             Tab::Usage,
+            Tab::Pulse,
         ]
     }
 

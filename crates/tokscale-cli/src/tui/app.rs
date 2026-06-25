@@ -79,6 +79,7 @@ pub struct App {
 
     pub auto_refresh: bool,
     pub auto_refresh_interval: Duration,
+    pub last_auto_refresh: Instant,
     pub last_refresh: Instant,
 
     pub status_message: Option<String>,
@@ -124,6 +125,7 @@ pub struct App {
 }
 
 mod actions;
+pub(crate) use actions::RefreshTrigger;
 mod drilldown;
 mod input;
 mod lifecycle;

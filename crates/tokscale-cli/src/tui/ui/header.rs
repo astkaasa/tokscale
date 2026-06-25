@@ -370,8 +370,8 @@ mod tests {
             vec![
                 Tab::Timeline,
                 Tab::Usage,
-                Tab::Models,
                 Tab::Pulse,
+                Tab::Models,
                 Tab::Overview
             ]
         );
