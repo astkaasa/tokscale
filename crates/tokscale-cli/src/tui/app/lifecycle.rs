@@ -144,6 +144,7 @@ impl App {
             confirmed_codex_reset_account_id,
             hide_usage_emails: true,
             usage_fetch_attempted: false,
+            usage_fetch_diagnostics: Vec::new(),
             usage_job: BackgroundJob::default(),
             codex_reset_job: BackgroundJob::default(),
             pulse,
@@ -234,19 +235,38 @@ impl App {
         }
 
         match self.usage_job.poll() {
-            Some(BackgroundJobPoll::Ready(results)) => {
-                self.subscription_usage = results;
+            Some(BackgroundJobPoll::Ready(report)) => {
+                self.subscription_usage = report.outputs;
+                self.usage_fetch_diagnostics = report.diagnostics;
                 self.clamp_selection();
                 if !self.subscription_usage.is_empty() {
                     crate::commands::usage::save_cache(&self.subscription_usage);
-                    self.status_message = Some("Usage data loaded".into());
+                    self.status_message = if self.usage_fetch_diagnostics.is_empty() {
+                        Some("Usage data loaded".into())
+                    } else {
+                        Some(format!(
+                            "Usage data loaded with {} issue{}",
+                            self.usage_fetch_diagnostics.len(),
+                            if self.usage_fetch_diagnostics.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ))
+                    };
                 } else {
                     crate::commands::usage::clear_cache();
-                    self.status_message = Some("No usage data available".into());
+                    self.status_message =
+                        if let Some(diagnostic) = self.usage_fetch_diagnostics.first() {
+                            Some(format!("Usage fetch failed: {}", diagnostic.display_name()))
+                        } else {
+                            Some("No usage data available".into())
+                        };
                 }
                 self.status_message_time = Some(std::time::Instant::now());
             }
             Some(BackgroundJobPoll::Disconnected) => {
+                self.usage_fetch_diagnostics.clear();
                 self.status_message = Some("Usage fetch failed".into());
                 self.status_message_time = Some(std::time::Instant::now());
             }

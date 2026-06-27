@@ -89,6 +89,116 @@ pub struct UsageAccount {
     pub is_active: bool,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UsageFetchDiagnostic {
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<UsageAccount>,
+    #[serde(default)]
+    pub kind: UsageFetchDiagnosticKind,
+    #[serde(default)]
+    pub severity: UsageFetchDiagnosticSeverity,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageFetchDiagnosticKind {
+    #[default]
+    FetchFailed,
+    ImportCurrentLoginFailed,
+    ProviderPanicked,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageFetchDiagnosticSeverity {
+    Info,
+    Warning,
+    #[default]
+    Error,
+}
+
+impl UsageFetchDiagnostic {
+    pub fn new(
+        provider: impl Into<String>,
+        account: Option<UsageAccount>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::with_kind(
+            provider,
+            account,
+            UsageFetchDiagnosticKind::FetchFailed,
+            UsageFetchDiagnosticSeverity::Error,
+            message,
+        )
+    }
+
+    pub fn with_kind(
+        provider: impl Into<String>,
+        account: Option<UsageAccount>,
+        kind: UsageFetchDiagnosticKind,
+        severity: UsageFetchDiagnosticSeverity,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            account,
+            kind,
+            severity,
+            message: message.into(),
+        }
+    }
+
+    pub fn display_name(&self) -> String {
+        match &self.account {
+            Some(account) => format!("{} ({})", self.provider, account.display_name()),
+            None => self.provider.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UsageFetchReport {
+    pub outputs: Vec<UsageOutput>,
+    pub diagnostics: Vec<UsageFetchDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageFetchIntent {
+    CliReadOnly,
+    TuiSurface,
+}
+
+impl UsageFetchReport {
+    fn from_outputs(outputs: Vec<UsageOutput>) -> Self {
+        Self {
+            outputs,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn from_error(
+        provider: impl Into<String>,
+        account: Option<UsageAccount>,
+        error: impl std::fmt::Display,
+    ) -> Self {
+        Self {
+            outputs: Vec::new(),
+            diagnostics: vec![UsageFetchDiagnostic::new(
+                provider,
+                account,
+                error.to_string(),
+            )],
+        }
+    }
+
+    fn extend(&mut self, other: UsageFetchReport) {
+        self.outputs.extend(other.outputs);
+        self.diagnostics.extend(other.diagnostics);
+    }
+}
+
 impl UsageAccount {
     pub fn label_name(&self) -> Option<&str> {
         self.label
@@ -207,40 +317,63 @@ pub fn load_cache() -> Option<Vec<UsageOutput>> {
 
 // ── Public API ──
 
-type UsageProvider = (&'static str, fn() -> bool, fn() -> Result<Vec<UsageOutput>>);
+type UsageProvider = (&'static str, fn() -> bool, fn() -> UsageFetchReport);
 
-fn fetch_amp() -> Result<Vec<UsageOutput>> {
-    amp::fetch().map(|output| vec![output])
+fn fetch_single_provider(provider: &'static str, result: Result<UsageOutput>) -> UsageFetchReport {
+    fetch_provider(provider, result.map(|output| vec![output]))
 }
 
-fn fetch_claude() -> Result<Vec<UsageOutput>> {
-    claude::fetch().map(|output| vec![output])
+fn fetch_provider(provider: &'static str, result: Result<Vec<UsageOutput>>) -> UsageFetchReport {
+    match result {
+        Ok(outputs) => UsageFetchReport::from_outputs(outputs),
+        Err(error) => UsageFetchReport::from_error(provider, None, error),
+    }
 }
 
-fn fetch_copilot() -> Result<Vec<UsageOutput>> {
-    copilot::fetch().map(|output| vec![output])
+fn fetch_amp() -> UsageFetchReport {
+    fetch_single_provider("Amp", amp::fetch())
 }
 
-fn fetch_kimi() -> Result<Vec<UsageOutput>> {
-    kimi::fetch().map(|output| vec![output])
+fn fetch_claude() -> UsageFetchReport {
+    fetch_single_provider("Claude", claude::fetch())
 }
 
-fn fetch_minimax() -> Result<Vec<UsageOutput>> {
-    minimax::fetch().map(|output| vec![output])
+fn fetch_copilot() -> UsageFetchReport {
+    fetch_single_provider("Copilot", copilot::fetch())
 }
 
-fn fetch_warp() -> Result<Vec<UsageOutput>> {
-    warp::fetch().map(|output| vec![output])
+fn fetch_kimi() -> UsageFetchReport {
+    fetch_single_provider("Kimi", kimi::fetch())
 }
 
-fn fetch_zai() -> Result<Vec<UsageOutput>> {
-    zai::fetch().map(|output| vec![output])
+fn fetch_minimax() -> UsageFetchReport {
+    fetch_single_provider("MiniMax", minimax::fetch())
 }
 
-pub fn fetch_all() -> Vec<UsageOutput> {
+fn fetch_warp() -> UsageFetchReport {
+    fetch_single_provider("Warp/Oz", warp::fetch())
+}
+
+fn fetch_zai() -> UsageFetchReport {
+    fetch_single_provider("Z.ai", zai::fetch())
+}
+
+pub fn fetch_all_report() -> UsageFetchReport {
+    fetch_all_report_with_intent(UsageFetchIntent::CliReadOnly)
+}
+
+pub fn fetch_all_report_with_intent(intent: UsageFetchIntent) -> UsageFetchReport {
+    let codex_fetch = match intent {
+        UsageFetchIntent::CliReadOnly => codex::fetch_all_report,
+        UsageFetchIntent::TuiSurface => codex::fetch_all_report_importing_current_auth,
+    };
+    fetch_all_report_with_codex(codex_fetch)
+}
+
+fn fetch_all_report_with_codex(codex_fetch: fn() -> UsageFetchReport) -> UsageFetchReport {
     let providers: Vec<UsageProvider> = vec![
         ("Claude", claude::has_credentials, fetch_claude),
-        ("Codex", codex::has_credentials, codex::fetch_all),
+        ("Codex", codex::has_credentials, codex_fetch),
         ("Z.ai", zai::has_credentials, fetch_zai),
         ("Amp", amp::has_credentials, fetch_amp),
         ("Copilot", copilot::has_credentials, fetch_copilot),
@@ -252,18 +385,29 @@ pub fn fetch_all() -> Vec<UsageOutput> {
     let active: Vec<_> = providers.into_iter().filter(|(_, has, _)| has()).collect();
 
     if active.is_empty() {
-        return vec![];
+        return UsageFetchReport::default();
     }
 
     std::thread::scope(|s| {
-        active
+        let handles = active
             .into_iter()
-            .map(|(_, _, fetch)| s.spawn(move || fetch().ok()))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .filter_map(|h| h.join().ok().flatten())
-            .flatten()
-            .collect()
+            .map(|(provider, _, fetch)| (provider, s.spawn(fetch)))
+            .collect::<Vec<_>>();
+
+        let mut report = UsageFetchReport::default();
+        for (provider, handle) in handles {
+            match handle.join() {
+                Ok(provider_report) => report.extend(provider_report),
+                Err(_) => report.diagnostics.push(UsageFetchDiagnostic::with_kind(
+                    provider,
+                    None,
+                    UsageFetchDiagnosticKind::ProviderPanicked,
+                    UsageFetchDiagnosticSeverity::Error,
+                    "usage fetch worker panicked",
+                )),
+            }
+        }
+        report
     })
 }
 
@@ -344,11 +488,21 @@ fn render_light(output: &UsageOutput) {
 }
 
 pub fn run(json: bool, _light: bool) -> Result<()> {
-    let outputs = fetch_all();
+    let report = fetch_all_report();
+    if report.outputs.is_empty() {
+        if let Some(diagnostic) = report.diagnostics.first() {
+            anyhow::bail!(
+                "Usage fetch failed for {}: {}",
+                diagnostic.display_name(),
+                diagnostic.message
+            );
+        }
+    }
+
     if json {
-        println!("{}", serde_json::to_string_pretty(&outputs)?);
+        println!("{}", serde_json::to_string_pretty(&report.outputs)?);
     } else {
-        for o in &outputs {
+        for o in &report.outputs {
             render_light(o);
         }
     }
@@ -358,6 +512,22 @@ pub fn run(json: bool, _light: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_fetch_intent_exposes_tui_surface_variant() {
+        assert!(matches!(
+            UsageFetchIntent::TuiSurface,
+            UsageFetchIntent::TuiSurface
+        ));
+    }
+
+    #[test]
+    fn usage_fetch_diagnostic_defaults_to_fetch_error() {
+        let diagnostic = UsageFetchDiagnostic::new("Codex", None, "failed");
+
+        assert_eq!(diagnostic.kind, UsageFetchDiagnosticKind::FetchFailed);
+        assert_eq!(diagnostic.severity, UsageFetchDiagnosticSeverity::Error);
+    }
 
     #[test]
     fn usage_output_display_name_includes_account_label() {

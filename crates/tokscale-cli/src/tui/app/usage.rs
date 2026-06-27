@@ -14,6 +14,7 @@ impl App {
             return; // already fetching
         }
         self.usage_fetch_attempted = true;
+        self.usage_fetch_diagnostics.clear();
         self.status_message = Some("Fetching usage data...".into());
         self.status_message_time = Some(std::time::Instant::now());
         #[cfg(test)]
@@ -22,7 +23,9 @@ impl App {
             #[cfg(test)]
             let results = usage_fetcher();
             #[cfg(not(test))]
-            let results = crate::commands::usage::fetch_all();
+            let results = crate::commands::usage::fetch_all_report_with_intent(
+                crate::commands::usage::UsageFetchIntent::TuiSurface,
+            );
             results
         });
     }
@@ -149,6 +152,16 @@ impl App {
     }
 
     pub fn confirm_codex_account_removal(&mut self, account_id: &str) {
+        if self.subscription_usage.iter().any(|usage| {
+            usage
+                .account
+                .as_ref()
+                .is_some_and(|account| account.id == account_id && account.is_active)
+        }) {
+            self.set_status("Switch Codex accounts before removing the current account");
+            return;
+        }
+
         let account_label = self.codex_account_label(account_id);
         let dialog = ConfirmDialog::codex_remove(
             account_id.to_string(),
@@ -189,10 +202,15 @@ impl App {
             return;
         }
 
-        let Some(account_id) = output.account.as_ref().map(|account| account.id.clone()) else {
+        let Some(account) = output.account.as_ref() else {
             self.set_status("Select a saved Codex account to remove");
             return;
         };
+        if account.is_active {
+            self.set_status("Switch Codex accounts before removing the current account");
+            return;
+        }
+        let account_id = account.id.clone();
 
         self.confirm_codex_account_removal(&account_id);
     }

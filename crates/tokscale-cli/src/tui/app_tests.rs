@@ -4,7 +4,10 @@ use super::{
     PeriodDetailKey, SortDirection, SortField, Tab, ThemePreference, TimelineGranularity,
     TuiConfig,
 };
-use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput, UsageResetCredits};
+use crate::commands::usage::{
+    UsageAccount, UsageFetchDiagnostic, UsageFetchReport, UsageMetric, UsageOutput,
+    UsageResetCredits,
+};
 use crate::tui::data::{
     DailyModelInfo, DailySourceInfo, DailyUsage, ModelUsage, TokenBreakdown, UsageData,
 };
@@ -423,8 +426,37 @@ fn test_codex_usage_sort_moves_active_account_to_first_codex_row() {
         .is_some_and(|account| account.is_active));
 }
 
-fn sample_usage_fetcher() -> Vec<UsageOutput> {
-    sample_subscription_usage()
+fn sample_usage_fetcher() -> UsageFetchReport {
+    UsageFetchReport {
+        outputs: sample_subscription_usage(),
+        diagnostics: Vec::new(),
+    }
+}
+
+fn failing_usage_fetcher() -> UsageFetchReport {
+    UsageFetchReport {
+        outputs: Vec::new(),
+        diagnostics: vec![UsageFetchDiagnostic::new(
+            "Codex",
+            None,
+            "token refresh failed",
+        )],
+    }
+}
+
+fn partial_usage_fetcher() -> UsageFetchReport {
+    UsageFetchReport {
+        outputs: sample_subscription_usage(),
+        diagnostics: vec![UsageFetchDiagnostic::new(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_personal".to_string(),
+                label: Some("personal".to_string()),
+                is_active: false,
+            }),
+            "usage endpoint rejected credentials",
+        )],
+    }
 }
 
 fn daily_usage(date: &str, cost: f64, models: Vec<(&str, &str, f64)>) -> DailyUsage {
@@ -1331,6 +1363,54 @@ fn test_handle_key_r_on_usage_refreshes_subscription_usage() {
 }
 
 #[test]
+fn test_handle_key_r_on_usage_reports_fetch_failure_diagnostic() {
+    let mut app = make_app();
+    app.usage_fetcher = failing_usage_fetcher;
+    app.current_tab = Tab::Usage;
+
+    app.handle_key_event(key(KeyCode::Char('r')));
+
+    for _ in 0..20 {
+        app.on_tick();
+        if !app.is_fetching_usage() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert!(app.subscription_usage.is_empty());
+    assert_eq!(app.usage_fetch_diagnostics.len(), 1);
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Usage fetch failed: Codex")
+    );
+}
+
+#[test]
+fn test_handle_key_r_on_usage_keeps_partial_fetch_diagnostic() {
+    let mut app = make_app();
+    app.usage_fetcher = partial_usage_fetcher;
+    app.current_tab = Tab::Usage;
+
+    app.handle_key_event(key(KeyCode::Char('r')));
+
+    for _ in 0..20 {
+        app.on_tick();
+        if !app.is_fetching_usage() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(app.subscription_usage.len(), 1);
+    assert_eq!(app.usage_fetch_diagnostics.len(), 1);
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Usage data loaded with 1 issue")
+    );
+}
+
+#[test]
 fn test_switching_to_usage_starts_initial_usage_fetch() {
     let mut app = make_app();
     app.usage_fetcher = sample_usage_fetcher;
@@ -1370,10 +1450,30 @@ fn test_handle_key_u_on_usage_opens_codex_switch_confirmation_dialog() {
 }
 
 #[test]
-fn test_handle_key_delete_on_usage_opens_codex_remove_confirmation_dialog() {
+fn test_handle_key_delete_on_active_usage_refuses_codex_remove() {
     let mut app = make_app();
     app.current_tab = Tab::Usage;
     app.subscription_usage = sample_subscription_usage();
+
+    app.handle_key_event(key(KeyCode::Delete));
+
+    assert!(!app.dialog_stack.is_active());
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Switch Codex accounts before removing the current account")
+    );
+}
+
+#[test]
+fn test_handle_key_delete_on_inactive_usage_opens_codex_remove_confirmation_dialog() {
+    let mut app = make_app();
+    app.current_tab = Tab::Usage;
+    app.subscription_usage = sample_subscription_usage();
+    app.subscription_usage[0]
+        .account
+        .as_mut()
+        .unwrap()
+        .is_active = false;
 
     app.handle_key_event(key(KeyCode::Delete));
 
@@ -1777,6 +1877,33 @@ fn test_handle_mouse_click_codex_remove_opens_confirmation_dialog() {
     assert_eq!(
         app.status_message.as_deref(),
         Some("Confirm Codex account removal")
+    );
+}
+
+#[test]
+fn test_handle_mouse_click_codex_remove_refuses_active_account() {
+    let mut app = make_app();
+    app.current_tab = Tab::Usage;
+    app.subscription_usage = sample_subscription_usage();
+    app.add_click_area(
+        Rect::new(0, 0, 10, 2),
+        ClickAction::CodexRemoveAccount {
+            account_id: "acct_work".to_string(),
+        },
+    );
+
+    let event = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 5,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse_event(event);
+
+    assert!(!app.dialog_stack.is_active());
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Switch Codex accounts before removing the current account")
     );
 }
 

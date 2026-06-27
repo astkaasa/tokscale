@@ -38,11 +38,11 @@ pub struct TuiConfig {
 }
 
 #[cfg(test)]
-type UsageFetcher = fn() -> Vec<crate::commands::usage::UsageOutput>;
+type UsageFetcher = fn() -> crate::commands::usage::UsageFetchReport;
 
 #[cfg(test)]
-fn test_usage_fetcher() -> Vec<crate::commands::usage::UsageOutput> {
-    Vec::new()
+fn test_usage_fetcher() -> crate::commands::usage::UsageFetchReport {
+    crate::commands::usage::UsageFetchReport::default()
 }
 
 pub struct App {
@@ -112,7 +112,8 @@ pub struct App {
     pub hide_usage_emails: bool,
 
     pub usage_fetch_attempted: bool,
-    usage_job: BackgroundJob<Vec<crate::commands::usage::UsageOutput>>,
+    pub usage_fetch_diagnostics: Vec<crate::commands::usage::UsageFetchDiagnostic>,
+    usage_job: BackgroundJob<crate::commands::usage::UsageFetchReport>,
     codex_reset_job:
         BackgroundJob<Result<crate::commands::usage::codex::RateLimitResetConsumeResult, String>>,
     pub pulse: PulseState,
