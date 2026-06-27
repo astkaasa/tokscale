@@ -45,7 +45,7 @@ impl PulseState {
         self.weread.status = WeReadStatus::Loading;
 
         self.weread_job.start(move || {
-            weread::fetch_current(&api_key).map_err(|error| sanitize_error(error, &api_key))
+            weread::fetch_current(&api_key).map_err(|error| weread::sanitize_error(error, &api_key))
         });
 
         Some("Syncing WeRead...")
@@ -78,12 +78,7 @@ impl PulseState {
                 })
             }
             BackgroundJobPoll::Ready(Err(message)) => {
-                if message.starts_with("WeRead skill upgrade required:") {
-                    self.weread.status = WeReadStatus::UpgradeRequired;
-                    self.weread.error = Some(message);
-                } else {
-                    self.weread.mark_error(message);
-                }
+                self.weread.mark_sync_failure(message);
                 Some(PulsePollUpdate {
                     status: "WeRead sync failed",
                     loaded: false,
@@ -99,13 +94,4 @@ impl PulseState {
             }
         }
     }
-}
-
-fn sanitize_error(error: anyhow::Error, secret: &str) -> String {
-    let mut message = error.to_string();
-    let secret = secret.trim();
-    if !secret.is_empty() {
-        message = message.replace(secret, "[redacted]");
-    }
-    message
 }

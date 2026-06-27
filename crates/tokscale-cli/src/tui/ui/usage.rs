@@ -85,8 +85,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             render_ready(frame, app, content);
         }
-    } else if outputs.iter().all(|output| output.metrics.is_empty()) {
-        render_empty(frame, app, content);
     } else {
         render_loaded(frame, app, content, &outputs);
     }
@@ -1227,25 +1225,30 @@ fn selected_account_actions_line(
     if let Some(account) = &selected.account {
         let mut spans = Vec::new();
         let mut buttons = Vec::new();
+        let compact = area.width < 48;
         if has_available_reset_credit(selected) {
-            buttons.push(reset_account_button(&account.id));
+            buttons.push(reset_account_button(&account.id, compact));
         }
         if account.is_active {
             spans.push(Span::styled(
-                "  Current account  ",
+                if compact {
+                    "  Current  "
+                } else {
+                    "  Current account  "
+                },
                 app.theme.subtle_text_style(),
             ));
             let x = area
                 .x
                 .saturating_add(Line::from(spans.clone()).width() as u16);
-            buttons.push(remove_account_button(&account.id));
+            buttons.push(remove_account_button(&account.id, compact));
             push_click_buttons(&mut spans, app, buttons, x, y, area.right());
         } else {
             spans.push(Span::raw("  "));
             let x = area.x.saturating_add(2);
-            let mut all_buttons = vec![use_account_button(&account.id)];
+            let mut all_buttons = vec![use_account_button(&account.id, compact)];
             all_buttons.extend(buttons);
-            all_buttons.push(remove_account_button(&account.id));
+            all_buttons.push(remove_account_button(&account.id, compact));
             push_click_buttons(&mut spans, app, all_buttons, x, y, area.right());
         }
         return Line::from(spans);
@@ -1740,9 +1743,9 @@ fn account_table_row_style(app: &App, index: usize) -> Style {
     }
 }
 
-fn use_account_button(account_id: &str) -> ButtonSpec {
+fn use_account_button(account_id: &str, compact: bool) -> ButtonSpec {
     ButtonSpec {
-        label: "Use Account".to_string(),
+        label: if compact { "u Use" } else { "u Use Account" }.to_string(),
         kind: ButtonKind::Primary,
         action: ClickAction::CodexUseAccount {
             account_id: account_id.to_string(),
@@ -1750,9 +1753,9 @@ fn use_account_button(account_id: &str) -> ButtonSpec {
     }
 }
 
-fn remove_account_button(account_id: &str) -> ButtonSpec {
+fn remove_account_button(account_id: &str, compact: bool) -> ButtonSpec {
     ButtonSpec {
-        label: "Remove".to_string(),
+        label: if compact { "Del Rm" } else { "Del Remove" }.to_string(),
         kind: ButtonKind::Danger,
         action: ClickAction::CodexRemoveAccount {
             account_id: account_id.to_string(),
@@ -1760,9 +1763,9 @@ fn remove_account_button(account_id: &str) -> ButtonSpec {
     }
 }
 
-fn reset_account_button(account_id: &str) -> ButtonSpec {
+fn reset_account_button(account_id: &str, compact: bool) -> ButtonSpec {
     ButtonSpec {
-        label: "Reset".to_string(),
+        label: if compact { "x Rst" } else { "x Reset" }.to_string(),
         kind: ButtonKind::Warning,
         action: ClickAction::CodexResetAccount {
             account_id: account_id.to_string(),
@@ -2453,7 +2456,7 @@ mod tests {
         assert!(body.contains("Keep current account"), "{body}");
         assert!(body.contains("work"), "{body}");
         assert!(body.contains("personal"), "{body}");
-        assert!(body.contains(" Remove "), "{body}");
+        assert!(body.contains(" Del Remove "), "{body}");
         assert!(body.contains("Show Emails"), "{body}");
     }
 
@@ -2483,8 +2486,30 @@ mod tests {
         let body = render_body(&mut app, 150, 28);
 
         assert!(body.contains("Codex (personal)"), "{body}");
-        assert!(body.contains("Use Account"), "{body}");
+        assert!(body.contains("u Use Account"), "{body}");
         assert!(body.contains("saved store"), "{body}");
+    }
+
+    #[test]
+    fn usage_renders_saved_account_when_metrics_are_empty() {
+        let mut app = make_app();
+        let mut saved = output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        );
+        saved.metrics.clear();
+        app.subscription_usage = vec![saved];
+
+        let body = render_body(&mut app, 150, 28);
+
+        assert!(body.contains("Selected Account"), "{body}");
+        assert!(body.contains("Codex (work)"), "{body}");
+        assert!(body.contains("No quota metrics returned"), "{body}");
+        assert!(!body.contains("No usage data loaded"), "{body}");
     }
 
     #[test]
@@ -2549,7 +2574,7 @@ mod tests {
             .expect("missing saved account table row");
         let actions_line = body
             .lines()
-            .find(|line| line.contains("Use Account") && line.contains("Remove"))
+            .find(|line| line.contains("u Use Account") && line.contains("Del Remove"))
             .expect("missing selected account action buttons");
 
         assert!(!saved_row.contains("Use Account"), "{saved_row}");
@@ -2851,7 +2876,7 @@ mod tests {
 
         assert!(body.contains("work"), "{body}");
         assert!(body.contains("personal"), "{body}");
-        assert!(body.contains(" Remove "), "{body}");
+        assert!(body.contains(" Del Remove "), "{body}");
     }
 
     #[test]

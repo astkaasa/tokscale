@@ -159,6 +159,44 @@ impl App {
         self.set_status("Confirm Codex account removal");
     }
 
+    pub fn confirm_selected_codex_account_switch(&mut self) {
+        let Some(output) = self.subscription_usage.get(self.selected_index) else {
+            self.set_status("No usage account selected");
+            return;
+        };
+
+        if output.provider != "Codex" {
+            self.set_status("Codex switch only supports Codex accounts");
+            return;
+        }
+
+        let Some(account_id) = output.account.as_ref().map(|account| account.id.clone()) else {
+            self.set_status("Select a saved Codex account to use");
+            return;
+        };
+
+        self.confirm_codex_account_switch(&account_id);
+    }
+
+    pub fn confirm_selected_codex_account_removal(&mut self) {
+        let Some(output) = self.subscription_usage.get(self.selected_index) else {
+            self.set_status("No usage account selected");
+            return;
+        };
+
+        if output.provider != "Codex" {
+            self.set_status("Codex removal only supports Codex accounts");
+            return;
+        }
+
+        let Some(account_id) = output.account.as_ref().map(|account| account.id.clone()) else {
+            self.set_status("Select a saved Codex account to remove");
+            return;
+        };
+
+        self.confirm_codex_account_removal(&account_id);
+    }
+
     pub fn confirm_codex_rate_limit_reset(&mut self, account_id: &str) {
         if self.codex_reset_job.is_running() {
             self.set_status("Codex reset already in progress");

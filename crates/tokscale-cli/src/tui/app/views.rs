@@ -57,11 +57,7 @@ impl App {
                 self.data.models.len(),
             ),
             OverviewMode::Today => {
-                let tokens = self
-                    .today_usage()
-                    .map(|day| day.tokens.total())
-                    .unwrap_or(0);
-                let cost = self.today_usage().map(|day| day.cost).unwrap_or(0.0);
+                let (tokens, cost) = self.today_usage_totals();
                 (tokens, cost, self.overview_model_len())
             }
         }
@@ -70,21 +66,67 @@ impl App {
     pub fn overview_model_len(&self) -> usize {
         match self.overview_mode {
             OverviewMode::All => self.data.models.len(),
-            OverviewMode::Today => {
-                let Some(day) = self.today_usage() else {
-                    return 0;
-                };
-                let mut models = BTreeSet::new();
-                for source_info in day.source_breakdown.values() {
-                    for info in source_info.models.values() {
-                        let provider =
-                            crate::tui::colors::provider_color_key(&info.provider, &info.color_key);
-                        models.insert((provider, info.display_name.clone()));
-                    }
-                }
-                models.len()
+            OverviewMode::Today => self.today_model_len(),
+        }
+    }
+
+    fn today_usage_totals(&self) -> (u64, f64) {
+        if let Some(day) = self
+            .today_usage()
+            .filter(|day| day.tokens.total() > 0 || day.cost > 0.0)
+        {
+            return (day.tokens.total(), day.cost);
+        }
+
+        let today = self.overview_date();
+        let mut tokens = 0u64;
+        let mut cost = 0.0;
+        for hour in self
+            .data
+            .hourly
+            .iter()
+            .filter(|hour| hour.datetime.date() == today)
+        {
+            tokens = tokens.saturating_add(hour.tokens.total());
+            if hour.cost.is_finite() {
+                cost += hour.cost;
             }
         }
+
+        (tokens, cost)
+    }
+
+    fn today_model_len(&self) -> usize {
+        let today = self.overview_date();
+        let mut hourly_models = BTreeSet::new();
+        for hour in self
+            .data
+            .hourly
+            .iter()
+            .filter(|hour| hour.datetime.date() == today)
+        {
+            for info in hour.models.values() {
+                let provider =
+                    crate::tui::colors::provider_color_key(&info.provider, &info.color_key);
+                hourly_models.insert((provider, info.display_name.clone(), info.color_key.clone()));
+            }
+        }
+        if !hourly_models.is_empty() {
+            return hourly_models.len();
+        }
+
+        let Some(day) = self.today_usage() else {
+            return 0;
+        };
+        let mut daily_models = BTreeSet::new();
+        for source_info in day.source_breakdown.values() {
+            for info in source_info.models.values() {
+                let provider =
+                    crate::tui::colors::provider_color_key(&info.provider, &info.color_key);
+                daily_models.insert((provider, info.display_name.clone(), info.color_key.clone()));
+            }
+        }
+        daily_models.len()
     }
 
     pub fn get_sorted_models(&self) -> Vec<&ModelUsage> {

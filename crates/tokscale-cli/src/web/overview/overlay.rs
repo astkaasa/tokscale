@@ -640,7 +640,7 @@ fn chart_overlay_kind(row: &str) -> Option<ChartOverlayKind> {
     if row.contains("Daily Activity") {
         return Some(ChartOverlayKind::DailyHeatmap);
     }
-    if row.contains("Usage Trend") {
+    if row.contains("Usage Trend") || row.contains("Cost by hour") {
         return Some(ChartOverlayKind::StackedBar);
     }
     None

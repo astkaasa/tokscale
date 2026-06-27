@@ -10,6 +10,7 @@ use super::model::{
     local_date_from_unix_seconds, now_millis, week_start_for, WeReadBookRef, WeReadCategory,
     WeReadDay, WeReadFocusBook, WeReadMonthly, WeReadNotebookSummary, WeReadNotesSummary,
     WeReadShelfSummary, WeReadState, WeReadStatus, WeReadWeekly, SKILL_VERSION,
+    UPGRADE_REQUIRED_PREFIX,
 };
 
 const GATEWAY_URL: &str = "https://i.weread.qq.com/api/agent/gateway";
@@ -105,7 +106,7 @@ async fn request(
         .with_context(|| format!("WeRead gateway returned non-JSON for {api_name}"))?;
 
     if let Some(message) = upgrade_message(&value) {
-        bail!("WeRead skill upgrade required: {message}");
+        bail!("{UPGRADE_REQUIRED_PREFIX} {message}");
     }
 
     if !status.is_success() {
@@ -280,13 +281,18 @@ pub fn normalize_shelf(value: &Value) -> WeReadShelfSummary {
 }
 
 pub fn normalize_notes(value: &Value) -> WeReadNotesSummary {
-    let mut top_books = value
+    let books = value
         .get("books")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(notebook_summary)
         .collect::<Vec<_>>();
+    let combined_total_notes = books
+        .iter()
+        .fold(0u32, |total, book| total.saturating_add(book.total_notes));
+
+    let mut top_books = books.clone();
     top_books.sort_by(|a, b| {
         b.total_notes
             .cmp(&a.total_notes)
@@ -296,7 +302,7 @@ pub fn normalize_notes(value: &Value) -> WeReadNotesSummary {
 
     WeReadNotesSummary {
         total_books: value_u32_field(value, "totalBookCount"),
-        total_notes: value_u32_field(value, "totalNoteCount"),
+        total_notes: value_u32_field(value, "totalNoteCount").max(combined_total_notes),
         top_books,
     }
 }
@@ -444,21 +450,27 @@ mod tests {
     #[test]
     fn notes_total_uses_review_note_and_bookmark_counts() {
         let value = json!({
-            "totalBookCount": 1,
-            "totalNoteCount": 7,
+            "totalBookCount": 2,
+            "totalNoteCount": 3,
             "books": [{
                 "bookId": "1",
                 "book": {"title": "Marked", "author": "A"},
                 "reviewCount": 2,
                 "noteCount": 3,
                 "bookmarkCount": 2
+            }, {
+                "bookId": "2",
+                "book": {"title": "Second", "author": "B"},
+                "reviewCount": 1,
+                "noteCount": 1,
+                "bookmarkCount": 0
             }]
         });
 
         let notes = normalize_notes(&value);
 
-        assert_eq!(notes.total_books, 1);
-        assert_eq!(notes.total_notes, 7);
+        assert_eq!(notes.total_books, 2);
+        assert_eq!(notes.total_notes, 9);
         assert_eq!(notes.top_books[0].total_notes, 7);
     }
 }

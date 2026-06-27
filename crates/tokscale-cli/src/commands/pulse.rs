@@ -56,19 +56,10 @@ fn load_weread(settings: &Settings) -> WeReadState {
         Ok(state) => state,
         Err(error) => {
             let mut state = cached.unwrap_or_default();
-            state.mark_error(sanitize_error(error, &api_key));
+            state.mark_sync_failure(weread::sanitize_error(error, &api_key));
             state
         }
     }
-}
-
-fn sanitize_error(error: anyhow::Error, secret: &str) -> String {
-    let mut message = error.to_string();
-    let secret = secret.trim();
-    if !secret.is_empty() {
-        message = message.replace(secret, "[redacted]");
-    }
-    message
 }
 
 #[cfg(test)]

@@ -337,6 +337,16 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
             },
             ClickAction::UsageToggleEmailPrivacy,
         );
+        if let Some(action) = selected_usage_use_action(app) {
+            push_action_key_fit(
+                &mut spans,
+                app,
+                hint_area,
+                ("u", "Use", Some("Use")),
+                app.theme.accent,
+                action,
+            );
+        }
         if let Some(action) = selected_usage_reset_action(app) {
             push_action_key_fit(
                 &mut spans,
@@ -344,6 +354,16 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
                 hint_area,
                 ("x", "Reset", Some("Reset")),
                 Color::Yellow,
+                action,
+            );
+        }
+        if let Some(action) = selected_usage_remove_action(app) {
+            push_action_key_fit(
+                &mut spans,
+                app,
+                hint_area,
+                ("Del", "Remove", Some("Rm")),
+                Color::Red,
                 action,
             );
         }
@@ -782,6 +802,22 @@ fn scope_summary_line(app: &App, width: u16) -> Line<'static> {
     )
 }
 
+fn selected_usage_use_action(app: &App) -> Option<ClickAction> {
+    let output = app.subscription_usage.get(app.selected_index)?;
+    if output.provider != "Codex" {
+        return None;
+    }
+
+    let account = output.account.as_ref()?;
+    if account.is_active {
+        return None;
+    }
+
+    Some(ClickAction::CodexUseAccount {
+        account_id: account.id.clone(),
+    })
+}
+
 fn selected_usage_reset_action(app: &App) -> Option<ClickAction> {
     let output = app.subscription_usage.get(app.selected_index)?;
     if output.provider != "Codex" {
@@ -799,6 +835,16 @@ fn selected_usage_reset_action(app: &App) -> Option<ClickAction> {
 
     let account_id = output.account.as_ref()?.id.clone();
     Some(ClickAction::CodexResetAccount { account_id })
+}
+
+fn selected_usage_remove_action(app: &App) -> Option<ClickAction> {
+    let output = app.subscription_usage.get(app.selected_index)?;
+    if output.provider != "Codex" {
+        return None;
+    }
+
+    let account_id = output.account.as_ref()?.id.clone();
+    Some(ClickAction::CodexRemoveAccount { account_id })
 }
 
 fn usage_summary_line(app: &App, width: u16) -> Line<'static> {
@@ -1199,6 +1245,49 @@ mod tests {
                 "drilldown hints used {rendered_width} cols in {width} cols"
             );
         }
+    }
+
+    #[test]
+    fn usage_footer_hints_selected_account_actions() {
+        let mut app = make_app_on(Tab::Usage);
+        app.subscription_usage = vec![
+            usage_output(
+                "Codex",
+                Some(UsageAccount {
+                    id: "acct_work".to_string(),
+                    label: Some("work".to_string()),
+                    is_active: true,
+                }),
+            ),
+            usage_output(
+                "Codex",
+                Some(UsageAccount {
+                    id: "acct_personal".to_string(),
+                    label: Some("personal".to_string()),
+                    is_active: false,
+                }),
+            ),
+        ];
+        app.selected_index = 1;
+
+        let hints = line_text(&Line::from(action_spans(&mut app, 0, 0, 140)));
+
+        assert!(hints.contains(" u  Use"), "{hints}");
+        assert!(hints.contains(" Del  Remove"), "{hints}");
+        assert!(
+            app.click_areas.iter().any(|area| matches!(
+                &area.action,
+                ClickAction::CodexUseAccount { account_id } if account_id == "acct_personal"
+            )),
+            "missing use-account footer click area"
+        );
+        assert!(
+            app.click_areas.iter().any(|area| matches!(
+                &area.action,
+                ClickAction::CodexRemoveAccount { account_id } if account_id == "acct_personal"
+            )),
+            "missing remove-account footer click area"
+        );
     }
 
     #[test]

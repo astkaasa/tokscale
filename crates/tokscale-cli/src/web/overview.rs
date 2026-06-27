@@ -73,9 +73,7 @@ pub(crate) fn build_overview_json(
     height: u16,
 ) -> OverviewJson {
     let today = Local::now().date_naive();
-    let today_usage = data.daily.iter().find(|day| day.date == today);
-    let today_tokens = today_usage.map(|day| day.tokens.total()).unwrap_or(0);
-    let today_cost = today_usage.map(|day| day.cost).unwrap_or(0.0);
+    let (today_tokens, today_cost) = today_totals(data, today);
 
     OverviewJson {
         generated_at: generated_at(),
@@ -95,6 +93,31 @@ pub(crate) fn build_overview_json(
             .count(),
         model_count: data.models.len(),
     }
+}
+
+fn today_totals(data: &UsageData, today: chrono::NaiveDate) -> (u64, f64) {
+    if let Some(day) = data
+        .daily
+        .iter()
+        .find(|day| day.date == today && (day.tokens.total() > 0 || day.cost > 0.0))
+    {
+        return (day.tokens.total(), day.cost);
+    }
+
+    let mut tokens = 0u64;
+    let mut cost = 0.0;
+    for hour in data
+        .hourly
+        .iter()
+        .filter(|hour| hour.datetime.date() == today)
+    {
+        tokens = tokens.saturating_add(hour.tokens.total());
+        if hour.cost.is_finite() {
+            cost += hour.cost;
+        }
+    }
+
+    (tokens, cost)
 }
 
 pub(crate) fn render_overview_html(
@@ -156,7 +179,7 @@ fn generated_at() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use chrono::NaiveDate;
     use ratatui::{
@@ -176,7 +199,7 @@ mod tests {
         },
         surface::{render_buffer_html, render_buffer_html_with_region},
     };
-    use crate::tui::data::{DailySourceInfo, DailyUsage, ModelUsage, TokenBreakdown};
+    use crate::tui::data::{DailySourceInfo, DailyUsage, HourlyUsage, ModelUsage, TokenBreakdown};
 
     fn usage_fixture() -> UsageData {
         let model = ModelUsage {
@@ -678,6 +701,20 @@ mod tests {
     }
 
     #[test]
+    fn today_cost_by_hour_chart_uses_block_overlay() {
+        let palette = HtmlColorPalette::dark();
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 64, 8));
+        write_buffer_row(&mut buffer, 0, " Cost by hour                     Summary");
+        buffer[(8, 2)].set_symbol("█").set_fg(Color::Green);
+        buffer[(8, 3)].set_symbol("█").set_fg(Color::Green);
+        write_buffer_row(&mut buffer, 5, "      └────────");
+
+        let html = render_block_overlay(&buffer, 64, 8, &palette);
+
+        assert!(html.contains("terminal-block-rect"), "{html}");
+    }
+
+    #[test]
     fn block_overlay_renders_partial_block_cell_height() {
         let palette = HtmlColorPalette::dark();
         let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
@@ -745,6 +782,33 @@ mod tests {
         assert_eq!(json.total_cost_label, "$1.25");
         assert_eq!(json.active_days, 1);
         assert_eq!(json.model_count, 1);
+    }
+
+    #[test]
+    fn overview_json_falls_back_to_hourly_today_totals() {
+        let today = Local::now().date_naive();
+        let mut usage = usage_fixture();
+        usage.daily.clear();
+        usage.hourly = vec![HourlyUsage {
+            datetime: today.and_hms_opt(9, 0, 0).unwrap(),
+            tokens: TokenBreakdown {
+                input: 4_000,
+                output: 1_500,
+                cache_read: 500,
+                cache_write: 0,
+                reasoning: 0,
+            },
+            cost: 2.75,
+            clients: BTreeSet::new(),
+            models: BTreeMap::new(),
+            message_count: 1,
+            turn_count: 1,
+        }];
+
+        let json = build_overview_json(&usage, "Today".to_string(), 160, 48);
+
+        assert_eq!(json.today_tokens, 6_000);
+        assert_eq!(json.today_cost_label, "$2.75");
     }
 
     fn write_buffer_row(buffer: &mut Buffer, y: u16, text: &str) {

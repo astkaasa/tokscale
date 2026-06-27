@@ -163,11 +163,17 @@ impl App {
             KeyCode::Char('a') if self.current_tab == Tab::Usage => {
                 self.start_codex_login();
             }
+            KeyCode::Char('u') if self.current_tab == Tab::Usage => {
+                self.confirm_selected_codex_account_switch();
+            }
             KeyCode::Char('m') if self.current_tab == Tab::Usage => {
                 self.toggle_usage_email_privacy();
             }
             KeyCode::Char('x') if self.current_tab == Tab::Usage => {
                 self.confirm_selected_codex_rate_limit_reset();
+            }
+            KeyCode::Delete if self.current_tab == Tab::Usage => {
+                self.confirm_selected_codex_account_removal();
             }
             KeyCode::Enter if self.is_drilldown_active() => {
                 self.open_selected_drilldown_child();

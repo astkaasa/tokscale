@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SKILL_VERSION: &str = "1.0.3";
 pub const WEEKLY_STALE_MS: u64 = 15 * 60 * 1000;
+pub const UPGRADE_REQUIRED_PREFIX: &str = "WeRead skill upgrade required:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,6 +84,15 @@ impl WeReadState {
     pub fn mark_error(&mut self, message: String) {
         self.error = Some(message);
         self.status = WeReadStatus::Error;
+    }
+
+    pub fn mark_sync_failure(&mut self, message: String) {
+        if message.starts_with(UPGRADE_REQUIRED_PREFIX) {
+            self.error = Some(message);
+            self.status = WeReadStatus::UpgradeRequired;
+        } else {
+            self.mark_error(message);
+        }
     }
 
     pub fn mark_auth_missing(&mut self) {
@@ -262,5 +272,18 @@ mod tests {
         assert_eq!(format_compare_ratio(Some(0.35)), "+35%");
         assert_eq!(format_compare_ratio(Some(-0.18)), "-18%");
         assert_eq!(format_compare_ratio(None), "n/a");
+    }
+
+    #[test]
+    fn classifies_upgrade_required_sync_failures() {
+        let mut state = WeReadState::empty(WeReadStatus::Fresh);
+
+        state.mark_sync_failure(format!("{UPGRADE_REQUIRED_PREFIX} install 1.0.4"));
+
+        assert_eq!(state.status, WeReadStatus::UpgradeRequired);
+        assert_eq!(
+            state.error.as_deref(),
+            Some("WeRead skill upgrade required: install 1.0.4")
+        );
     }
 }

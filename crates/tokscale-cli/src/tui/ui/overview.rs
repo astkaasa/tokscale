@@ -2031,6 +2031,38 @@ mod tests {
     }
 
     #[test]
+    fn today_hourly_rows_drive_totals_and_navigation_count_without_daily_breakdown() {
+        let mut app = make_app(140);
+        let today = chrono::Local::now().date_naive();
+        app.overview_mode = OverviewMode::Today;
+        app.data.models = vec![model_usage(
+            "all-time-only",
+            "openai",
+            120_000,
+            35_000,
+            18.50,
+        )];
+        app.data.daily.clear();
+        app.data.hourly = vec![
+            hourly_usage_with_model(today, 8, 20_000, 10_000, 8.0),
+            hourly_usage_with_model(today, 9, 50_000, 20_000, 16.0),
+        ];
+
+        assert_eq!(app.overview_totals(), (100_000, 24.0, 1));
+        assert_eq!(app.get_current_list_len(), 1);
+
+        let body = render_body(&mut app, 140, 32);
+
+        assert!(body.contains("$24.00"), "{body}");
+        assert!(body.contains("Models    1"), "{body}");
+        assert!(body.contains("gpt-5.5"), "{body}");
+        assert!(
+            !body.contains("all-time-only"),
+            "today view leaked all-time model rows\n{body}"
+        );
+    }
+
+    #[test]
     fn today_models_table_cells_align_with_headers() {
         let mut app = make_app(180);
         let today = chrono::Local::now().date_naive();

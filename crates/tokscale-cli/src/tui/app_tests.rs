@@ -1346,16 +1346,42 @@ fn test_switching_to_usage_starts_initial_usage_fetch() {
 }
 
 #[test]
-fn test_handle_key_u_on_usage_is_unassigned() {
+fn test_handle_key_u_on_usage_opens_codex_switch_confirmation_dialog() {
     let mut app = make_app();
-    app.usage_fetcher = sample_usage_fetcher;
     app.current_tab = Tab::Usage;
+    app.subscription_usage = sample_subscription_usage();
+    let mut personal = app.subscription_usage[0].clone();
+    if let Some(account) = &mut personal.account {
+        account.id = "acct_personal".to_string();
+        account.label = Some("personal".to_string());
+        account.is_active = false;
+    }
+    personal.email = Some("personal@example.com".to_string());
+    app.subscription_usage.push(personal);
+    app.selected_index = 1;
 
     app.handle_key_event(key(KeyCode::Char('u')));
 
-    assert!(!app.needs_reload);
-    assert!(!app.is_fetching_usage());
-    assert!(app.subscription_usage.is_empty());
+    assert!(app.dialog_stack.is_active());
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Confirm Codex account switch")
+    );
+}
+
+#[test]
+fn test_handle_key_delete_on_usage_opens_codex_remove_confirmation_dialog() {
+    let mut app = make_app();
+    app.current_tab = Tab::Usage;
+    app.subscription_usage = sample_subscription_usage();
+
+    app.handle_key_event(key(KeyCode::Delete));
+
+    assert!(app.dialog_stack.is_active());
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Confirm Codex account removal")
+    );
 }
 
 // ── handle_key_event: misc keys ─────────────────────────────────

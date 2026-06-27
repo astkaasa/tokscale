@@ -156,9 +156,7 @@ fn render_today_compact_dashboard(
 
 fn today_summary(app: &App, now: NaiveDateTime) -> TodaySummary {
     let today = app.overview_date();
-    let today_usage = app.today_usage();
-    let cost = today_usage.map(|day| day.cost).unwrap_or(0.0);
-    let tokens = today_usage.map(|day| day.tokens.total()).unwrap_or(0);
+    let (tokens, cost, model_count) = app.overview_totals();
     let elapsed_hours = if now.date() == today {
         (now.hour() as f64 + now.minute() as f64 / 60.0 + now.second() as f64 / 3600.0)
             .clamp(0.25, 24.0)
@@ -221,7 +219,7 @@ fn today_summary(app: &App, now: NaiveDateTime) -> TodaySummary {
         last_activity,
         last_source,
         peak_hour,
-        model_count: app.overview_model_len(),
+        model_count,
     }
 }
 
