@@ -83,6 +83,9 @@ Minimal example:
 {
   "uiTheme": "dark",
   "defaultClients": ["codex", "claude"],
+  "usage": {
+    "excludedProviders": ["copilot"]
+  },
   "env": {
     "WEREAD_API_KEY": "<your-weread-api-key>"
   },
@@ -102,6 +105,7 @@ Important settings:
 | --- | --- |
 | `uiTheme` | TUI theme: `dark`, `light`, or `auto`. |
 | `defaultClients` | Default client filter when no `--client` flag is passed. |
+| `usage.excludedProviders` | Subscription quota providers to skip, such as `copilot`. |
 | `env` | Persistent per-user integration secrets. Process environment variables still take precedence. |
 | `env.WEREAD_API_KEY` | Enables WeRead Pulse and `tokscale pulse` refreshes. |
 | `scanner.extraScanPaths` | Additional per-client local scan roots. |

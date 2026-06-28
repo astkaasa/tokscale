@@ -8,6 +8,8 @@ mod minimax;
 mod warp;
 mod zai;
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 
 // ── Shared types ──
@@ -371,6 +373,7 @@ pub fn fetch_all_report_with_intent(intent: UsageFetchIntent) -> UsageFetchRepor
 }
 
 fn fetch_all_report_with_codex(codex_fetch: fn() -> UsageFetchReport) -> UsageFetchReport {
+    let excluded = usage_provider_excludes();
     let providers: Vec<UsageProvider> = vec![
         ("Claude", claude::has_credentials, fetch_claude),
         ("Codex", codex::has_credentials, codex_fetch),
@@ -382,7 +385,10 @@ fn fetch_all_report_with_codex(codex_fetch: fn() -> UsageFetchReport) -> UsageFe
         ("Warp/Oz", warp::has_credentials, fetch_warp),
     ];
 
-    let active: Vec<_> = providers.into_iter().filter(|(_, has, _)| has()).collect();
+    let active: Vec<_> = providers
+        .into_iter()
+        .filter(|(provider, has, _)| !usage_provider_is_excluded(provider, &excluded) && has())
+        .collect();
 
     if active.is_empty() {
         return UsageFetchReport::default();
@@ -409,6 +415,26 @@ fn fetch_all_report_with_codex(codex_fetch: fn() -> UsageFetchReport) -> UsageFe
         }
         report
     })
+}
+
+fn usage_provider_excludes() -> HashSet<String> {
+    crate::tui::settings::load_excluded_usage_providers()
+        .into_iter()
+        .map(|provider| usage_provider_key(&provider))
+        .filter(|provider| !provider.is_empty())
+        .collect()
+}
+
+fn usage_provider_is_excluded(provider: &str, excluded: &HashSet<String>) -> bool {
+    excluded.contains(&usage_provider_key(provider))
+}
+
+fn usage_provider_key(provider: &str) -> String {
+    provider
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 // ── Light-mode rendering ──
@@ -512,6 +538,7 @@ pub fn run(json: bool, _light: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn usage_fetch_intent_exposes_tui_surface_variant() {
@@ -527,6 +554,18 @@ mod tests {
 
         assert_eq!(diagnostic.kind, UsageFetchDiagnosticKind::FetchFailed);
         assert_eq!(diagnostic.severity, UsageFetchDiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn usage_provider_exclude_matches_display_names_lossily() {
+        let excluded = ["copilot", "warp oz"]
+            .into_iter()
+            .map(usage_provider_key)
+            .collect::<HashSet<_>>();
+
+        assert!(usage_provider_is_excluded("Copilot", &excluded));
+        assert!(usage_provider_is_excluded("Warp/Oz", &excluded));
+        assert!(!usage_provider_is_excluded("Codex", &excluded));
     }
 
     #[test]

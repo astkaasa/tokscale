@@ -43,6 +43,18 @@ pub struct LightSettings {
     pub write_cache: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSettings {
+    /// Subscription providers to skip when fetching quota/status data.
+    ///
+    /// Values are matched case-insensitively against provider display names
+    /// such as "Copilot" or "Warp/Oz". This is intentionally separate from
+    /// `defaultClients`, which filters local usage scanners.
+    #[serde(default, deserialize_with = "deserialize_string_array_lossy")]
+    pub excluded_providers: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -76,6 +88,8 @@ pub struct Settings {
     pub default_clients: Vec<String>,
     #[serde(default)]
     pub light: LightSettings,
+    #[serde(default)]
+    pub usage: UsageSettings,
     /// Local environment values Tokscale may consult when a feature needs
     /// credentials or per-user knobs. Real process environment variables
     /// still take precedence over this map. Values are not injected into
@@ -88,13 +102,13 @@ pub struct Settings {
     pub env: BTreeMap<String, String>,
 }
 
-/// Lossy deserializer for `defaultClients`: accepts an array of arbitrary
-/// JSON values, keeps only string elements, and silently drops anything
-/// else. Hand-edited settings.json files sometimes end up with stray nulls,
-/// numbers, or trailing trash; failing the whole load over one bad element
-/// would silently fall back to defaults for *every* setting in the file
-/// (scanner paths, default clients, etc.), which is a much worse user
-/// experience than dropping the bad entry.
+/// Lossy deserializer for user-edited string lists: accepts an array of
+/// arbitrary JSON values, keeps only string elements, and silently drops
+/// anything else. Hand-edited settings.json files sometimes end up with
+/// stray nulls, numbers, or trailing trash; failing the whole load over one
+/// bad element would silently fall back to defaults for *every* setting in
+/// the file, which is a much worse user experience than dropping the bad
+/// entry.
 fn deserialize_string_array_lossy<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -140,6 +154,7 @@ impl Default for Settings {
             scanner: ScannerSettings::default(),
             default_clients: Vec::new(),
             light: LightSettings::default(),
+            usage: UsageSettings::default(),
             env: BTreeMap::new(),
         }
     }
@@ -173,6 +188,10 @@ pub fn load_default_clients() -> Vec<String> {
 
 pub fn load_default_clients_for_home(home_dir: &Option<String>) -> Vec<String> {
     Settings::load_for_home_override(home_dir.as_deref().map(Path::new)).default_clients
+}
+
+pub fn load_excluded_usage_providers() -> Vec<String> {
+    Settings::load().usage.excluded_providers
 }
 
 impl Settings {
@@ -241,7 +260,7 @@ impl Settings {
 
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
-        let content = serde_json::to_string_pretty(self)?;
+        let content = self.save_content_preserving_disk_env(&path)?;
 
         // Atomic write: write to temp file, sync, then rename
         // Matches the pattern used in tui/cache.rs and pricing/cache.rs
@@ -269,6 +288,12 @@ impl Settings {
         }
 
         write_result
+    }
+
+    fn save_content_preserving_disk_env(&self, path: &Path) -> Result<String> {
+        let mut value = serde_json::to_value(self)?;
+        preserve_disk_env(&mut value, path);
+        Ok(serde_json::to_string_pretty(&value)?)
     }
 
     pub fn get_auto_refresh_interval(&self) -> Option<Duration> {
@@ -299,6 +324,66 @@ impl Settings {
                     .get(key)
                     .and_then(|value| non_empty_trimmed(value).map(str::to_string))
             })
+    }
+}
+
+fn preserve_disk_env(value: &mut serde_json::Value, path: &Path) {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(disk) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let Some(output) = value.as_object_mut() else {
+        return;
+    };
+
+    match disk.get("env").filter(|env| env.is_object()).cloned() {
+        Some(env) => {
+            output.insert("env".to_string(), env);
+        }
+        None => {
+            output.remove("env");
+        }
+    }
+
+    preserve_disk_usage_excluded_providers(output, &disk);
+}
+
+fn preserve_disk_usage_excluded_providers(
+    output: &mut serde_json::Map<String, serde_json::Value>,
+    disk: &serde_json::Value,
+) {
+    let Some(disk_excluded) = disk
+        .get("usage")
+        .and_then(|usage| usage.get("excludedProviders"))
+        .and_then(|excluded| excluded.as_array())
+        .filter(|excluded| !excluded.is_empty())
+        .cloned()
+    else {
+        return;
+    };
+
+    let current_has_excluded = output
+        .get("usage")
+        .and_then(|usage| usage.get("excludedProviders"))
+        .and_then(|excluded| excluded.as_array())
+        .is_some_and(|excluded| !excluded.is_empty());
+    if current_has_excluded {
+        return;
+    }
+
+    let usage = output
+        .entry("usage")
+        .or_insert_with(|| serde_json::json!({}));
+    if !usage.is_object() {
+        *usage = serde_json::json!({});
+    }
+    if let Some(usage) = usage.as_object_mut() {
+        usage.insert(
+            "excludedProviders".to_string(),
+            serde_json::Value::Array(disk_excluded),
+        );
     }
 }
 
@@ -573,6 +658,43 @@ mod tests {
     }
 
     #[test]
+    fn settings_usage_excluded_providers_round_trips() {
+        let json = r#"{
+            "usage": {
+                "excludedProviders": ["copilot", "Warp/Oz"]
+            }
+        }"#;
+
+        let parsed: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed.usage.excluded_providers,
+            vec!["copilot".to_string(), "Warp/Oz".to_string()]
+        );
+
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        let round_trip: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            round_trip["usage"]["excludedProviders"],
+            serde_json::json!(["copilot", "Warp/Oz"])
+        );
+    }
+
+    #[test]
+    fn settings_usage_excluded_providers_drops_non_strings() {
+        let json = r#"{
+            "usage": {
+                "excludedProviders": ["copilot", 123, null, "Codex"]
+            }
+        }"#;
+
+        let parsed: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed.usage.excluded_providers,
+            vec!["copilot".to_string(), "Codex".to_string()]
+        );
+    }
+
+    #[test]
     fn settings_env_defaults_to_empty() {
         let json = r#"{}"#;
         let parsed: Settings = serde_json::from_str(json).unwrap();
@@ -601,6 +723,115 @@ mod tests {
             Some("from-settings")
         );
         assert!(parsed.env_value("EMPTY").is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn settings_save_preserves_env_added_after_load() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe {
+            std::env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+        }
+
+        let path = Settings::config_path().unwrap();
+        fs::write(
+            &path,
+            r#"{
+                "uiTheme": "dark",
+                "autoRefreshEnabled": false,
+                "autoRefreshMs": 60000,
+                "nativeTimeoutMs": 300000
+            }"#,
+        )
+        .unwrap();
+
+        let mut settings = Settings::load();
+        assert!(settings.env.is_empty());
+
+        fs::write(
+            &path,
+            r#"{
+                "uiTheme": "dark",
+                "autoRefreshEnabled": false,
+                "autoRefreshMs": 60000,
+                "nativeTimeoutMs": 300000,
+                "env": {
+                    "WEREAD_API_KEY": "secret-from-disk"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        settings.ui_theme = ThemePreference::Light;
+        settings.save().unwrap();
+
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["uiTheme"], serde_json::json!("light"));
+        assert_eq!(
+            saved["env"]["WEREAD_API_KEY"],
+            serde_json::json!("secret-from-disk")
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn settings_save_preserves_usage_excludes_added_after_load() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe {
+            std::env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+        }
+
+        let path = Settings::config_path().unwrap();
+        fs::write(
+            &path,
+            r#"{
+                "uiTheme": "dark",
+                "usage": {
+                    "excludedProviders": []
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mut settings = Settings::load();
+        assert!(settings.usage.excluded_providers.is_empty());
+
+        fs::write(
+            &path,
+            r#"{
+                "uiTheme": "dark",
+                "usage": {
+                    "excludedProviders": ["copilot"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        settings.ui_theme = ThemePreference::Light;
+        settings.save().unwrap();
+
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["uiTheme"], serde_json::json!("light"));
+        assert_eq!(
+            saved["usage"]["excludedProviders"],
+            serde_json::json!(["copilot"])
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
     }
 
     #[test]

@@ -555,22 +555,63 @@ fn render_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[UsageO
 }
 
 fn render_medium_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[UsageOutput]) {
-    let summary_height = if area.height >= 36 { 8 } else { 6 }.min(area.height);
-    let selected_height =
-        if area.height >= 36 { 11 } else { 9 }.min(area.height.saturating_sub(summary_height));
+    let selected_index = app.selected_index;
+    let selected = &outputs[selected_index];
+    let summary_height = medium_summary_height(outputs, area.height).min(area.height);
+    let accounts_height =
+        medium_accounts_table_height(outputs, area.height.saturating_sub(summary_height));
+    let selected_available = area
+        .height
+        .saturating_sub(summary_height)
+        .saturating_sub(accounts_height);
+    let selected_height = medium_selected_account_height(selected, selected_available);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(summary_height),
             Constraint::Length(selected_height),
+            Constraint::Length(accounts_height),
             Constraint::Min(0),
         ])
         .split(area);
 
     render_usage_status(frame, app, chunks[0], outputs);
-    let selected_index = app.selected_index;
     render_selected_account(frame, app, chunks[1], &outputs[selected_index], outputs);
     render_accounts_table(frame, app, chunks[2], outputs);
+}
+
+fn medium_summary_height(outputs: &[UsageOutput], area_height: u16) -> u16 {
+    if area_height >= 36 && outputs.iter().any(has_available_reset_credit) {
+        11
+    } else if area_height >= 32 {
+        8
+    } else {
+        6
+    }
+}
+
+fn medium_selected_account_height(selected: &UsageOutput, available: u16) -> u16 {
+    let preferred = medium_selected_account_preferred_height(selected);
+    preferred.min(available).max(available.min(9))
+}
+
+fn medium_selected_account_preferred_height(selected: &UsageOutput) -> u16 {
+    let status_rows = 3
+        + usize::from(credits_status_line(selected).is_some())
+        + usize::from(reset_credits_line(selected).is_some());
+    let limit_rows = 2 + selected.metrics.len().min(4);
+    let action_rows = 3;
+    (status_rows + limit_rows + action_rows + 2).clamp(9, 18) as u16
+}
+
+fn medium_accounts_table_height(outputs: &[UsageOutput], available: u16) -> u16 {
+    if available == 0 {
+        return 0;
+    }
+
+    let visible_rows = outputs.len().clamp(1, 5) as u16;
+    let desired = 3 + visible_rows.saturating_mul(2);
+    desired.min(available).max(available.min(5))
 }
 
 fn usage_top_column_percentages(width: u16) -> (u16, u16) {
@@ -582,14 +623,51 @@ fn usage_top_column_percentages(width: u16) -> (u16, u16) {
 }
 
 fn render_compact_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[UsageOutput]) {
+    let selected_index = app.selected_index;
+    if compact_should_prioritize_selected(area, outputs) {
+        let summary_height = compact_summary_height(outputs, area.height);
+        let accounts_height =
+            medium_accounts_table_height(outputs, area.height.saturating_sub(summary_height));
+        let selected_available = area
+            .height
+            .saturating_sub(summary_height)
+            .saturating_sub(accounts_height);
+        let selected_height =
+            medium_selected_account_height(&outputs[selected_index], selected_available);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(summary_height),
+                Constraint::Length(selected_height),
+                Constraint::Length(accounts_height),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        render_usage_status(frame, app, chunks[0], outputs);
+        render_selected_account(frame, app, chunks[1], &outputs[selected_index], outputs);
+        render_accounts_table(frame, app, chunks[2], outputs);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(7.min(area.height))])
         .split(area);
     render_accounts_table(frame, app, chunks[0], outputs);
     if chunks.len() > 1 && chunks[1].height > 0 {
-        let selected_index = app.selected_index;
         render_selected_account(frame, app, chunks[1], &outputs[selected_index], outputs);
+    }
+}
+
+fn compact_should_prioritize_selected(area: Rect, outputs: &[UsageOutput]) -> bool {
+    area.height >= 24 && outputs.len() <= 3
+}
+
+fn compact_summary_height(outputs: &[UsageOutput], area_height: u16) -> u16 {
+    if area_height >= 32 && outputs.iter().any(has_available_reset_credit) {
+        9
+    } else {
+        7
     }
 }
 
@@ -2738,6 +2816,228 @@ mod tests {
         assert_eq!(usage_top_column_percentages(128), (50, 50));
         assert_eq!(usage_top_column_percentages(127), (48, 52));
         assert_eq!(usage_top_column_percentages(104), (48, 52));
+    }
+
+    #[test]
+    fn medium_usage_layout_compacts_single_account_table() {
+        let outputs = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+
+        assert_eq!(medium_accounts_table_height(&outputs, 40), 5);
+        assert_eq!(medium_accounts_table_height(&outputs, 4), 4);
+    }
+
+    #[test]
+    fn medium_usage_layout_grows_selected_account_for_limits() {
+        let mut output = output_with_reset_credits(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+            3,
+        );
+        output.metrics = vec![
+            UsageMetric {
+                label: "5h".to_string(),
+                used_percent: 2.0,
+                remaining_percent: 98.0,
+                remaining_label: Some("98% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Weekly".to_string(),
+                used_percent: 15.0,
+                remaining_percent: 85.0,
+                remaining_label: Some("85% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark 5h".to_string(),
+                used_percent: 0.0,
+                remaining_percent: 100.0,
+                remaining_label: Some("100% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark week".to_string(),
+                used_percent: 0.0,
+                remaining_percent: 100.0,
+                remaining_label: Some("100% left".to_string()),
+                resets_at: None,
+            },
+        ];
+
+        assert_eq!(medium_summary_height(&[output.clone()], 48), 11);
+        assert!(medium_selected_account_preferred_height(&output) >= 15);
+    }
+
+    #[test]
+    fn medium_usage_renders_single_account_limits_before_accounts() {
+        let mut app = make_app();
+        let mut output = output_with_reset_credits(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+            3,
+        );
+        output.metrics = vec![
+            UsageMetric {
+                label: "5h".to_string(),
+                used_percent: 2.0,
+                remaining_percent: 98.0,
+                remaining_label: Some("98% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Weekly".to_string(),
+                used_percent: 15.0,
+                remaining_percent: 85.0,
+                remaining_label: Some("85% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark 5h".to_string(),
+                used_percent: 0.0,
+                remaining_percent: 100.0,
+                remaining_label: Some("100% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark week".to_string(),
+                used_percent: 0.0,
+                remaining_percent: 100.0,
+                remaining_label: Some("100% left".to_string()),
+                resets_at: None,
+            },
+        ];
+        app.subscription_usage = vec![output];
+
+        let body = render_body(&mut app, 120, 42);
+        let selected_metric = body
+            .lines()
+            .find(|line| line.contains("Spark 5h") && line.contains("100% left"))
+            .expect("missing selected account Spark 5h metric");
+        let accounts_title = body
+            .lines()
+            .position(|line| line.contains("Accounts"))
+            .expect("missing accounts panel");
+        let selected_metric_line = body
+            .lines()
+            .position(|line| line == selected_metric)
+            .expect("missing selected metric line");
+
+        assert!(selected_metric_line < accounts_title, "{body}");
+    }
+
+    #[test]
+    fn compact_usage_renders_single_account_limits_before_accounts() {
+        let mut app = make_app();
+        let mut output = output_with_reset_credits(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+            3,
+        );
+        output.metrics = vec![
+            UsageMetric {
+                label: "5h".to_string(),
+                used_percent: 2.0,
+                remaining_percent: 98.0,
+                remaining_label: Some("98% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Weekly".to_string(),
+                used_percent: 15.0,
+                remaining_percent: 85.0,
+                remaining_label: Some("85% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark 5h".to_string(),
+                used_percent: 0.0,
+                remaining_percent: 100.0,
+                remaining_label: Some("100% left".to_string()),
+                resets_at: None,
+            },
+            UsageMetric {
+                label: "Spark week".to_string(),
+                used_percent: 0.0,
+                remaining_percent: 100.0,
+                remaining_label: Some("100% left".to_string()),
+                resets_at: None,
+            },
+        ];
+        app.subscription_usage = vec![output];
+
+        let body = render_body(&mut app, 90, 42);
+        let summary_title = body
+            .lines()
+            .position(|line| line.contains("Usage Summary"))
+            .expect("missing compact usage summary");
+        let selected_title = body
+            .lines()
+            .position(|line| line.contains("Selected Account"))
+            .expect("missing compact selected account panel");
+        let selected_metric = body
+            .lines()
+            .find(|line| line.contains("Spark 5h") && line.contains("100% left"))
+            .expect("missing compact selected account Spark 5h metric");
+        let accounts_title = body
+            .lines()
+            .position(|line| line.contains("Accounts"))
+            .expect("missing accounts panel");
+        let selected_metric_line = body
+            .lines()
+            .position(|line| line == selected_metric)
+            .expect("missing selected metric line");
+
+        assert!(summary_title < selected_title, "{body}");
+        assert!(selected_title < selected_metric_line, "{body}");
+        assert!(selected_metric_line < accounts_title, "{body}");
+        assert!(compact_should_prioritize_selected(
+            Rect::new(0, 0, 90, 42),
+            &app.subscription_usage
+        ));
+    }
+
+    #[test]
+    fn compact_usage_keeps_list_first_for_many_accounts() {
+        let outputs = (0..4)
+            .map(|index| {
+                output(
+                    "Codex",
+                    Some(UsageAccount {
+                        id: format!("acct_{index}"),
+                        label: Some(format!("acct-{index}")),
+                        is_active: index == 0,
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!compact_should_prioritize_selected(
+            Rect::new(0, 0, 90, 42),
+            &outputs
+        ));
+        assert!(!compact_should_prioritize_selected(
+            Rect::new(0, 0, 90, 19),
+            &outputs[..1]
+        ));
     }
 
     #[test]
