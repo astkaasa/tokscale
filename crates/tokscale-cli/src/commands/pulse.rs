@@ -9,6 +9,7 @@ use tokscale_core::pulse::{
 use tokscale_core::{ClientId, GroupBy};
 
 use crate::commands::usage::{self, UsageOutput};
+use crate::report_support::PricingCacheOnlyGuard;
 use crate::spinner::LightSpinner;
 use crate::tui::data::UsageData;
 use crate::tui::settings::Settings;
@@ -45,7 +46,8 @@ pub fn run(args: PulseRunArgs) -> Result<()> {
     } = args;
 
     if !refresh && !sync_only {
-        if let Some(snapshot) = store::load_latest() {
+        if let Some(mut snapshot) = store::load_latest() {
+            snapshot.refresh_time_sensitive_source_health(Utc::now());
             return write_snapshot(&snapshot, json);
         }
     }
@@ -57,21 +59,23 @@ pub fn run(args: PulseRunArgs) -> Result<()> {
     };
 
     let settings = Settings::load();
-    let (usage_data, mut ai_observed_at) = load_ai_usage(refresh || sync_only)?;
+    let (usage_data, local_observed_at) = load_ai_usage(refresh || sync_only)?;
     let (quota_outputs, quota_observed_at) = match usage::load_cache_with_observed_at() {
         Some((outputs, observed_at)) => (outputs, Some(observed_at)),
         None => (Vec::new(), None),
     };
-    ai_observed_at = [ai_observed_at, quota_observed_at]
-        .into_iter()
-        .flatten()
-        .max();
     let reading = if refresh || sync_only {
         sync_weread(&settings)?
     } else {
         load_weread_local(&settings)
     };
-    let snapshot = build_snapshot(&usage_data, &quota_outputs, ai_observed_at, reading.clone());
+    let snapshot = build_snapshot(
+        &usage_data,
+        &quota_outputs,
+        local_observed_at,
+        quota_observed_at,
+        reading.clone(),
+    );
     let (snapshot, committed) = persist_snapshot(&snapshot, &reading)?;
 
     if let Some(spinner) = spinner {
@@ -122,11 +126,21 @@ fn persist_snapshot(
 pub(crate) fn build_snapshot(
     usage_data: &UsageData,
     quota_outputs: &[UsageOutput],
-    ai_observed_at: Option<chrono::DateTime<Utc>>,
+    local_observed_at: Option<chrono::DateTime<Utc>>,
+    quota_observed_at: Option<chrono::DateTime<Utc>>,
     reading: WeReadSyncState,
 ) -> PulseSnapshotV1 {
-    PulseSnapshotV1::from_inputs(
-        build_ai_work_input(usage_data, quota_outputs, ai_observed_at),
+    let input = build_ai_work_input(usage_data, quota_outputs);
+    let local_observed_at = (input.current.is_some() || input.previous.is_some())
+        .then_some(local_observed_at)
+        .flatten();
+    let quota_observed_at = (!input.quota_sources.is_empty())
+        .then_some(quota_observed_at)
+        .flatten();
+    PulseSnapshotV1::from_inputs_with_source_observed_at(
+        input,
+        local_observed_at,
+        quota_observed_at,
         reading,
     )
 }
@@ -186,27 +200,6 @@ fn load_ai_usage(refresh: bool) -> Result<(UsageData, Option<chrono::DateTime<Ut
     Ok((data, Some(Utc::now())))
 }
 
-struct PricingCacheOnlyGuard(Option<std::ffi::OsString>);
-
-impl PricingCacheOnlyGuard {
-    fn enable() -> Self {
-        let previous = std::env::var_os("TOKSCALE_PRICING_CACHE_ONLY");
-        unsafe { std::env::set_var("TOKSCALE_PRICING_CACHE_ONLY", "1") };
-        Self(previous)
-    }
-}
-
-impl Drop for PricingCacheOnlyGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match self.0.take() {
-                Some(value) => std::env::set_var("TOKSCALE_PRICING_CACHE_ONLY", value),
-                None => std::env::remove_var("TOKSCALE_PRICING_CACHE_ONLY"),
-            }
-        }
-    }
-}
-
 fn load_cached_ai_usage() -> Option<(UsageData, chrono::DateTime<Utc>)> {
     let filters = ClientFilter::default_set();
     let (result, observed_at) = load_cache_with_observed_at(
@@ -223,11 +216,7 @@ fn load_cached_ai_usage() -> Option<(UsageData, chrono::DateTime<Utc>)> {
     }
 }
 
-fn build_ai_work_input(
-    data: &UsageData,
-    quota_outputs: &[UsageOutput],
-    observed_at: Option<chrono::DateTime<Utc>>,
-) -> AiWorkInput {
+fn build_ai_work_input(data: &UsageData, quota_outputs: &[UsageOutput]) -> AiWorkInput {
     let today = Local::now().date_naive();
     let current_start = weread::week_start_for(today);
     let current_end = current_start
@@ -254,13 +243,8 @@ fn build_ai_work_input(
         })
         .collect();
 
-    let has_observed_input = current.is_some() || previous.is_some() || !quota_sources.is_empty();
     AiWorkInput {
-        observed_at: if has_observed_input {
-            observed_at
-        } else {
-            None
-        },
+        observed_at: None,
         current,
         previous,
         quota_sources,
@@ -343,9 +327,32 @@ fn aggregate_ai_period(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::env;
+    use std::path::Path;
 
     use super::*;
     use crate::tui::data::{DailyModelInfo, DailySourceInfo, DailyUsage, TokenBreakdown};
+
+    struct ConfigDirGuard(Option<std::ffi::OsString>);
+
+    impl ConfigDirGuard {
+        fn set(path: &Path) -> Self {
+            let previous = env::var_os("TOKSCALE_CONFIG_DIR");
+            unsafe { env::set_var("TOKSCALE_CONFIG_DIR", path) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for ConfigDirGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.0.take() {
+                    Some(value) => env::set_var("TOKSCALE_CONFIG_DIR", value),
+                    None => env::remove_var("TOKSCALE_CONFIG_DIR"),
+                }
+            }
+        }
+    }
 
     fn token_breakdown(total: u64) -> TokenBreakdown {
         TokenBreakdown {
@@ -419,9 +426,133 @@ mod tests {
             ..UsageData::default()
         };
 
-        let input = build_ai_work_input(&data, &[], Some(observed_at));
+        let snapshot = build_snapshot(
+            &data,
+            &[],
+            Some(observed_at),
+            None,
+            WeReadSyncState::default(),
+        );
+        let local_source = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "local-ai-usage")
+            .unwrap();
 
-        assert_eq!(input.observed_at, Some(observed_at));
+        assert_eq!(local_source.observed_at, Some(observed_at));
+    }
+
+    #[test]
+    fn ai_work_keeps_local_and_quota_generations_separate() {
+        let local_observed_at = Utc::now() - ChronoDuration::minutes(2);
+        let quota_observed_at = Utc::now() - ChronoDuration::minutes(1);
+        let start = weread::week_start_for(Local::now().date_naive());
+        let data = UsageData {
+            daily: vec![day(start, 100, 1.0, "gpt-5")],
+            ..UsageData::default()
+        };
+        let quota = UsageOutput {
+            provider: "Codex".to_string(),
+            account: None,
+            plan: None,
+            email: None,
+            metrics: vec![usage::UsageMetric {
+                label: "weekly".to_string(),
+                used_percent: 75.0,
+                remaining_percent: 25.0,
+                remaining_label: None,
+                resets_at: None,
+            }],
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        };
+
+        let snapshot = build_snapshot(
+            &data,
+            &[quota],
+            Some(local_observed_at),
+            Some(quota_observed_at),
+            WeReadSyncState::default(),
+        );
+        let source_observed_at = |id: &str| {
+            snapshot
+                .sources
+                .iter()
+                .find(|source| source.id == id)
+                .and_then(|source| source.observed_at)
+        };
+
+        assert_eq!(
+            source_observed_at("local-ai-usage"),
+            Some(local_observed_at)
+        );
+        assert_eq!(
+            source_observed_at("subscription-usage-cache"),
+            Some(quota_observed_at)
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn refresh_with_missing_quota_keeps_durable_quota_and_fresh_local_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = ConfigDirGuard::set(dir.path());
+        let newer = Utc::now();
+        let older = newer - ChronoDuration::minutes(10);
+        let start = weread::week_start_for(Local::now().date_naive());
+        let quota = UsageOutput {
+            provider: "Codex".to_string(),
+            account: None,
+            plan: None,
+            email: None,
+            metrics: vec![usage::UsageMetric {
+                label: "weekly".to_string(),
+                used_percent: 75.0,
+                remaining_percent: 25.0,
+                remaining_label: None,
+                resets_at: None,
+            }],
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        };
+        let durable = build_snapshot(
+            &UsageData {
+                daily: vec![day(start, 100, 1.0, "gpt-5")],
+                ..UsageData::default()
+            },
+            &[quota],
+            Some(older),
+            Some(older),
+            WeReadSyncState::default(),
+        );
+        store::save(&durable, &WeReadSyncState::default()).unwrap();
+        let incoming = build_snapshot(
+            &UsageData {
+                daily: vec![day(start, 250, 2.5, "gpt-5")],
+                ..UsageData::default()
+            },
+            &[],
+            Some(newer),
+            None,
+            WeReadSyncState::default(),
+        );
+
+        let (merged, committed) = persist_snapshot(&incoming, &WeReadSyncState::default()).unwrap();
+
+        assert!(committed);
+        assert_eq!(merged.ai.total_tokens, Some(250));
+        assert_eq!(merged.ai.max_used_percent, Some(75.0));
+        let source_observed_at = |id: &str| {
+            merged
+                .sources
+                .iter()
+                .find(|source| source.id == id)
+                .and_then(|source| source.observed_at)
+        };
+        assert_eq!(source_observed_at("local-ai-usage"), Some(newer));
+        assert_eq!(source_observed_at("subscription-usage-cache"), Some(older));
     }
 
     #[test]

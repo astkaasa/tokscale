@@ -4,6 +4,48 @@ use tokscale_core::pulse::weread::format_read_duration;
 
 use crate::tui::app::{App, ClickAction, Tab};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabLabels {
+    Full,
+    Short,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TabSpacing {
+    horizontal_padding: u16,
+    divider: u16,
+}
+
+const NORMAL_TAB_SPACING: TabSpacing = TabSpacing {
+    horizontal_padding: 2,
+    divider: 2,
+};
+const COMPACT_TAB_SPACING: TabSpacing = TabSpacing {
+    horizontal_padding: 1,
+    divider: 1,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceTabsLayout {
+    tabs: Vec<Tab>,
+    labels: TabLabels,
+    spacing: TabSpacing,
+}
+
+impl WorkspaceTabsLayout {
+    fn new(tabs: Vec<Tab>, labels: TabLabels, spacing: TabSpacing) -> Self {
+        Self {
+            tabs,
+            labels,
+            spacing,
+        }
+    }
+
+    fn width(&self) -> u16 {
+        header_tabs_width(&self.tabs, self.labels, self.spacing)
+    }
+}
+
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let is_very_narrow = app.is_very_narrow();
     let is_narrow = app.is_narrow();
@@ -70,7 +112,7 @@ fn render_right_status(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool
     let status_text = format!("{scope}  •  {status}");
     let width = Line::from(status_text.as_str()).width() as u16;
     let guard_width: u16 = 18;
-    let tab_width = header_tabs_width(&header_tabs(app), false);
+    let tab_width = header_tabs_width(&header_tabs(app), TabLabels::Full, NORMAL_TAB_SPACING);
     if guard_width
         .saturating_add(tab_width)
         .saturating_add(width)
@@ -117,22 +159,19 @@ fn render_workspace_tabs(
         return;
     }
     let available_width = right_guard.saturating_sub(left_guard);
-    let visible_tabs = header_tabs_for_layout(app, is_very_narrow, available_width);
-    let tab_count = visible_tabs.len();
+    let layout = header_tabs_for_layout(app, is_very_narrow, available_width);
+    let tab_count = layout.tabs.len();
     if tab_count == 0 {
         return;
     }
 
-    let item_widths: Vec<u16> = visible_tabs
+    let item_widths: Vec<u16> = layout
+        .tabs
         .iter()
-        .map(|tab| tab_label_width(*tab, is_very_narrow).saturating_add(4))
+        .map(|tab| tab_item_width(*tab, layout.labels, layout.spacing))
         .collect();
-    let divider_width = 2u16;
-    let total_width = item_widths
-        .iter()
-        .copied()
-        .sum::<u16>()
-        .saturating_add(divider_width.saturating_mul(tab_count.saturating_sub(1) as u16));
+    let divider_width = layout.spacing.divider;
+    let total_width = layout.width();
     let centered = area.x + area.width.saturating_sub(total_width) / 2;
     let mut x = centered.max(left_guard);
     if x.saturating_add(total_width) > right_guard {
@@ -140,7 +179,7 @@ fn render_workspace_tabs(
         x = x.max(left_guard.min(area.right()));
     }
 
-    for (index, tab) in visible_tabs.into_iter().enumerate() {
+    for (index, tab) in layout.tabs.into_iter().enumerate() {
         let remaining_width = right_guard.saturating_sub(x);
         if remaining_width == 0 {
             break;
@@ -153,7 +192,7 @@ fn render_workspace_tabs(
         } else {
             Style::default().fg(app.theme.foreground)
         };
-        let label = tab_label(tab, is_very_narrow);
+        let label = tab_label(tab, layout.labels);
         let text_width = width as usize;
         let text = format!("{:^text_width$}", label);
         let rect = Rect::new(x, area.y, width, 1);
@@ -169,7 +208,7 @@ fn render_workspace_tabs(
         let divider = Rect::new(x, area.y, divider_width.min(remaining_width), 1);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "  ",
+                " ".repeat(divider.width as usize),
                 Style::default().fg(app.theme.border),
             ))),
             divider,
@@ -178,66 +217,115 @@ fn render_workspace_tabs(
     }
 }
 
-fn tab_label(tab: Tab, is_very_narrow: bool) -> &'static str {
-    if is_very_narrow {
-        tab.short_name()
-    } else {
-        tab.as_str()
+fn tab_label(tab: Tab, labels: TabLabels) -> &'static str {
+    match labels {
+        TabLabels::Full => tab.as_str(),
+        TabLabels::Short => tab.short_name(),
     }
 }
 
-fn tab_label_width(tab: Tab, is_very_narrow: bool) -> u16 {
-    Line::from(tab_label(tab, is_very_narrow)).width() as u16
+fn tab_label_width(tab: Tab, labels: TabLabels) -> u16 {
+    Line::from(tab_label(tab, labels)).width() as u16
 }
 
-fn header_tabs_width(tabs: &[Tab], is_very_narrow: bool) -> u16 {
-    let divider_width = 2u16;
+fn tab_item_width(tab: Tab, labels: TabLabels, spacing: TabSpacing) -> u16 {
+    tab_label_width(tab, labels).saturating_add(spacing.horizontal_padding.saturating_mul(2))
+}
+
+fn header_tabs_width(tabs: &[Tab], labels: TabLabels, spacing: TabSpacing) -> u16 {
     tabs.iter()
-        .map(|tab| tab_label_width(*tab, is_very_narrow).saturating_add(4))
+        .map(|tab| tab_item_width(*tab, labels, spacing))
         .sum::<u16>()
-        .saturating_add(divider_width.saturating_mul(tabs.len().saturating_sub(1) as u16))
+        .saturating_add(
+            spacing
+                .divider
+                .saturating_mul(tabs.len().saturating_sub(1) as u16),
+        )
 }
 
 fn header_tabs(app: &App) -> Vec<Tab> {
     app.visible_workspaces().to_vec()
 }
 
-fn header_tabs_for_layout(app: &App, is_very_narrow: bool, available_width: u16) -> Vec<Tab> {
+fn header_tabs_for_layout(
+    app: &App,
+    is_very_narrow: bool,
+    available_width: u16,
+) -> WorkspaceTabsLayout {
     let tabs = header_tabs(app);
-    if tabs.len() <= 1
-        || !tabs.contains(&app.current_tab)
-        || header_tabs_width(&tabs, is_very_narrow) <= available_width
-    {
-        return tabs;
-    }
-    prioritize_current_tab(tabs, app.current_tab)
-}
 
-fn prioritize_current_tab(tabs: Vec<Tab>, current: Tab) -> Vec<Tab> {
-    let Some(current_index) = tabs.iter().position(|tab| *tab == current) else {
-        return tabs;
+    let candidates = if is_very_narrow {
+        vec![
+            (TabLabels::Full, NORMAL_TAB_SPACING),
+            (TabLabels::Short, NORMAL_TAB_SPACING),
+            (TabLabels::Short, COMPACT_TAB_SPACING),
+        ]
+    } else {
+        vec![
+            (TabLabels::Full, NORMAL_TAB_SPACING),
+            (TabLabels::Full, COMPACT_TAB_SPACING),
+            (TabLabels::Short, NORMAL_TAB_SPACING),
+            (TabLabels::Short, COMPACT_TAB_SPACING),
+        ]
     };
 
-    let mut ordered = Vec::with_capacity(tabs.len());
-    if current_index > 0 {
-        ordered.push(tabs[current_index - 1]);
-    }
-    ordered.push(current);
-    if current_index + 1 < tabs.len() {
-        ordered.push(tabs[current_index + 1]);
-    }
-
-    for distance in 2..tabs.len() {
-        if current_index >= distance {
-            ordered.push(tabs[current_index - distance]);
-        }
-        let right = current_index + distance;
-        if right < tabs.len() {
-            ordered.push(tabs[right]);
+    for (labels, spacing) in candidates {
+        let layout = WorkspaceTabsLayout::new(tabs.clone(), labels, spacing);
+        if layout.width() <= available_width {
+            return layout;
         }
     }
 
-    ordered
+    let visible_tabs = canonical_tab_window(
+        &tabs,
+        app.current_tab,
+        available_width,
+        TabLabels::Short,
+        COMPACT_TAB_SPACING,
+    );
+    WorkspaceTabsLayout::new(visible_tabs, TabLabels::Short, COMPACT_TAB_SPACING)
+}
+
+fn canonical_tab_window(
+    tabs: &[Tab],
+    current: Tab,
+    available_width: u16,
+    labels: TabLabels,
+    spacing: TabSpacing,
+) -> Vec<Tab> {
+    let Some(current_index) = tabs.iter().position(|tab| *tab == current) else {
+        return tabs.to_vec();
+    };
+
+    let mut best: Option<(usize, usize, usize)> = None;
+    for start in 0..=current_index {
+        for end in (current_index + 1)..=tabs.len() {
+            if header_tabs_width(&tabs[start..end], labels, spacing) > available_width {
+                continue;
+            }
+
+            let count = end - start;
+            let left_count = current_index - start;
+            let right_count = end - current_index - 1;
+            let imbalance = left_count.abs_diff(right_count);
+            let replace = match best {
+                None => true,
+                Some((best_start, best_end, best_imbalance)) => {
+                    count > best_end - best_start
+                        || (count == best_end - best_start && imbalance < best_imbalance)
+                        || (count == best_end - best_start
+                            && imbalance == best_imbalance
+                            && start < best_start)
+                }
+            };
+            if replace {
+                best = Some((start, end, imbalance));
+            }
+        }
+    }
+
+    best.map(|(start, end, _)| tabs[start..end].to_vec())
+        .unwrap_or_else(|| vec![current])
 }
 
 #[cfg(test)]
@@ -248,6 +336,14 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     use crate::tui::app::TuiConfig;
+
+    const CANONICAL_TABS: [Tab; 5] = [
+        Tab::Overview,
+        Tab::Models,
+        Tab::Timeline,
+        Tab::Usage,
+        Tab::Pulse,
+    ];
 
     fn make_app(width: u16) -> App {
         let config = TuiConfig {
@@ -266,6 +362,7 @@ mod tests {
     }
 
     fn render_header(app: &mut App, width: u16) -> Vec<Vec<String>> {
+        app.clear_click_areas();
         let backend = TestBackend::new(width, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -303,24 +400,140 @@ mod tests {
         rows[row].iter().map(String::as_str).collect()
     }
 
-    #[test]
-    fn timeline_label_click_uses_rendered_normal_tab_position() {
-        let mut app = make_app(80);
-
-        let rows = render_header(&mut app, 80);
-        click_header(&mut app, rendered_label_column(&rows, "Timeline"));
-
-        assert_eq!(app.current_tab, Tab::Timeline);
+    fn rendered_tab_areas(app: &App) -> Vec<(Tab, Rect)> {
+        app.click_areas
+            .iter()
+            .filter_map(|area| match &area.action {
+                ClickAction::Tab(tab) => Some((*tab, area.rect)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn timeline_short_label_click_uses_rendered_very_narrow_tab_position() {
-        let mut app = make_app(59);
+    fn key_widths_choose_expected_workspace_tab_density() {
+        let cases = [
+            (
+                28,
+                Tab::Usage,
+                TabLabels::Short,
+                COMPACT_TAB_SPACING,
+                vec![Tab::Timeline, Tab::Usage, Tab::Pulse],
+            ),
+            (
+                44,
+                Tab::Overview,
+                TabLabels::Short,
+                COMPACT_TAB_SPACING,
+                CANONICAL_TABS.to_vec(),
+            ),
+            (
+                52,
+                Tab::Overview,
+                TabLabels::Short,
+                COMPACT_TAB_SPACING,
+                CANONICAL_TABS.to_vec(),
+            ),
+            (
+                80,
+                Tab::Overview,
+                TabLabels::Full,
+                NORMAL_TAB_SPACING,
+                CANONICAL_TABS.to_vec(),
+            ),
+            (
+                120,
+                Tab::Overview,
+                TabLabels::Full,
+                NORMAL_TAB_SPACING,
+                CANONICAL_TABS.to_vec(),
+            ),
+        ];
 
-        let rows = render_header(&mut app, 59);
-        click_header(&mut app, rendered_label_column(&rows, "Time"));
+        for (width, current, labels, spacing, tabs) in cases {
+            let mut app = make_app(width);
+            app.current_tab = current;
+            let available_width = width.saturating_sub(if app.is_very_narrow() { 9 } else { 20 });
 
-        assert_eq!(app.current_tab, Tab::Timeline);
+            assert_eq!(
+                header_tabs_for_layout(&app, app.is_very_narrow(), available_width),
+                WorkspaceTabsLayout::new(tabs, labels, spacing),
+                "terminal width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_tabs_keep_canonical_order_across_widths_and_current_tabs() {
+        for width in [28, 44, 52, 80, 120] {
+            for current in CANONICAL_TABS {
+                let mut app = make_app(width);
+                app.current_tab = current;
+
+                render_header(&mut app, width);
+                let rendered_tabs: Vec<Tab> = rendered_tab_areas(&app)
+                    .into_iter()
+                    .map(|(tab, _)| tab)
+                    .collect();
+
+                assert!(
+                    rendered_tabs.contains(&current),
+                    "width {width}, current {current:?}: {rendered_tabs:?}"
+                );
+                assert!(
+                    CANONICAL_TABS
+                        .windows(rendered_tabs.len())
+                        .any(|window| window == rendered_tabs.as_slice()),
+                    "width {width}, current {current:?}: {rendered_tabs:?}"
+                );
+                if width >= 44 {
+                    assert_eq!(
+                        rendered_tabs.as_slice(),
+                        CANONICAL_TABS.as_slice(),
+                        "width {width}, current {current:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_tab_click_areas_match_rendered_labels_at_key_widths() {
+        let cases = [
+            (28, Tab::Usage, TabLabels::Short),
+            (44, Tab::Overview, TabLabels::Short),
+            (52, Tab::Overview, TabLabels::Short),
+            (80, Tab::Overview, TabLabels::Full),
+            (120, Tab::Overview, TabLabels::Full),
+        ];
+
+        for (width, current, labels) in cases {
+            let mut probe = make_app(width);
+            probe.current_tab = current;
+            render_header(&mut probe, width);
+            let targets: Vec<Tab> = rendered_tab_areas(&probe)
+                .into_iter()
+                .map(|(tab, _)| tab)
+                .collect();
+
+            for target in targets {
+                let mut app = make_app(width);
+                app.current_tab = current;
+                let rows = render_header(&mut app, width);
+                let column = rendered_label_column(&rows, tab_label(target, labels));
+                let rect = rendered_tab_areas(&app)
+                    .into_iter()
+                    .find_map(|(tab, rect)| (tab == target).then_some(rect))
+                    .expect("expected tab click area");
+
+                assert!(
+                    column >= rect.x && column < rect.right(),
+                    "width {width}, target {target:?}: label column {column}, rect {rect:?}"
+                );
+                click_header(&mut app, column);
+                assert_eq!(app.current_tab, target, "width {width}, target {target:?}");
+            }
+        }
     }
 
     #[test]
@@ -370,14 +583,8 @@ mod tests {
         assert!(row.contains("Tok"), "{row}");
         assert!(row.contains("Use"), "{row}");
         assert_eq!(
-            header_tabs_for_layout(&app, true, 19),
-            vec![
-                Tab::Timeline,
-                Tab::Usage,
-                Tab::Pulse,
-                Tab::Models,
-                Tab::Overview
-            ]
+            header_tabs_for_layout(&app, true, 19).tabs,
+            vec![Tab::Timeline, Tab::Usage, Tab::Pulse]
         );
     }
 

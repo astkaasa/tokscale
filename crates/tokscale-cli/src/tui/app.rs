@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use ratatui::style::Color;
 
 use crate::ClientFilter;
@@ -22,7 +22,7 @@ use super::interaction::ClickArea;
 pub(crate) use super::navigation::{
     ChartGranularity, OverviewMode, SortDirection, SortField, Tab, TimelineGranularity,
 };
-use super::pulse_state::PulseState;
+use super::pulse_state::{AiSourceObservedAt, PulseState};
 use super::settings::Settings;
 use super::themes::{Theme, ThemePreference};
 use super::ui::dialog::DialogStack;
@@ -156,7 +156,7 @@ pub struct App {
         BackgroundJob<Result<crate::commands::usage::codex::RateLimitResetConsumeResult, String>>,
     pub pulse: PulseState,
     pulse_data_provenance: PulseDataProvenance,
-    pulse_ai_observed_at: Option<DateTime<Utc>>,
+    pulse_ai_observed_at: AiSourceObservedAt,
     render_reference_now: Option<NaiveDateTime>,
     #[cfg(test)]
     usage_fetcher: UsageFetcher,
@@ -164,6 +164,49 @@ pub struct App {
     codex_login_child: Option<CodexLoginChildSlot>,
 
     data_version: u64,
+}
+
+fn report_scope_label_for_date(
+    since: &Option<String>,
+    until: &Option<String>,
+    year: &Option<String>,
+    reference_date: NaiveDate,
+) -> String {
+    if let Some(year) = year {
+        return year.clone();
+    }
+
+    let reference = reference_date.to_string();
+    if since.as_deref() == Some(reference.as_str()) && until.as_deref() == Some(reference.as_str())
+    {
+        return "Today".to_string();
+    }
+
+    let week_start = reference_date
+        .checked_sub_signed(chrono::Duration::days(6))
+        .map(|date| date.to_string());
+    if since.as_ref() == week_start.as_ref() && until.as_deref() == Some(reference.as_str()) {
+        return "Last 7 days".to_string();
+    }
+
+    let month_start = reference_date.with_day(1).map(|date| date.to_string());
+    if since.as_ref() == month_start.as_ref() && until.as_deref() == Some(reference.as_str()) {
+        return reference_date.format("%B %Y").to_string();
+    }
+
+    crate::date_filter::get_date_range_label(false, false, false, since, until, year)
+        .unwrap_or_else(|| "All Time".to_string())
+}
+
+impl App {
+    pub(crate) fn report_scope_label(&self) -> String {
+        report_scope_label_for_date(
+            &self.data_loader.since,
+            &self.data_loader.until,
+            &self.data_loader.year,
+            self.overview_date(),
+        )
+    }
 }
 
 mod actions;

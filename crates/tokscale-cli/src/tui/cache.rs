@@ -4,8 +4,8 @@
 //! while fresh data loads in the background.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::fs::File;
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,6 +22,7 @@ use super::data::{
 
 /// Cache staleness threshold: 5 minutes.
 const CACHE_STALE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
+const CACHE_FUTURE_TOLERANCE_MS: u64 = 60 * 1000;
 const CACHE_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,12 +61,19 @@ pub const TUI_DEFAULT_GROUP_BY: GroupBy = GroupBy::Model;
 
 /// Get the cache directory path.
 fn cache_dir() -> Option<PathBuf> {
-    Some(crate::paths::get_cache_dir())
+    let config_dir = crate::paths::get_config_dir();
+    tokscale_core::fs_atomic::repair_private_dir(&config_dir);
+
+    let cache_dir = crate::paths::get_cache_dir();
+    tokscale_core::fs_atomic::repair_private_dir(&cache_dir);
+    Some(cache_dir)
 }
 
 /// Get the cache file path
 fn cache_file() -> Option<PathBuf> {
-    cache_dir().map(|d| d.join("tui-data-cache.json"))
+    let path = cache_dir()?.join("tui-data-cache.json");
+    tokscale_core::fs_atomic::repair_private_file(&path);
+    Some(path)
 }
 
 /// Cached TUI data structure (serializable)
@@ -615,6 +623,14 @@ pub fn load_cache_with_observed_at(
         return (CacheResult::Miss, None);
     }
 
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    if cached.timestamp > now.saturating_add(CACHE_FUTURE_TOLERANCE_MS) {
+        return (CacheResult::Miss, None);
+    }
+
     // Check how cached clients relate to enabled clients
     let client_match = check_client_match(enabled_clients, &cached.enabled_clients);
 
@@ -638,10 +654,6 @@ pub fn load_cache_with_observed_at(
         return (CacheResult::StaleSubset(data), Some(observed_at));
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
     let cache_age = now.saturating_sub(cached.timestamp);
     let result = if cache_age > CACHE_STALE_THRESHOLD_MS {
         CacheResult::Stale(data)
@@ -694,9 +706,12 @@ pub fn save_cached_data(
         return;
     };
 
-    // Ensure cache directory exists
+    let config_dir = crate::paths::get_config_dir();
+    if tokscale_core::fs_atomic::ensure_private_dir(&config_dir).is_err() {
+        return;
+    }
     if let Some(dir) = cache_path.parent() {
-        if fs::create_dir_all(dir).is_err() {
+        if tokscale_core::fs_atomic::ensure_private_dir(dir).is_err() {
             return;
         }
     }
@@ -724,40 +739,18 @@ pub fn save_cached_data(
         data: data.into(),
     };
 
-    // INVARIANT: All cache writes use atomic temp-file rename. NEVER delete
-    // the canonical cache file before writing — a partial save or process
-    // crash between delete and rename would lose the cache. The temp-file
-    // pattern makes corruption-on-crash impossible.
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let temp_path = cache_path.with_file_name(format!(
-        ".{}.{}.{:x}.tmp",
-        cache_path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("tui-data-cache.json"),
-        std::process::id(),
-        nanos
-    ));
-    let file = match File::create(&temp_path) {
-        Ok(f) => f,
+    let content = match serde_json::to_vec(&cached) {
+        Ok(content) => content,
         Err(_) => return,
     };
-    let writer = BufWriter::new(file);
-
-    if serde_json::to_writer(writer, &cached).is_ok() {
-        let _ = tokscale_core::fs_atomic::replace_file(&temp_path, &cache_path);
-    } else {
-        let _ = fs::remove_file(&temp_path);
-    }
+    let _ = tokscale_core::fs_atomic::atomic_write_private(&cache_path, &content);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::io::BufWriter;
     use std::time::{SystemTime, UNIX_EPOCH};
     use std::{env, fs};
     use tempfile::TempDir;
@@ -771,6 +764,16 @@ mod tests {
             set.insert(ClientFilter::Synthetic);
         }
         set
+    }
+
+    fn make_fixture_cache_current(path: &std::path::Path) {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        value["timestamp"] = serde_json::json!(SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64);
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
 
     fn cached_agent(agent: &str, clients: &str, total_seed: u64) -> CachedAgentUsage {
@@ -972,6 +975,38 @@ mod tests {
 
     #[test]
     #[serial]
+    fn load_cache_rejects_timestamp_far_in_the_future() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { env::set_var("TOKSCALE_CONFIG_DIR", temp_dir.path()) };
+
+        let clients = make_filters(&[ClientFilter::Claude], false);
+        let scope = CacheReportScope::default();
+        save_cached_data(&UsageData::default(), &clients, &GroupBy::Model, &scope);
+
+        let path = cache_file().unwrap();
+        let mut cached: CachedTUIData =
+            serde_json::from_reader(BufReader::new(File::open(&path).unwrap())).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        cached.timestamp = now + CACHE_FUTURE_TOLERANCE_MS + 60_000;
+        serde_json::to_writer(BufWriter::new(File::create(&path).unwrap()), &cached).unwrap();
+
+        let (result, observed_at) = load_cache_with_observed_at(&clients, &GroupBy::Model, &scope);
+
+        assert!(matches!(result, CacheResult::Miss));
+        assert_eq!(observed_at, None);
+
+        match previous_override {
+            Some(value) => unsafe { env::set_var("TOKSCALE_CONFIG_DIR", value) },
+            None => unsafe { env::remove_var("TOKSCALE_CONFIG_DIR") },
+        }
+    }
+
+    #[test]
+    #[serial]
     fn load_cache_misses_when_report_scope_differs() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
@@ -1006,6 +1041,7 @@ mod tests {
 }"#,
         )
         .unwrap();
+        make_fixture_cache_current(&cache_path);
 
         let clients = make_filters(&[ClientFilter::Claude], false);
         let unfiltered_scope = CacheReportScope::default();
@@ -1259,6 +1295,7 @@ mod tests {
 }"#,
         )
         .unwrap();
+        make_fixture_cache_current(&cache_path);
 
         let clients = make_filters(&[ClientFilter::Claude, ClientFilter::Cursor], false);
         match load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()) {
@@ -1342,6 +1379,73 @@ mod tests {
         match previous_override {
             Some(value) => unsafe { env::set_var("TOKSCALE_CONFIG_DIR", value) },
             None => unsafe { env::remove_var("TOKSCALE_CONFIG_DIR") },
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn save_cached_data_replaces_legacy_file_with_private_modes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp = TempDir::new().unwrap();
+        let config_dir = temp.path().join("config");
+        let cache_dir = config_dir.join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = cache_dir.join("tui-data-cache.json");
+        fs::write(&path, b"legacy cache").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let legacy_inode = fs::metadata(&path).unwrap().ino();
+
+        let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { env::set_var("TOKSCALE_CONFIG_DIR", &config_dir) };
+
+        let clients = make_filters(&[ClientFilter::Claude], false);
+        assert!(matches!(
+            load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()),
+            CacheResult::Miss
+        ));
+        let repaired = fs::metadata(&path).unwrap();
+        assert_eq!(repaired.ino(), legacy_inode);
+        assert_eq!(repaired.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            fs::metadata(&config_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&cache_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        save_cached_data(
+            &UsageData::default(),
+            &clients,
+            &GroupBy::Model,
+            &CacheReportScope::default(),
+        );
+
+        let metadata = fs::metadata(&path).unwrap();
+        assert_ne!(metadata.ino(), legacy_inode);
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            fs::metadata(&config_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&cache_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+
+        unsafe {
+            match previous_override {
+                Some(value) => env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
         }
     }
 

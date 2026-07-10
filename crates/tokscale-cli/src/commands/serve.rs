@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, Utc};
 use tokscale_core::pulse::store as pulse_store;
 use tokscale_core::{ClientId, GroupBy};
 
 use crate::client_filter::ClientFilter;
 use crate::date_filter::get_date_range_label;
-use crate::report_support::{emit_cursor_setup_warnings, setup_warnings_for_report};
+use crate::report_support::{
+    emit_cursor_setup_warnings, setup_warnings_for_report, PricingCacheOnlyGuard,
+};
 use crate::spinner::LightSpinner;
 use crate::tui::{load_cache, CacheReportScope, CacheResult, DataLoader, UsageData};
 use crate::web::overview::{
@@ -51,9 +53,9 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
     let cursor_setup_warnings = setup_warnings_for_report(&None, &clients);
 
     let report_scope = CacheReportScope::new(since.clone(), until.clone(), year.clone());
-    let data = match load_cache(&enabled_filters, &group_by, &report_scope) {
-        CacheResult::Fresh(data) | CacheResult::Stale(data) => data,
-        CacheResult::StaleSubset(_) | CacheResult::Miss => scan_usage_data(
+    let data = match fresh_cached_data(load_cache(&enabled_filters, &group_by, &report_scope)) {
+        Some(data) => data,
+        None => scan_usage_data(
             since.clone(),
             until.clone(),
             year.clone(),
@@ -86,7 +88,10 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
     let json = serde_json::to_string_pretty(&overview_json)?;
     let surface_data = data.clone();
     let surface_options = render_options.clone();
-    let pulse_snapshot = pulse_store::load_latest();
+    let pulse_snapshot = pulse_store::load_latest().map(|mut snapshot| {
+        snapshot.refresh_time_sensitive_source_health(Utc::now());
+        snapshot
+    });
     let review_html = pulse_snapshot.as_ref().map(render_weekly_review);
     let pulse_json = pulse_snapshot
         .as_ref()
@@ -121,6 +126,13 @@ fn with_trailing_newline(mut output: String) -> String {
     output
 }
 
+fn fresh_cached_data(result: CacheResult) -> Option<UsageData> {
+    match result {
+        CacheResult::Fresh(data) => Some(data),
+        CacheResult::Stale(_) | CacheResult::StaleSubset(_) | CacheResult::Miss => None,
+    }
+}
+
 fn scan_usage_data(
     since: Option<String>,
     until: Option<String>,
@@ -138,6 +150,7 @@ fn scan_usage_data(
         ))
     };
 
+    let _pricing_cache_only = PricingCacheOnlyGuard::enable();
     let loader = DataLoader::with_filters(since, until, year);
     let data = loader.load(enabled_clients, group_by, include_synthetic)?;
 
@@ -201,5 +214,21 @@ mod tests {
     fn pulse_markdown_matches_cli_line_termination() {
         assert_eq!(with_trailing_newline("# Pulse".to_string()), "# Pulse\n");
         assert_eq!(with_trailing_newline("# Pulse\n".to_string()), "# Pulse\n");
+    }
+
+    #[test]
+    fn serve_cache_accepts_only_fresh_data() {
+        let fresh = UsageData {
+            total_tokens: 42,
+            ..UsageData::default()
+        };
+
+        assert_eq!(
+            fresh_cached_data(CacheResult::Fresh(fresh)).map(|data| data.total_tokens),
+            Some(42)
+        );
+        assert!(fresh_cached_data(CacheResult::Stale(UsageData::default())).is_none());
+        assert!(fresh_cached_data(CacheResult::StaleSubset(UsageData::default())).is_none());
+        assert!(fresh_cached_data(CacheResult::Miss).is_none());
     }
 }

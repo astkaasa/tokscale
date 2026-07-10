@@ -13,6 +13,8 @@ use super::weread::{
 
 pub const PULSE_SCHEMA_VERSION: u32 = 1;
 const AI_COST_INCREASE_THRESHOLD_RATIO: f64 = 0.25;
+const QUOTA_CACHE_FRESHNESS_SECS: i64 = 300;
+const SOURCE_FUTURE_TOLERANCE_SECS: i64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,23 +43,40 @@ impl PulseSnapshotV1 {
             WeReadSyncState::from_legacy(reading_state, DatasetCoverage::Unknown, Utc::now());
         Self::from_inputs(
             AiWorkInput {
-                current: None,
-                previous: None,
                 quota_sources: ai_sources,
-                observed_at: None,
+                ..AiWorkInput::default()
             },
             reading_state,
         )
     }
 
     pub fn from_inputs(ai_input: AiWorkInput, reading_state: WeReadSyncState) -> Self {
+        let observed_at = ai_input.observed_at;
+        Self::from_inputs_with_source_observed_at(ai_input, observed_at, observed_at, reading_state)
+    }
+
+    /// Builds a snapshot with independent local-usage and quota generations.
+    ///
+    /// `from_inputs` retains the legacy shared `AiWorkInput::observed_at` contract.
+    pub fn from_inputs_with_source_observed_at(
+        ai_input: AiWorkInput,
+        local_observed_at: Option<DateTime<Utc>>,
+        quota_observed_at: Option<DateTime<Utc>>,
+        reading_state: WeReadSyncState,
+    ) -> Self {
         let generated_at = Utc::now();
         let period = snapshot_period();
         let ai = AiPulse::from_input(&ai_input);
         let reading =
             ReadingPulse::from_weread_sync_for_period(&reading_state, &period, generated_at);
         let knowledge_flow = KnowledgeFlowSignal::from_weread_sync(&reading_state);
-        let sources = build_source_health(&ai_input, &reading_state);
+        let sources = build_source_health(
+            &ai_input,
+            local_observed_at,
+            quota_observed_at,
+            &reading_state,
+            generated_at,
+        );
         Self::from_normalized(
             generated_at,
             period,
@@ -74,17 +93,26 @@ impl PulseSnapshotV1 {
         let period = snapshot_period();
         let fallback_input = AiWorkInput::default();
         let fallback_ai = AiPulse::from_input(&fallback_input);
-        let fallback_sources = build_source_health(&fallback_input, &reading_state);
-        let existing = existing.filter(|snapshot| {
-            snapshot.period.start == period.start
-                && snapshot.period.end_exclusive == period.end_exclusive
-        });
+        let fallback_sources =
+            build_source_health(&fallback_input, None, None, &reading_state, generated_at);
+        let existing = existing
+            .filter(|snapshot| {
+                snapshot.period.start == period.start
+                    && snapshot.period.end_exclusive == period.end_exclusive
+            })
+            .cloned()
+            .map(|mut snapshot| {
+                snapshot.refresh_time_sensitive_source_health(generated_at);
+                snapshot
+            });
         let ai = existing
+            .as_ref()
             .map(|snapshot| snapshot.ai.clone())
             .unwrap_or(fallback_ai);
         let mut sources = Vec::with_capacity(3);
         for id in ["local-ai-usage", "subscription-usage-cache"] {
             if let Some(source) = existing
+                .as_ref()
                 .and_then(|snapshot| snapshot.sources.iter().find(|source| source.id == id))
                 .or_else(|| fallback_sources.iter().find(|source| source.id == id))
             {
@@ -106,6 +134,51 @@ impl PulseSnapshotV1 {
             knowledge_flow,
             &reading_state,
         )
+    }
+
+    pub fn refresh_time_sensitive_source_health(&mut self, now: DateTime<Utc>) {
+        let Some((current_freshness, observed_at)) = self
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .map(|source| (source.freshness, source.observed_at))
+        else {
+            return;
+        };
+        if current_freshness == PulseFreshness::Missing {
+            return;
+        }
+
+        let freshness = quota_source_freshness(true, observed_at, now);
+        if freshness == PulseFreshness::Stale && current_freshness == PulseFreshness::Fresh {
+            self.mark_source_degraded("subscription-usage-cache", "stale_cache");
+        } else {
+            self.sync_evidence_freshness("subscription-usage-cache", current_freshness);
+        }
+    }
+
+    pub fn mark_source_degraded(&mut self, source_id: &str, issue_code: &str) -> bool {
+        let Some(source) = self
+            .sources
+            .iter_mut()
+            .find(|source| source.id == source_id)
+        else {
+            return false;
+        };
+        source.status = PulseFreshness::Stale.label().to_string();
+        source.freshness = PulseFreshness::Stale;
+        source.coverage = PulseCoverage::Partial;
+        source.issue_code = Some(issue_code.to_string());
+        self.sync_evidence_freshness(source_id, PulseFreshness::Stale);
+        true
+    }
+
+    fn sync_evidence_freshness(&mut self, source_id: &str, freshness: PulseFreshness) {
+        for evidence in &mut self.evidence {
+            if evidence.source_id == source_id {
+                evidence.freshness = freshness;
+            }
+        }
     }
 
     fn from_normalized(
@@ -753,24 +826,40 @@ fn snapshot_period() -> PulsePeriod {
     }
 }
 
-fn build_source_health(ai: &AiWorkInput, reading: &WeReadSyncState) -> Vec<SourceHealth> {
+fn build_source_health(
+    ai: &AiWorkInput,
+    local_observed_at: Option<DateTime<Utc>>,
+    quota_observed_at: Option<DateTime<Utc>>,
+    reading: &WeReadSyncState,
+    generated_at: DateTime<Utc>,
+) -> Vec<SourceHealth> {
     let ai_freshness = if ai.current.is_some() {
         PulseFreshness::Fresh
     } else {
         PulseFreshness::Missing
     };
-    let quota_freshness = if ai.quota_sources.is_empty() {
-        PulseFreshness::Missing
-    } else {
-        PulseFreshness::Fresh
-    };
+    let quota_freshness = quota_source_freshness(
+        !ai.quota_sources.is_empty(),
+        quota_observed_at,
+        generated_at,
+    );
     let observed_at = reading.datasets.current_week.observed_at;
     let issue = first_weread_issue(reading);
     let freshness = map_freshness(reading.datasets.current_week.freshness);
-    let coverage = if reading.status == WeReadStatus::Partial {
-        PulseCoverage::Partial
-    } else {
-        map_coverage(reading.datasets.current_week.coverage)
+    let coverage = match reading.status {
+        WeReadStatus::Partial
+        | WeReadStatus::AuthMissing
+        | WeReadStatus::Error
+        | WeReadStatus::UpgradeRequired => {
+            if reading.datasets.current_week.value.is_some() {
+                PulseCoverage::Partial
+            } else {
+                PulseCoverage::Unknown
+            }
+        }
+        WeReadStatus::Loading | WeReadStatus::Fresh | WeReadStatus::Stale => {
+            map_coverage(reading.datasets.current_week.coverage)
+        }
     };
 
     vec![
@@ -780,7 +869,7 @@ fn build_source_health(ai: &AiWorkInput, reading: &WeReadSyncState) -> Vec<Sourc
             transport: "local_files".to_string(),
             storage: "local".to_string(),
             connector_version: None,
-            observed_at: ai.observed_at,
+            observed_at: local_observed_at,
             freshness: ai_freshness,
             coverage: if ai.current.is_some() {
                 PulseCoverage::Complete
@@ -795,14 +884,15 @@ fn build_source_health(ai: &AiWorkInput, reading: &WeReadSyncState) -> Vec<Sourc
             transport: "local_cache".to_string(),
             storage: "local".to_string(),
             connector_version: None,
-            observed_at: ai.observed_at,
+            observed_at: quota_observed_at,
             freshness: quota_freshness,
-            coverage: if ai.quota_sources.is_empty() {
-                PulseCoverage::Unknown
-            } else {
-                PulseCoverage::Complete
+            coverage: match quota_freshness {
+                PulseFreshness::Fresh => PulseCoverage::Complete,
+                PulseFreshness::Stale => PulseCoverage::Partial,
+                PulseFreshness::Missing => PulseCoverage::Unknown,
             },
-            issue_code: None,
+            issue_code: (quota_freshness == PulseFreshness::Stale)
+                .then(|| "stale_cache".to_string()),
         },
         SourceHealth {
             id: "weread".to_string(),
@@ -816,6 +906,27 @@ fn build_source_health(ai: &AiWorkInput, reading: &WeReadSyncState) -> Vec<Sourc
             issue_code: issue.map(|issue| issue_code_label(issue.code).to_string()),
         },
     ]
+}
+
+fn quota_source_freshness(
+    has_data: bool,
+    observed_at: Option<DateTime<Utc>>,
+    generated_at: DateTime<Utc>,
+) -> PulseFreshness {
+    if !has_data {
+        return PulseFreshness::Missing;
+    }
+    let Some(observed_at) = observed_at else {
+        return PulseFreshness::Stale;
+    };
+    let age = generated_at
+        .signed_duration_since(observed_at)
+        .num_seconds();
+    if (-SOURCE_FUTURE_TOLERANCE_SECS..=QUOTA_CACHE_FRESHNESS_SECS).contains(&age) {
+        PulseFreshness::Fresh
+    } else {
+        PulseFreshness::Stale
+    }
 }
 
 fn build_evidence(
@@ -1213,6 +1324,160 @@ mod tests {
     }
 
     #[test]
+    fn ai_sources_preserve_distinct_observation_times() {
+        let local_observed_at = Utc::now() - ChronoDuration::minutes(2);
+        let quota_observed_at = Utc::now() - ChronoDuration::minutes(1);
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(local_observed_at),
+            Some(quota_observed_at),
+            reading_fixture(),
+        );
+        let source_observed_at = |id: &str| {
+            snapshot
+                .sources
+                .iter()
+                .find(|source| source.id == id)
+                .and_then(|source| source.observed_at)
+        };
+
+        assert_eq!(
+            source_observed_at("local-ai-usage"),
+            Some(local_observed_at)
+        );
+        assert_eq!(
+            source_observed_at("subscription-usage-cache"),
+            Some(quota_observed_at)
+        );
+    }
+
+    #[test]
+    fn expired_quota_cache_is_stale_with_partial_coverage() {
+        let observed_at = Utc::now() - ChronoDuration::minutes(10);
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(Utc::now()),
+            Some(observed_at),
+            reading_fixture(),
+        );
+        let source = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap();
+
+        assert_eq!(source.observed_at, Some(observed_at));
+        assert_eq!(source.freshness, PulseFreshness::Stale);
+        assert_eq!(source.coverage, PulseCoverage::Partial);
+        assert_eq!(source.issue_code.as_deref(), Some("stale_cache"));
+    }
+
+    #[test]
+    fn loaded_snapshot_expires_quota_source_and_matching_evidence() {
+        let observed_at = Utc::now();
+        let mut snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(observed_at),
+            Some(observed_at),
+            reading_fixture(),
+        );
+        let now = observed_at + ChronoDuration::minutes(10);
+
+        snapshot.refresh_time_sensitive_source_health(now);
+
+        let source = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap();
+        assert_eq!(source.freshness, PulseFreshness::Stale);
+        assert_eq!(source.coverage, PulseCoverage::Partial);
+        assert_eq!(source.issue_code.as_deref(), Some("stale_cache"));
+        let quota_evidence = snapshot
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.source_id == "subscription-usage-cache")
+            .collect::<Vec<_>>();
+        assert!(!quota_evidence.is_empty());
+        assert!(quota_evidence
+            .iter()
+            .all(|evidence| evidence.freshness == PulseFreshness::Stale));
+    }
+
+    #[test]
+    fn source_degradation_updates_matching_evidence() {
+        let now = Utc::now();
+        let mut snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(now),
+            Some(now),
+            reading_fixture(),
+        );
+
+        assert!(snapshot.mark_source_degraded("subscription-usage-cache", "cache_write_failed"));
+
+        let source = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap();
+        assert_eq!(source.freshness, PulseFreshness::Stale);
+        assert_eq!(source.issue_code.as_deref(), Some("cache_write_failed"));
+        let quota_evidence = snapshot
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.source_id == "subscription-usage-cache")
+            .collect::<Vec<_>>();
+        assert!(!quota_evidence.is_empty());
+        assert!(quota_evidence
+            .iter()
+            .all(|evidence| evidence.freshness == PulseFreshness::Stale));
+    }
+
+    #[test]
+    fn quota_without_trustworthy_generation_is_not_reported_as_fresh() {
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(Utc::now()),
+            None,
+            reading_fixture(),
+        );
+        let source = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap();
+
+        assert_eq!(source.freshness, PulseFreshness::Stale);
+        assert_eq!(source.coverage, PulseCoverage::Partial);
+    }
+
+    #[test]
+    fn legacy_shared_ai_observation_time_applies_to_both_sources() {
+        let observed_at = Utc::now() - ChronoDuration::minutes(1);
+        let input: AiWorkInput = serde_json::from_value(json!({
+            "current": ai_fixture().current,
+            "previous": null,
+            "quotaSources": ai_fixture().quota_sources,
+            "observedAt": observed_at,
+        }))
+        .unwrap();
+
+        let snapshot = PulseSnapshotV1::from_inputs(input, reading_fixture());
+
+        for source_id in ["local-ai-usage", "subscription-usage-cache"] {
+            assert_eq!(
+                snapshot
+                    .sources
+                    .iter()
+                    .find(|source| source.id == source_id)
+                    .and_then(|source| source.observed_at),
+                Some(observed_at)
+            );
+        }
+    }
+
+    #[test]
     fn markdown_contains_review_sections_and_snapshot_id() {
         let snapshot = PulseSnapshotV1::from_inputs(ai_fixture(), reading_fixture());
         let markdown = snapshot.to_markdown();
@@ -1291,13 +1556,62 @@ mod tests {
 
     #[test]
     fn reading_refresh_preserves_current_durable_ai_signal() {
-        let existing = PulseSnapshotV1::from_inputs(ai_fixture(), WeReadSyncState::default());
+        let local_observed_at = Utc::now() - ChronoDuration::minutes(2);
+        let quota_observed_at = Utc::now() - ChronoDuration::minutes(1);
+        let existing = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(local_observed_at),
+            Some(quota_observed_at),
+            WeReadSyncState::default(),
+        );
         let refreshed = PulseSnapshotV1::with_refreshed_reading(Some(&existing), reading_fixture());
 
         assert_eq!(refreshed.ai.total_tokens, existing.ai.total_tokens);
         assert_eq!(refreshed.ai.total_cost, existing.ai.total_cost);
         assert_eq!(refreshed.ai.leading_model, existing.ai.leading_model);
         assert_eq!(refreshed.reading.weekly_total_seconds, Some(3_600));
+        for source_id in ["local-ai-usage", "subscription-usage-cache"] {
+            let observed_at = |snapshot: &PulseSnapshotV1| {
+                snapshot
+                    .sources
+                    .iter()
+                    .find(|source| source.id == source_id)
+                    .and_then(|source| source.observed_at)
+            };
+            assert_eq!(observed_at(&refreshed), observed_at(&existing));
+        }
+    }
+
+    #[test]
+    fn reading_refresh_expires_copied_quota_health() {
+        let now = Utc::now();
+        let mut existing = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(now),
+            Some(now),
+            WeReadSyncState::default(),
+        );
+        existing
+            .sources
+            .iter_mut()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap()
+            .observed_at = Some(now - ChronoDuration::minutes(10));
+
+        let refreshed = PulseSnapshotV1::with_refreshed_reading(Some(&existing), reading_fixture());
+        let quota = refreshed
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap();
+
+        assert_eq!(quota.freshness, PulseFreshness::Stale);
+        assert_eq!(quota.issue_code.as_deref(), Some("stale_cache"));
+        assert!(refreshed
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.source_id == "subscription-usage-cache")
+            .all(|evidence| evidence.freshness == PulseFreshness::Stale));
     }
 
     #[test]
@@ -1424,6 +1738,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(source.status, "upgrade required");
+        assert_eq!(source.coverage, PulseCoverage::Partial);
         assert_eq!(source.issue_code.as_deref(), Some("upgrade_required"));
+    }
+
+    #[test]
+    fn blocked_weread_without_cached_data_has_unknown_coverage() {
+        let mut reading = WeReadSyncState::default();
+        reading.mark_auth_missing(Utc::now());
+
+        let snapshot = PulseSnapshotV1::from_inputs(ai_fixture(), reading);
+        let source = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "weread")
+            .unwrap();
+
+        assert_eq!(source.status, "auth missing");
+        assert_eq!(source.coverage, PulseCoverage::Unknown);
+        assert_eq!(source.issue_code.as_deref(), Some("auth_missing"));
     }
 }

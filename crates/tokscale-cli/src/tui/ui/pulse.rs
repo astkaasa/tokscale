@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
 use super::text_width::display_width;
 use super::text_width::truncate_display;
 use super::widgets::{format_cost, format_tokens, light_ratio_bar_spans};
-use crate::tui::app::{App, ClickAction};
+use crate::tui::app::App;
 use tokscale_core::pulse::weread::{
     format_compare_ratio, format_read_duration, now_millis, WeReadBookRef, WeReadCategory,
     WeReadFocusBook, WeReadMonthly, WeReadState, WeReadStatus, WeReadWeekly,
@@ -15,6 +15,15 @@ use tokscale_core::pulse::{
 
 const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MIN_WEEK_TABLE_WIDTH: u16 = 27;
+const WIDE_SNAPSHOT_DETAIL_WIDTH: u16 = 120;
+const MAX_SOURCE_CONTEXT_LINES: usize = 7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotDetailLayout {
+    Compact(Rect),
+    SideBySide { attention: Rect, source: Rect },
+    Stacked { attention: Rect, source: Rect },
+}
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(
@@ -57,43 +66,132 @@ fn render_snapshot(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    if detail.width >= 120 {
+    let Some(snapshot) = app.pulse.snapshot.as_ref() else {
+        return;
+    };
+    match snapshot_detail_layout(detail, snapshot) {
+        SnapshotDetailLayout::Compact(area) => render_compact_snapshot_detail(frame, app, area),
+        SnapshotDetailLayout::SideBySide { attention, source }
+        | SnapshotDetailLayout::Stacked { attention, source } => {
+            render_attention(frame, app, attention);
+            render_source_context(frame, app, source);
+        }
+    }
+}
+
+fn snapshot_detail_layout(detail: Rect, snapshot: &PulseSnapshotV1) -> SnapshotDetailLayout {
+    let attention_height = snapshot_attention_panel_height(snapshot).min(detail.height);
+    let source_height = snapshot_source_panel_height(snapshot).min(detail.height);
+
+    if detail.width >= WIDE_SNAPSHOT_DETAIL_WIDTH {
+        let minimum_height = attention_height.min(3).max(source_height.min(5));
+        if detail.height < minimum_height {
+            return SnapshotDetailLayout::Compact(detail);
+        }
+
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Min(0)])
             .split(detail);
-        render_attention(frame, app, columns[0]);
-        render_source_context(frame, app, columns[1]);
-    } else if detail.height >= 8 {
-        let attention_height = detail
-            .height
-            .div_ceil(2)
-            .max(4)
-            .min(detail.height.saturating_sub(3));
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(attention_height), Constraint::Min(0)])
-            .split(detail);
-        render_attention(frame, app, rows[0]);
-        render_source_context(frame, app, rows[1]);
-    } else {
-        render_compact_snapshot_detail(frame, app, detail);
+        let attention = Rect {
+            height: attention_height,
+            ..columns[0]
+        };
+        let source = Rect {
+            height: source_height,
+            ..columns[1]
+        };
+        return SnapshotDetailLayout::SideBySide { attention, source };
     }
+
+    let minimum_attention_height = attention_height.min(4);
+    let minimum_source_height = source_height.min(5);
+    if detail.height < minimum_attention_height.saturating_add(minimum_source_height) {
+        return SnapshotDetailLayout::Compact(detail);
+    }
+
+    let (attention_height, source_height) = fit_stacked_detail_heights(
+        detail.height,
+        attention_height,
+        source_height,
+        minimum_attention_height,
+        minimum_source_height,
+    );
+    SnapshotDetailLayout::Stacked {
+        attention: Rect {
+            height: attention_height,
+            ..detail
+        },
+        source: Rect {
+            y: detail.y.saturating_add(attention_height),
+            height: source_height,
+            ..detail
+        },
+    }
+}
+
+fn fit_stacked_detail_heights(
+    available: u16,
+    desired_attention: u16,
+    desired_source: u16,
+    minimum_attention: u16,
+    minimum_source: u16,
+) -> (u16, u16) {
+    if desired_attention.saturating_add(desired_source) <= available {
+        return (desired_attention, desired_source);
+    }
+
+    let balanced_attention = available
+        .div_ceil(2)
+        .max(minimum_attention)
+        .min(available.saturating_sub(minimum_source));
+    let mut attention = balanced_attention.min(desired_attention);
+    let mut source = available.saturating_sub(attention).min(desired_source);
+    let mut spare = available.saturating_sub(attention.saturating_add(source));
+
+    let attention_growth = spare.min(desired_attention.saturating_sub(attention));
+    attention = attention.saturating_add(attention_growth);
+    spare = spare.saturating_sub(attention_growth);
+    source = source.saturating_add(spare.min(desired_source.saturating_sub(source)));
+
+    (attention, source)
+}
+
+fn snapshot_attention_panel_height(snapshot: &PulseSnapshotV1) -> u16 {
+    let insight_lines = snapshot.insights.len().min(2) as u16;
+    let recommendation_lines = u16::from(!snapshot.recommendations.is_empty());
+    let summary_lines = u16::from(
+        snapshot
+            .insights
+            .iter()
+            .min_by_key(|insight| signal_level_priority(insight.level))
+            .is_some_and(|insight| !insight.summary.is_empty()),
+    );
+    insight_lines
+        .saturating_add(recommendation_lines)
+        .saturating_add(summary_lines)
+        .max(1)
+        .saturating_add(2)
+}
+
+fn snapshot_source_panel_height(snapshot: &PulseSnapshotV1) -> u16 {
+    let month_lines = usize::from(
+        snapshot.reading.month_total_label.is_some() || snapshot.reading.month_read_days.is_some(),
+    );
+    let notebook_lines = usize::from(!snapshot.knowledge_flow.sampled_notebooks.is_empty());
+    let content_lines = 2usize
+        .saturating_add(snapshot.sources.len())
+        .saturating_add(month_lines)
+        .saturating_add(notebook_lines)
+        .min(MAX_SOURCE_CONTEXT_LINES);
+    (content_lines as u16).saturating_add(2)
 }
 
 fn render_snapshot_summary(frame: &mut Frame, app: &App, area: Rect) {
     let Some(snapshot) = &app.pulse.snapshot else {
         return;
     };
-    let period_end = snapshot
-        .period
-        .end_exclusive
-        .pred_opt()
-        .unwrap_or(snapshot.period.end_exclusive);
-    let block = panel_block(
-        app,
-        format!("Weekly Pulse  {} to {period_end}", snapshot.period.start),
-    );
+    let block = panel_block(app, snapshot_summary_title(snapshot, area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -131,6 +229,28 @@ fn render_snapshot_summary(frame: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(lines).style(Style::default().bg(app.theme.background)),
             inner,
         );
+    }
+}
+
+fn snapshot_summary_title(snapshot: &PulseSnapshotV1, width: u16) -> String {
+    let period_end = snapshot
+        .period
+        .end_exclusive
+        .pred_opt()
+        .unwrap_or(snapshot.period.end_exclusive);
+
+    if width >= 44 {
+        format!("Weekly Pulse  {} to {period_end}", snapshot.period.start)
+    } else if width >= 32 {
+        format!(
+            "Weekly Pulse  {} to {}",
+            snapshot.period.start.format("%m-%d"),
+            period_end.format("%m-%d")
+        )
+    } else if width >= 16 {
+        "Weekly Pulse".to_string()
+    } else {
+        "Pulse".to_string()
     }
 }
 
@@ -310,7 +430,6 @@ fn render_snapshot_rhythm(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = panel_block(app, "WEEKLY READING RHYTHM");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    app.add_click_area(area, ClickAction::WeReadRefresh);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -658,16 +777,7 @@ fn source_context_lines(app: &App, snapshot: &PulseSnapshotV1, width: usize) -> 
     let mut sources = snapshot.sources.iter().collect::<Vec<_>>();
     sources.sort_by_key(|source| source_health_priority(source));
     for source in sources {
-        let mut detail = format!(
-            "{}  {}  {}",
-            source.status,
-            source.coverage.label(),
-            source.storage
-        );
-        if let Some(issue) = &source.issue_code {
-            detail.push_str("  ");
-            detail.push_str(issue);
-        }
+        let detail = source_health_detail(source);
         lines.push(prefixed_line(
             source_display_name(&source.id),
             source_health_style(app, source).add_modifier(Modifier::BOLD),
@@ -755,6 +865,71 @@ fn source_display_name(id: &str) -> &str {
         "weread" => "WeRead",
         _ => id,
     }
+}
+
+fn source_health_detail(source: &SourceHealth) -> String {
+    let status = source_status_label(&source.status);
+    let coverage = source.coverage.label();
+    let mut parts = Vec::new();
+
+    if status == coverage {
+        parts.push(match source.coverage {
+            PulseCoverage::Complete => "complete coverage".to_string(),
+            PulseCoverage::Partial => "partial coverage".to_string(),
+            PulseCoverage::Unknown => "coverage unknown".to_string(),
+        });
+    } else {
+        if !status.is_empty() {
+            parts.push(status);
+        }
+        parts.push(match source.coverage {
+            PulseCoverage::Complete => "complete coverage".to_string(),
+            PulseCoverage::Partial => "partial coverage".to_string(),
+            PulseCoverage::Unknown => "coverage unknown".to_string(),
+        });
+    }
+
+    parts.push(source_storage_label(&source.storage));
+    if let Some(issue) = source.issue_code.as_deref() {
+        let issue = source_issue_label(issue);
+        if !parts.iter().any(|part| part == &issue) {
+            parts.push(issue);
+        }
+    }
+
+    parts.join("  ")
+}
+
+fn source_status_label(status: &str) -> String {
+    match status.trim() {
+        "auth_missing" | "auth missing" => "auth missing".to_string(),
+        "upgrade_required" | "upgrade required" => "upgrade required".to_string(),
+        value => readable_source_label(value),
+    }
+}
+
+fn source_storage_label(storage: &str) -> String {
+    match storage.trim() {
+        "local_normalized" => "local data".to_string(),
+        "local_cache" => "local cache".to_string(),
+        value => readable_source_label(value),
+    }
+}
+
+fn source_issue_label(issue: &str) -> String {
+    match issue.trim() {
+        "auth_missing" => "auth missing".to_string(),
+        "upgrade_required" => "upgrade required".to_string(),
+        "transport_error" => "network error".to_string(),
+        "gateway_error" => "sync error".to_string(),
+        "invalid_response" => "invalid response".to_string(),
+        "normalization_error" => "data error".to_string(),
+        value => readable_source_label(value),
+    }
+}
+
+fn readable_source_label(value: &str) -> String {
+    value.replace(['_', '-'], " ")
 }
 
 fn source_health_style(app: &App, source: &SourceHealth) -> Style {
@@ -882,7 +1057,6 @@ fn render_weread_pulse(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = panel_block(app, "WeRead Pulse");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    app.add_click_area(area, ClickAction::WeReadRefresh);
 
     if inner.width == 0 || inner.height == 0 {
         return;
@@ -1489,7 +1663,7 @@ fn empty_state_line(app: &App) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::app::TuiConfig;
+    use crate::tui::app::{ClickAction, TuiConfig};
     use crate::tui::data::UsageData;
     use chrono::{Duration, NaiveDate};
     use ratatui::{backend::TestBackend, Terminal};
@@ -1652,6 +1826,26 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_title_keeps_narrow_period_complete() {
+        let mut app = make_app();
+        let mut snapshot = snapshot_fixture();
+        snapshot.period.start = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+        snapshot.period.end_exclusive = NaiveDate::from_ymd_opt(2026, 7, 13).unwrap();
+
+        assert_eq!(
+            snapshot_summary_title(&snapshot, 35),
+            "Weekly Pulse  07-06 to 07-12"
+        );
+        assert_eq!(snapshot_summary_title(&snapshot, 31), "Weekly Pulse");
+        assert_eq!(snapshot_summary_title(&snapshot, 15), "Pulse");
+
+        app.pulse.snapshot = Some(snapshot);
+        let title_row = rendered_rows(&mut app, 35, 24).remove(0);
+        assert!(title_row.contains("07-06 to 07-12"), "{title_row:?}");
+        assert!(!title_row.contains("2026"), "{title_row:?}");
+    }
+
+    #[test]
     fn renders_weekly_check_marks_without_panic() {
         let mut app = make_app();
         app.pulse.weread.weekly = Some(WeReadWeekly {
@@ -1786,14 +1980,109 @@ mod tests {
         assert!(!output.contains("LEGACY OLD WEEK"), "{output}");
         assert!(!output.contains("Long detail"), "{output}");
         assert!(!output.contains("Long rationale"), "{output}");
+        assert!(
+            output.contains("partial coverage  local data  sync error"),
+            "{output}"
+        );
+        assert!(!output.contains("partial  partial"), "{output}");
+        assert!(!output.contains("local_normalized"), "{output}");
+        assert!(!output.contains("gateway_error"), "{output}");
+    }
 
-        let refresh_areas = app
-            .click_areas
-            .iter()
-            .filter(|area| matches!(&area.action, ClickAction::WeReadRefresh))
-            .collect::<Vec<_>>();
-        assert_eq!(refresh_areas.len(), 1);
-        assert_eq!(refresh_areas[0].rect, Rect::new(0, 5, 92, 7));
+    #[test]
+    fn tall_wide_snapshot_detail_uses_content_heights() {
+        let snapshot = snapshot_fixture();
+        let detail = Rect::new(0, 12, 140, 28);
+        let SnapshotDetailLayout::SideBySide { attention, source } =
+            snapshot_detail_layout(detail, &snapshot)
+        else {
+            panic!("expected side-by-side detail layout");
+        };
+
+        assert_eq!(attention.height, 6);
+        assert_eq!(source.height, 8);
+        assert!(attention.bottom() < detail.bottom());
+        assert!(source.bottom() < detail.bottom());
+
+        let mut app = make_app();
+        app.pulse.snapshot = Some(snapshot);
+        let rows = rendered_rows(&mut app, detail.width, detail.bottom());
+        let content_bottom = attention.bottom().max(source.bottom()) as usize;
+        assert!(
+            rows[content_bottom..]
+                .iter()
+                .all(|row| row.trim().is_empty()),
+            "expected borderless background below row {content_bottom}\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn tall_medium_snapshot_detail_stacks_without_stretching() {
+        let snapshot = snapshot_fixture();
+        let detail = Rect::new(0, 12, 92, 28);
+        let SnapshotDetailLayout::Stacked { attention, source } =
+            snapshot_detail_layout(detail, &snapshot)
+        else {
+            panic!("expected stacked detail layout");
+        };
+
+        assert_eq!(attention, Rect::new(0, 12, 92, 6));
+        assert_eq!(source, Rect::new(0, 18, 92, 8));
+        assert!(source.bottom() < detail.bottom());
+
+        let mut app = make_app();
+        app.pulse.snapshot = Some(snapshot);
+        let rows = rendered_rows(&mut app, detail.width, detail.bottom());
+        let content_bottom = source.bottom() as usize;
+        assert!(
+            rows[content_bottom..]
+                .iter()
+                .all(|row| row.trim().is_empty()),
+            "expected borderless background below row {content_bottom}\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn short_snapshot_detail_stays_compact_with_primary_signals() {
+        let snapshot = snapshot_fixture();
+        let detail = Rect::new(0, 12, 92, 8);
+        assert_eq!(
+            snapshot_detail_layout(detail, &snapshot),
+            SnapshotDetailLayout::Compact(detail)
+        );
+
+        let mut app = make_app();
+        app.pulse.snapshot = Some(snapshot);
+        let output = rendered_rows(&mut app, detail.width, detail.bottom()).join("\n");
+
+        for expected in [
+            "AI quota pressure",
+            "Protect one reading block",
+            "WeRead",
+            "partial coverage",
+        ] {
+            assert!(output.contains(expected), "missing {expected:?}\n{output}");
+        }
+        assert!(!output.contains("SOURCE HEALTH / CONTEXT"), "{output}");
+    }
+
+    #[test]
+    fn weekly_panels_do_not_register_refresh_click_areas() {
+        let mut snapshot_app = make_app();
+        snapshot_app.pulse.snapshot = Some(snapshot_fixture());
+        rendered_rows(&mut snapshot_app, 92, 24);
+
+        let mut legacy_app = make_app();
+        rendered_rows(&mut legacy_app, 92, 24);
+
+        for app in [&snapshot_app, &legacy_app] {
+            assert!(app
+                .click_areas
+                .iter()
+                .all(|area| !matches!(&area.action, ClickAction::WeReadRefresh)));
+        }
     }
 
     #[test]
@@ -1870,6 +2159,30 @@ mod tests {
 
         assert_eq!(source_health_kind(source), SourceHealthKind::Blocked);
         assert_eq!(source_health_priority(source), 0);
+    }
+
+    #[test]
+    fn source_health_detail_maps_internal_values_without_repetition() {
+        let snapshot = snapshot_fixture();
+        let mut source = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "weread")
+            .unwrap()
+            .clone();
+
+        assert_eq!(
+            source_health_detail(&source),
+            "partial coverage  local data  sync error"
+        );
+
+        source.status = "upgrade_required".to_string();
+        source.coverage = PulseCoverage::Complete;
+        source.issue_code = Some("upgrade_required".to_string());
+        assert_eq!(
+            source_health_detail(&source),
+            "upgrade required  complete coverage  local data"
+        );
     }
 
     #[test]

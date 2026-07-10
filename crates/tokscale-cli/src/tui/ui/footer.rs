@@ -4,12 +4,105 @@ use tokscale_core::pulse::weread::{format_read_duration, WeReadStatus};
 
 use super::spinner::{get_phase_message, get_scanner_spans};
 use super::widgets::{format_cost, format_tokens};
-use crate::tui::app::{App, ClickAction, DrilldownView, OverviewMode, SortField, Tab};
+use crate::tui::app::{
+    App, ClickAction, DrilldownView, OverviewMode, SortField, Tab, TimelineGranularity,
+};
 
 const COMPACT_HINT_WIDTH: u16 = 64;
-const MIN_ACTION_HINT_WIDTH: u16 = 10;
-const MIN_SUMMARY_WIDTH: u16 = 8;
 const SUMMARY_SCOPE_FIRST_WIDTH: u16 = 20;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HintDensity {
+    Full,
+    Compact,
+    Tiny,
+}
+
+impl HintDensity {
+    fn for_width(width: u16) -> Self {
+        if width < COMPACT_HINT_WIDTH {
+            Self::Compact
+        } else {
+            Self::Full
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ActionHint {
+    key: &'static str,
+    compact_key: Option<&'static str>,
+    label: &'static str,
+    compact_label: Option<&'static str>,
+    tiny_label: Option<&'static str>,
+    key_color: Color,
+    text_color: Color,
+    action: Option<ClickAction>,
+}
+
+impl ActionHint {
+    fn plain(
+        key: &'static str,
+        label: &'static str,
+        compact_label: Option<&'static str>,
+        key_color: Color,
+        text_color: Color,
+    ) -> Self {
+        Self {
+            key,
+            compact_key: None,
+            label,
+            compact_label,
+            tiny_label: None,
+            key_color,
+            text_color,
+            action: None,
+        }
+    }
+
+    fn with_compact_key(mut self, compact_key: &'static str) -> Self {
+        self.compact_key = Some(compact_key);
+        self
+    }
+
+    fn with_tiny_label(mut self, tiny_label: &'static str) -> Self {
+        self.tiny_label = Some(tiny_label);
+        self
+    }
+
+    fn with_action(mut self, action: ClickAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+
+    fn display(&self, density: HintDensity) -> (&'static str, &'static str) {
+        match density {
+            HintDensity::Full => (self.key, self.label),
+            HintDensity::Compact => (
+                self.compact_key.unwrap_or(self.key),
+                self.compact_label.unwrap_or(self.label),
+            ),
+            HintDensity::Tiny => (
+                self.compact_key.unwrap_or(self.key),
+                self.tiny_label.or(self.compact_label).unwrap_or(self.label),
+            ),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ActionHintGroups {
+    primary: Vec<ActionHint>,
+    common: Vec<ActionHint>,
+    secondary: Vec<ActionHint>,
+}
+
+#[derive(Clone, Copy)]
+struct ActionLayout {
+    primary_density: HintDensity,
+    common_density: HintDensity,
+    priority_width: u16,
+}
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
@@ -23,15 +116,20 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
+    let action_layout = action_layout(app, inner.width);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(summary_width(app, inner.width)),
+            Constraint::Length(summary_width(
+                app,
+                inner.width,
+                action_layout.priority_width,
+            )),
         ])
         .split(Rect::new(inner.x, inner.y, inner.width, 1));
 
-    render_action_or_status(frame, app, chunks[0]);
+    render_action_or_status(frame, app, chunks[0], action_layout);
     render_scope_summary(frame, app, chunks[1]);
 }
 
@@ -62,14 +160,14 @@ fn current_count_label(app: &App) -> String {
     }
 }
 
-fn render_action_or_status(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_action_or_status(frame: &mut Frame, app: &mut App, area: Rect, layout: ActionLayout) {
     let should_show_status = app.data.loading
         || app.status_message.is_some()
         || (app.background_loading && !app.has_visible_data());
     let spans = if should_show_status {
         status_spans(app, area.width)
     } else {
-        let mut spans = action_spans(app, area.x, area.y, area.width);
+        let mut spans = action_spans_with_layout(app, area, layout);
         if app.background_loading {
             push_background_refresh_hint_fit(&mut spans, app, area.width);
         }
@@ -180,329 +278,321 @@ fn fit_status_text(text: &str, width: u16) -> String {
     format!("{head}...")
 }
 
+#[cfg(test)]
 fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>> {
+    let density = HintDensity::for_width(width);
+    action_spans_with_layout(
+        app,
+        Rect::new(x, y, width, 1),
+        ActionLayout {
+            primary_density: density,
+            common_density: density,
+            priority_width: width,
+        },
+    )
+}
+
+fn action_spans_with_layout(app: &mut App, area: Rect, layout: ActionLayout) -> Vec<Span<'static>> {
+    let groups = action_hint_groups(app);
+    let secondary_density = HintDensity::for_width(area.width);
     let mut spans = Vec::new();
-    let hint_area = Rect::new(x, y, width, 1);
+
+    for hint in groups.primary {
+        push_action_hint_fit(&mut spans, app, area, hint, layout.primary_density);
+    }
+    for hint in groups.common {
+        push_action_hint_fit(&mut spans, app, area, hint, layout.common_density);
+    }
+    for hint in groups.secondary {
+        push_action_hint_fit(&mut spans, app, area, hint, secondary_density);
+    }
+
+    spans
+}
+
+fn action_hint_groups(app: &App) -> ActionHintGroups {
+    let mut groups = ActionHintGroups::default();
 
     if app.is_drilldown_active() {
-        push_key_fit(
-            &mut spans,
-            "↑↓",
-            "Rows",
-            Some("Row"),
-            Color::White,
-            app.theme.muted,
-            width,
-        );
-        let open_key = if width < COMPACT_HINT_WIDTH {
-            "↵"
-        } else {
-            "Enter"
-        };
-        push_key_fit(
-            &mut spans,
-            open_key,
-            "Details",
-            Some("Open"),
-            app.theme.accent,
-            app.theme.muted,
-            width,
-        );
-        push_key_fit(
-            &mut spans,
+        if app.drilldown_list_len() > 0 {
+            groups.primary.push(details_hint(app));
+        }
+        groups.primary.push(ActionHint::plain(
             "Esc",
             "Back",
             Some("Back"),
             Color::Yellow,
             app.theme.muted,
-            width,
-        );
-        push_sort_key_fit(
-            &mut spans,
+        ));
+        groups
+            .primary
+            .push(sort_hint(app, "c", "Cost", Some("Cost"), SortField::Cost));
+        groups.primary.push(sort_hint(
             app,
-            hint_area,
-            ("c", "Cost", Some("Cost")),
-            SortField::Cost,
-        );
-        push_sort_key_fit(
-            &mut spans,
-            app,
-            hint_area,
-            ("t", "Tokens", Some("Tok")),
+            "t",
+            "Tokens",
+            Some("Tok"),
             SortField::Tokens,
-        );
+        ));
         if matches!(app.drilldown_view(), Some(DrilldownView::Model(_))) {
-            push_sort_key_fit(
-                &mut spans,
-                app,
-                hint_area,
-                ("d", "Date", Some("Date")),
-                SortField::Date,
-            );
+            groups
+                .primary
+                .push(sort_hint(app, "d", "Date", Some("Date"), SortField::Date));
         }
-        push_theme_key_fit(&mut spans, app, width);
-        return spans;
+        if app.drilldown_list_len() > 0 {
+            groups.common.push(ActionHint::plain(
+                "↑↓",
+                "Rows",
+                Some("Row"),
+                Color::White,
+                app.theme.muted,
+            ));
+        }
+        push_common_workspace_hints(&mut groups.common, app);
+        return groups;
     }
 
-    push_key_fit(
-        &mut spans,
-        "↑↓",
-        "Navigate",
-        Some("Nav"),
-        Color::White,
-        app.theme.muted,
-        width,
-    );
-    push_key_fit(
-        &mut spans,
-        "←→",
-        "Workspace",
-        Some("Ws"),
-        Color::White,
-        app.theme.muted,
-        width,
-    );
-    push_theme_key_fit(&mut spans, app, width);
-
-    if app.current_tab == Tab::Usage {
-        push_action_key_fit(
-            &mut spans,
-            app,
-            hint_area,
-            (
-                "r",
-                if app.is_fetching_usage() {
-                    "Syncing"
+    match app.current_tab {
+        Tab::Overview => {
+            groups.primary.push(ActionHint::plain(
+                "t",
+                if app.overview_mode == OverviewMode::Today {
+                    "All"
                 } else {
-                    "Refresh"
+                    "Today"
                 },
-                Some(if app.is_fetching_usage() {
-                    "Sync"
+                Some(if app.overview_mode == OverviewMode::Today {
+                    "All"
                 } else {
-                    "Reload"
+                    "Today"
                 }),
-            ),
-            if app.is_fetching_usage() {
-                app.theme.muted
-            } else {
-                Color::Yellow
-            },
-            ClickAction::UsageRefresh,
-        );
-        push_action_key_fit(
-            &mut spans,
-            app,
-            hint_area,
-            (
-                "a",
-                if app.is_codex_login_running() {
-                    "Adding"
-                } else {
-                    "Add Codex"
-                },
-                Some(if app.is_codex_login_running() {
-                    "Adding"
-                } else {
-                    "Add"
-                }),
-            ),
-            if app.is_codex_login_running() {
-                app.theme.muted
-            } else {
-                app.theme.accent
-            },
-            ClickAction::CodexStartLogin,
-        );
-        push_action_key_fit(
-            &mut spans,
-            app,
-            hint_area,
-            (
-                "m",
-                if app.hide_usage_emails {
-                    "Show Emails"
-                } else {
-                    "Hide Emails"
-                },
-                Some(if app.hide_usage_emails {
-                    "Show"
-                } else {
-                    "Hide"
-                }),
-            ),
-            if app.hide_usage_emails {
-                Color::Green
-            } else {
-                Color::Blue
-            },
-            ClickAction::UsageToggleEmailPrivacy,
-        );
-        if let Some(action) = selected_usage_use_action(app) {
-            push_action_key_fit(
-                &mut spans,
-                app,
-                hint_area,
-                ("u", "Use", Some("Use")),
-                app.theme.accent,
-                action,
-            );
-        }
-        if let Some(action) = selected_usage_reset_action(app) {
-            push_action_key_fit(
-                &mut spans,
-                app,
-                hint_area,
-                ("x", "Reset", Some("Reset")),
                 Color::Yellow,
-                action,
-            );
+                app.theme.muted,
+            ));
+            if app.overview_model_len() > 0 {
+                groups.primary.push(details_hint(app));
+            }
+            groups.primary.push(refresh_hint(app));
         }
-        if let Some(action) = selected_usage_remove_action(app) {
-            push_action_key_fit(
-                &mut spans,
-                app,
-                hint_area,
-                ("Del", "Remove", Some("Rm")),
-                Color::Red,
-                action,
-            );
+        Tab::Models => {
+            if !app.data.models.is_empty() {
+                groups.primary.push(details_hint(app));
+            }
+            groups.primary.push(refresh_hint(app));
         }
-        push_key_fit(
-            &mut spans,
-            "R",
-            "Auto",
-            Some("Auto"),
-            if app.auto_refresh {
-                Color::Green
-            } else {
-                Color::Blue
-            },
-            app.theme.muted,
-            width,
-        );
-        push_key_fit(
-            &mut spans,
-            "q",
-            "Quit",
-            Some("Quit"),
-            app.theme.muted,
-            app.theme.muted,
-            width,
-        );
-        return spans;
-    }
-
-    if app.current_tab == Tab::Pulse {
-        push_action_key_fit(
-            &mut spans,
-            app,
-            hint_area,
-            (
+        Tab::Timeline => {
+            if app.timeline_granularity == TimelineGranularity::Day && !app.data.daily.is_empty() {
+                groups.primary.push(details_hint(app));
+            }
+            groups.primary.push(refresh_hint(app));
+        }
+        Tab::Usage => push_usage_primary_hints(&mut groups.primary, app),
+        Tab::Pulse => groups.primary.push(
+            ActionHint::plain(
                 "r",
                 if app.is_fetching_weread() {
                     "Syncing"
                 } else {
                     "Sync WeRead"
                 },
-                Some(if app.is_fetching_weread() {
-                    "Sync"
+                Some("Sync"),
+                if app.is_fetching_weread() {
+                    app.theme.muted
                 } else {
-                    "WeRead"
-                }),
-            ),
-            if app.is_fetching_weread() {
+                    Color::Yellow
+                },
+                app.theme.muted,
+            )
+            .with_action(ClickAction::WeReadRefresh),
+        ),
+    }
+
+    if app.current_tab != Tab::Pulse {
+        groups.common.push(ActionHint::plain(
+            "↑↓",
+            "Navigate",
+            Some("Nav"),
+            Color::White,
+            app.theme.muted,
+        ));
+    }
+    push_common_workspace_hints(&mut groups.common, app);
+
+    match app.current_tab {
+        Tab::Overview | Tab::Models | Tab::Timeline => {
+            push_analysis_secondary_hints(&mut groups.secondary, app)
+        }
+        Tab::Usage | Tab::Pulse => {
+            groups.secondary.push(auto_refresh_hint(app));
+            groups.secondary.push(quit_hint(app));
+        }
+    }
+
+    groups
+}
+
+fn details_hint(app: &App) -> ActionHint {
+    ActionHint::plain(
+        "Enter",
+        "Details",
+        Some("Details"),
+        app.theme.accent,
+        app.theme.muted,
+    )
+    .with_compact_key("↵")
+}
+
+fn refresh_hint(app: &App) -> ActionHint {
+    ActionHint::plain(
+        "r",
+        "Refresh",
+        Some("Refresh"),
+        Color::Yellow,
+        app.theme.muted,
+    )
+    .with_tiny_label("Ref")
+}
+
+fn push_usage_primary_hints(hints: &mut Vec<ActionHint>, app: &App) {
+    hints.push(
+        ActionHint::plain(
+            "r",
+            if app.is_fetching_usage() {
+                "Syncing"
+            } else {
+                "Refresh"
+            },
+            Some(if app.is_fetching_usage() {
+                "Sync"
+            } else {
+                "Refresh"
+            }),
+            if app.is_fetching_usage() {
                 app.theme.muted
             } else {
                 Color::Yellow
             },
-            ClickAction::WeReadRefresh,
-        );
-        push_key_fit(
-            &mut spans,
-            "R",
-            "Auto",
-            Some("Auto"),
-            if app.auto_refresh {
+            app.theme.muted,
+        )
+        .with_action(ClickAction::UsageRefresh),
+    );
+    hints.push(
+        ActionHint::plain(
+            "a",
+            if app.is_codex_login_running() {
+                "Adding"
+            } else {
+                "Add Codex"
+            },
+            Some(if app.is_codex_login_running() {
+                "Adding"
+            } else {
+                "Add"
+            }),
+            if app.is_codex_login_running() {
+                app.theme.muted
+            } else {
+                app.theme.accent
+            },
+            app.theme.muted,
+        )
+        .with_action(ClickAction::CodexStartLogin),
+    );
+    hints.push(
+        ActionHint::plain(
+            "m",
+            if app.hide_usage_emails {
+                "Show Emails"
+            } else {
+                "Hide Emails"
+            },
+            Some(if app.hide_usage_emails {
+                "Show"
+            } else {
+                "Hide"
+            }),
+            if app.hide_usage_emails {
                 Color::Green
             } else {
                 Color::Blue
             },
             app.theme.muted,
-            width,
+        )
+        .with_action(ClickAction::UsageToggleEmailPrivacy),
+    );
+    if let Some(action) = selected_usage_use_action(app) {
+        hints.push(
+            ActionHint::plain("u", "Use", Some("Use"), app.theme.accent, app.theme.muted)
+                .with_action(action),
         );
-        push_key_fit(
-            &mut spans,
-            "q",
-            "Quit",
-            Some("Quit"),
-            app.theme.muted,
-            app.theme.muted,
-            width,
-        );
-        return spans;
     }
-
-    if app.current_tab == Tab::Overview {
-        push_key_fit(
-            &mut spans,
-            "t",
-            if app.overview_mode == OverviewMode::Today {
-                "All"
-            } else {
-                "Today"
-            },
-            Some(if app.overview_mode == OverviewMode::Today {
-                "All"
-            } else {
-                "Today"
-            }),
-            Color::Yellow,
-            app.theme.muted,
-            width,
+    if let Some(action) = selected_usage_reset_action(app) {
+        hints.push(
+            ActionHint::plain("x", "Reset", Some("Reset"), Color::Yellow, app.theme.muted)
+                .with_action(action),
         );
-        if app.overview_mode == OverviewMode::All {
-            push_key_fit(
-                &mut spans,
-                "D/W/M",
-                "Chart",
-                Some("Chart"),
-                app.theme.foreground,
+    }
+    if let Some(action) = selected_usage_remove_action(app) {
+        hints.push(
+            ActionHint::plain("Del", "Remove", Some("Rm"), Color::Red, app.theme.muted)
+                .with_action(action),
+        );
+    }
+}
+
+fn push_common_workspace_hints(hints: &mut Vec<ActionHint>, app: &App) {
+    hints.push(ActionHint::plain(
+        "←→",
+        "Workspace",
+        Some("Ws"),
+        Color::White,
+        app.theme.muted,
+    ));
+    hints.push(ActionHint::plain(
+        "p",
+        "Theme",
+        Some("Theme"),
+        app.theme.accent,
+        app.theme.muted,
+    ));
+}
+
+fn push_analysis_secondary_hints(hints: &mut Vec<ActionHint>, app: &App) {
+    if app.current_tab == Tab::Overview && app.overview_mode == OverviewMode::All {
+        hints.push(ActionHint::plain(
+            "D/W/M",
+            "Chart",
+            Some("Chart"),
+            app.theme.foreground,
+            app.theme.muted,
+        ));
+        if app.chart_granularity != crate::tui::app::ChartGranularity::Daily {
+            hints.push(ActionHint::plain(
+                "⇧←→",
+                "Scroll",
+                Some("Scr"),
+                Color::White,
                 app.theme.muted,
-                width,
-            );
-            if app.chart_granularity != crate::tui::app::ChartGranularity::Daily {
-                push_key_fit(
-                    &mut spans,
-                    "⇧←→",
-                    "Scroll",
-                    Some("Scr"),
-                    Color::White,
-                    app.theme.muted,
-                    width,
-                );
-            }
+            ));
         }
     }
-    if app.current_tab == Tab::Timeline && !app.is_daily_detail_active() {
-        push_key_fit(
-            &mut spans,
+    if app.current_tab == Tab::Timeline {
+        hints.push(ActionHint::plain(
             "d",
             "Day",
             Some("Day"),
-            timeline_key_color(app, crate::tui::app::TimelineGranularity::Day),
+            timeline_key_color(app, TimelineGranularity::Day),
             app.theme.muted,
-            width,
-        );
-        push_key_fit(
-            &mut spans,
+        ));
+        hints.push(ActionHint::plain(
             "h",
             "Hour",
             Some("Hr"),
-            timeline_key_color(app, crate::tui::app::TimelineGranularity::Hour),
+            timeline_key_color(app, TimelineGranularity::Hour),
             app.theme.muted,
-            width,
-        );
+        ));
     }
+
     let date_label = if app.current_tab == Tab::Models {
         "Name"
     } else if app.current_tab == Tab::Overview && app.overview_mode == OverviewMode::Today {
@@ -511,56 +601,60 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
         "Date"
     };
     if app.current_tab != Tab::Timeline {
-        push_sort_key_fit(
-            &mut spans,
+        hints.push(sort_hint(
             app,
-            hint_area,
-            ("d", date_label, Some(date_label)),
+            "d",
+            date_label,
+            Some(date_label),
             SortField::Date,
-        );
+        ));
     }
-    push_sort_key_fit(
-        &mut spans,
+    hints.push(sort_hint(app, "c", "Cost", Some("Cost"), SortField::Cost));
+    hints.push(sort_hint(
         app,
-        hint_area,
-        ("c", "Cost", Some("Cost")),
-        SortField::Cost,
-    );
-    push_sort_key_fit(
-        &mut spans,
-        app,
-        hint_area,
-        (
-            if app.current_tab == Tab::Overview {
-                "T"
-            } else {
-                "t"
-            },
-            "Tokens",
-            Some("Tok"),
-        ),
+        if app.current_tab == Tab::Overview {
+            "T"
+        } else {
+            "t"
+        },
+        "Tokens",
+        Some("Tok"),
         SortField::Tokens,
-    );
-    push_key_fit(
-        &mut spans,
+    ));
+    hints.push(ActionHint::plain(
         "s",
         "Sources",
         Some("Src"),
         Color::Cyan,
         app.theme.muted,
-        width,
-    );
-    push_key_fit(
-        &mut spans,
-        "r",
-        "Refresh",
-        Some("Reload"),
-        Color::Yellow,
+    ));
+    hints.push(auto_refresh_hint(app));
+    hints.push(quit_hint(app));
+}
+
+fn sort_hint(
+    app: &App,
+    key: &'static str,
+    label: &'static str,
+    compact_label: Option<&'static str>,
+    field: SortField,
+) -> ActionHint {
+    ActionHint::plain(
+        key,
+        label,
+        compact_label,
+        if app.sort_field == field {
+            app.theme.foreground
+        } else {
+            Color::Blue
+        },
         app.theme.muted,
-        width,
-    );
-    push_key_fit(
-        &mut spans,
+    )
+    .with_action(ClickAction::Sort(field))
+}
+
+fn auto_refresh_hint(app: &App) -> ActionHint {
+    ActionHint::plain(
         "R",
         "Auto",
         Some("Auto"),
@@ -570,33 +664,14 @@ fn action_spans(app: &mut App, x: u16, y: u16, width: u16) -> Vec<Span<'static>>
             Color::Blue
         },
         app.theme.muted,
-        width,
-    );
-    push_key_fit(
-        &mut spans,
-        "q",
-        "Quit",
-        Some("Quit"),
-        app.theme.muted,
-        app.theme.muted,
-        width,
-    );
-    spans
+    )
 }
 
-fn push_theme_key_fit(spans: &mut Vec<Span<'static>>, app: &App, width: u16) {
-    push_key_fit(
-        spans,
-        "p",
-        "Theme",
-        Some("Theme"),
-        app.theme.accent,
-        app.theme.muted,
-        width,
-    );
+fn quit_hint(app: &App) -> ActionHint {
+    ActionHint::plain("q", "Quit", Some("Quit"), app.theme.muted, app.theme.muted)
 }
 
-fn timeline_key_color(app: &App, granularity: crate::tui::app::TimelineGranularity) -> Color {
+fn timeline_key_color(app: &App, granularity: TimelineGranularity) -> Color {
     if app.timeline_granularity == granularity {
         app.theme.foreground
     } else {
@@ -604,91 +679,100 @@ fn timeline_key_color(app: &App, granularity: crate::tui::app::TimelineGranulari
     }
 }
 
-fn push_sort_key_fit(
+fn push_action_hint_fit(
     spans: &mut Vec<Span<'static>>,
     app: &mut App,
     area: Rect,
-    hint: (&'static str, &'static str, Option<&'static str>),
-    field: SortField,
+    hint: ActionHint,
+    density: HintDensity,
 ) {
-    let (key, label, compact_label) = hint;
-    let color = if app.sort_field == field {
-        app.theme.foreground
-    } else {
-        Color::Blue
-    };
-    let Some((display_label, display_width)) =
-        fitting_hint(spans, key, label, compact_label, area.width)
+    let Some((key, label, display_width)) = fitting_action_hint(spans, &hint, density, area.width)
     else {
         return;
     };
     let start = Line::from(spans.clone()).width() as u16;
-    push_key(spans, key, display_label, color, app.theme.muted);
-    app.add_click_area(
-        Rect::new(area.x.saturating_add(start), area.y, display_width, 1),
-        ClickAction::Sort(field),
-    );
+    push_key(spans, key, label, hint.key_color, hint.text_color);
+    if let Some(action) = hint.action {
+        app.add_click_area(
+            Rect::new(area.x.saturating_add(start), area.y, display_width, 1),
+            action,
+        );
+    }
 }
 
-fn push_action_key_fit(
-    spans: &mut Vec<Span<'static>>,
-    app: &mut App,
-    area: Rect,
-    hint: (&'static str, &'static str, Option<&'static str>),
-    key_color: Color,
-    action: ClickAction,
-) {
-    let (key, label, compact_label) = hint;
-    let Some((display_label, display_width)) =
-        fitting_hint(spans, key, label, compact_label, area.width)
-    else {
-        return;
-    };
-    let start = Line::from(spans.clone()).width() as u16;
-    push_key(spans, key, display_label, key_color, app.theme.muted);
-    app.add_click_area(
-        Rect::new(area.x.saturating_add(start), area.y, display_width, 1),
-        action,
-    );
-}
-
-fn push_key_fit(
-    spans: &mut Vec<Span<'static>>,
-    key: &'static str,
-    label: &'static str,
-    compact_label: Option<&'static str>,
-    key_color: Color,
-    text_color: Color,
-    available_width: u16,
-) -> bool {
-    let Some((display_label, _)) = fitting_hint(spans, key, label, compact_label, available_width)
-    else {
-        return false;
-    };
-    push_key(spans, key, display_label, key_color, text_color);
-    true
-}
-
-fn fitting_hint(
+fn fitting_action_hint(
     spans: &[Span<'static>],
-    key: &'static str,
-    label: &'static str,
-    compact_label: Option<&'static str>,
+    hint: &ActionHint,
+    density: HintDensity,
     available_width: u16,
-) -> Option<(&'static str, u16)> {
+) -> Option<(&'static str, &'static str, u16)> {
     let used = Line::from(spans.to_vec()).width() as u16;
-    let candidates = if available_width < COMPACT_HINT_WIDTH {
-        [compact_label, Some(label)]
-    } else {
-        [Some(label), compact_label]
+    let fallback_density = match density {
+        HintDensity::Full => HintDensity::Compact,
+        HintDensity::Compact => HintDensity::Full,
+        HintDensity::Tiny => HintDensity::Compact,
     };
-    for candidate in candidates.into_iter().flatten() {
-        let width = hint_width(!spans.is_empty(), key, candidate);
+    let candidates = [hint.display(density), hint.display(fallback_density)];
+
+    for (key, label) in candidates {
+        let width = hint_width(!spans.is_empty(), key, label);
         if used.saturating_add(width) <= available_width {
-            return Some((candidate, width));
+            return Some((key, label, width));
         }
     }
     None
+}
+
+fn action_layout(app: &App, available_width: u16) -> ActionLayout {
+    let groups = action_hint_groups(app);
+    let density_pairs = [
+        (HintDensity::Full, HintDensity::Full),
+        (HintDensity::Full, HintDensity::Compact),
+        (HintDensity::Compact, HintDensity::Compact),
+    ];
+
+    for (primary_density, common_density) in density_pairs {
+        let priority_width = priority_hint_width(&groups, primary_density, common_density);
+        if priority_width <= available_width {
+            return ActionLayout {
+                primary_density,
+                common_density,
+                priority_width,
+            };
+        }
+    }
+
+    ActionLayout {
+        primary_density: if available_width < 40 {
+            HintDensity::Tiny
+        } else {
+            HintDensity::Compact
+        },
+        common_density: HintDensity::Compact,
+        priority_width: available_width,
+    }
+}
+
+fn priority_hint_width(
+    groups: &ActionHintGroups,
+    primary_density: HintDensity,
+    common_density: HintDensity,
+) -> u16 {
+    let mut width = 0u16;
+    let mut has_prefix = false;
+
+    for (hints, density) in [
+        (groups.primary.as_slice(), primary_density),
+        (groups.common.as_slice(), common_density),
+    ] {
+        for hint in hints {
+            let (key, label) = hint.display(density);
+            width = width.saturating_add(hint_width(has_prefix, key, label));
+            has_prefix = true;
+        }
+    }
+
+    width
 }
 
 fn hint_width(has_prefix: bool, key: &'static str, label: &'static str) -> u16 {
@@ -758,15 +842,15 @@ fn scope_summary_line(app: &App, width: u16) -> Line<'static> {
         )
     };
     let scope = match (app.current_tab, app.overview_mode) {
-        (Tab::Overview, OverviewMode::Today) => "Today",
-        _ => "All Time",
+        (Tab::Overview, OverviewMode::Today) => "Today".to_string(),
+        _ => app.report_scope_label(),
     };
     let scope_prefix = if width >= 46 { "Range: " } else { "" };
     let auto_field = auto_refresh_field(app);
     let scope_field = vec![
         Span::styled(scope_prefix, app.theme.subtle_text_style()),
         Span::styled(
-            scope.to_string(),
+            scope,
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
@@ -1014,7 +1098,7 @@ fn identity_count_label(saved: usize, managed: usize) -> String {
     }
 }
 
-fn summary_width(app: &App, available_width: u16) -> u16 {
+fn summary_width(app: &App, available_width: u16, priority_width: u16) -> u16 {
     let preferred = if app.is_drilldown_active() {
         if app.is_narrow() {
             34
@@ -1039,36 +1123,42 @@ fn summary_width(app: &App, available_width: u16) -> u16 {
         60
     };
 
-    if available_width <= MIN_ACTION_HINT_WIDTH.saturating_add(MIN_SUMMARY_WIDTH) {
-        return available_width;
-    }
-
-    preferred.min(available_width.saturating_sub(MIN_ACTION_HINT_WIDTH))
+    preferred.min(available_width.saturating_sub(priority_width))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput};
+    use crate::commands::usage::{UsageAccount, UsageMetric, UsageOutput, UsageResetCredits};
     use crate::tui::app::{ModelDetailKey, PeriodDetailKey, TuiConfig};
-    use crate::tui::data::UsageData;
-    use chrono::NaiveDate;
+    use crate::tui::data::{DailyUsage, DataLoader, ModelUsage, TokenBreakdown, UsageData};
+    use chrono::{Datelike, NaiveDate};
     use ratatui::{backend::TestBackend, Terminal};
+    use tokscale_core::ModelPerformance;
 
-    fn make_app_on(tab: Tab) -> App {
+    fn make_app_with_scope(
+        tab: Tab,
+        since: Option<String>,
+        until: Option<String>,
+        year: Option<String>,
+    ) -> App {
         let config = TuiConfig {
             theme: None,
             refresh: 0,
             clients: None,
-            since: None,
-            until: None,
-            year: None,
+            since,
+            until,
+            year,
             initial_tab: None,
             initial_timeline_granularity: None,
         };
         let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
         app.current_tab = tab;
         app
+    }
+
+    fn make_app_on(tab: Tab) -> App {
+        make_app_with_scope(tab, None, None, None)
     }
 
     fn usage_output(provider: &str, account: Option<UsageAccount>) -> UsageOutput {
@@ -1090,6 +1180,31 @@ mod tests {
         }
     }
 
+    fn model_usage(name: &str) -> ModelUsage {
+        ModelUsage {
+            model: name.to_string(),
+            provider: "openai".to_string(),
+            client: "codex".to_string(),
+            workspace_key: None,
+            workspace_label: None,
+            tokens: TokenBreakdown::default(),
+            cost: 0.0,
+            performance: ModelPerformance::default(),
+            session_count: 1,
+        }
+    }
+
+    fn daily_usage(date: NaiveDate) -> DailyUsage {
+        DailyUsage {
+            date,
+            tokens: TokenBreakdown::default(),
+            cost: 0.0,
+            source_breakdown: std::collections::BTreeMap::new(),
+            message_count: 0,
+            turn_count: 0,
+        }
+    }
+
     fn line_text(line: &Line<'_>) -> String {
         line.spans
             .iter()
@@ -1102,6 +1217,7 @@ mod tests {
     }
 
     fn render_footer_text(app: &mut App, width: u16) -> String {
+        app.handle_resize(width, 3);
         let backend = TestBackend::new(width, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -1215,13 +1331,197 @@ mod tests {
     }
 
     #[test]
-    fn narrow_footer_keeps_action_hint_and_scope_summary() {
+    fn scope_summary_labels_last_seven_days() {
+        let today = chrono::Local::now().date_naive();
+        let since = today
+            .checked_sub_signed(chrono::Duration::days(6))
+            .unwrap()
+            .to_string();
+        let app = make_app_with_scope(Tab::Models, Some(since), Some(today.to_string()), None);
+
+        let summary = line_text(&scope_summary_line(&app, 100));
+        assert!(summary.contains("Last 7 days"), "{summary}");
+        assert!(!summary.contains("All Time"), "{summary}");
+    }
+
+    #[test]
+    fn scope_summary_labels_current_month() {
+        let today = chrono::Local::now().date_naive();
+        let since = today.with_day(1).unwrap().to_string();
+        let app = make_app_with_scope(Tab::Models, Some(since), Some(today.to_string()), None);
+
+        let summary = line_text(&scope_summary_line(&app, 100));
+        assert!(
+            summary.contains(&today.format("%B %Y").to_string()),
+            "{summary}"
+        );
+        assert!(!summary.contains("from "), "{summary}");
+    }
+
+    #[test]
+    fn scope_summary_labels_custom_range() {
+        let app = make_app_with_scope(
+            Tab::Models,
+            Some("2024-01-01".to_string()),
+            Some("2024-01-31".to_string()),
+            None,
+        );
+
+        let summary = line_text(&scope_summary_line(&app, 100));
+        assert!(
+            summary.contains("from 2024-01-01 to 2024-01-31"),
+            "{summary}"
+        );
+        assert!(!summary.contains("All Time"), "{summary}");
+    }
+
+    #[test]
+    fn scope_summary_labels_year() {
+        let app = make_app_with_scope(Tab::Models, None, None, Some("2024".to_string()));
+
+        let summary = line_text(&scope_summary_line(&app, 100));
+        assert!(summary.contains("Range: 2024"), "{summary}");
+        assert!(!summary.contains("All Time"), "{summary}");
+    }
+
+    #[test]
+    fn scope_summary_uses_projected_web_loader_range() {
+        let reference = NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
+        let mut app = make_app_on(Tab::Overview);
+        app.data_loader = DataLoader::with_filters(
+            Some("2026-06-12".to_string()),
+            Some("2026-06-18".to_string()),
+            None,
+        );
+        app.set_render_reference_now(reference.and_hms_opt(12, 0, 0).unwrap());
+
+        let summary = line_text(&scope_summary_line(&app, 100));
+        assert!(summary.contains("Last 7 days"), "{summary}");
+        assert!(!summary.contains("All Time"), "{summary}");
+    }
+
+    #[test]
+    fn overview_footer_prioritizes_actions_at_52_80_120_columns() {
+        let today = chrono::Local::now().date_naive();
+        let since = today
+            .checked_sub_signed(chrono::Duration::days(6))
+            .unwrap()
+            .to_string();
+
+        for width in [52, 80, 120] {
+            let mut app = make_app_with_scope(
+                Tab::Overview,
+                Some(since.clone()),
+                Some(today.to_string()),
+                None,
+            );
+            app.data.models = vec![model_usage("gpt-5")];
+
+            let body = render_footer_text(&mut app, width);
+            let today_at = body.find("Today").unwrap_or_else(|| panic!("{body}"));
+            let details_at = body.find("Details").unwrap_or_else(|| panic!("{body}"));
+            let refresh_at = body.find("Refresh").unwrap_or_else(|| panic!("{body}"));
+            let nav_at = body.find("Nav").unwrap_or_else(|| panic!("{body}"));
+
+            assert!(today_at < details_at, "{body}");
+            assert!(details_at < refresh_at, "{body}");
+            assert!(refresh_at < nav_at, "{body}");
+            if width >= 80 {
+                assert!(body.contains("Enter"), "{body}");
+                assert!(body.contains("Workspace") || body.contains(" Ws"), "{body}");
+                assert!(body.contains("Theme"), "{body}");
+            }
+            if width == 120 {
+                assert!(body.contains("Last 7 days"), "{body}");
+                assert!(!body.contains("All Time"), "{body}");
+            }
+        }
+    }
+
+    #[test]
+    fn models_and_timeline_footers_keep_executable_details_action() {
+        let mut models = make_app_on(Tab::Models);
+        models.data.models = vec![model_usage("gpt-5")];
+        let models_body = render_footer_text(&mut models, 80);
+        assert!(models_body.contains("Enter"), "{models_body}");
+        assert!(models_body.contains("Details"), "{models_body}");
+        assert!(models_body.contains("Refresh"), "{models_body}");
+
+        let mut timeline = make_app_on(Tab::Timeline);
+        timeline.data.daily = vec![daily_usage(NaiveDate::from_ymd_opt(2026, 7, 10).unwrap())];
+        let timeline_body = render_footer_text(&mut timeline, 80);
+        assert!(timeline_body.contains("Enter"), "{timeline_body}");
+        assert!(timeline_body.contains("Details"), "{timeline_body}");
+        assert!(timeline_body.contains("Refresh"), "{timeline_body}");
+
+        timeline.timeline_granularity = TimelineGranularity::Hour;
+        let hourly_body = render_footer_text(&mut timeline, 80);
+        assert!(!hourly_body.contains("Details"), "{hourly_body}");
+    }
+
+    #[test]
+    fn pulse_footer_keeps_sync_and_omits_invalid_nav_at_target_widths() {
+        for width in [52, 80, 120] {
+            let mut app = make_app_on(Tab::Pulse);
+            let body = render_footer_text(&mut app, width);
+
+            assert!(body.contains("Sync WeRead"), "{body}");
+            assert!(body.contains("Workspace"), "{body}");
+            assert!(body.contains("Theme"), "{body}");
+            assert!(!body.contains("↑↓"), "{body}");
+            assert!(!body.contains("Navigate"), "{body}");
+        }
+    }
+
+    #[test]
+    fn usage_footer_keeps_refresh_and_safe_reset_label_at_target_widths() {
+        for width in [52, 80, 120] {
+            let mut app = make_app_on(Tab::Usage);
+            let mut output = usage_output(
+                "Codex",
+                Some(UsageAccount {
+                    id: "acct_personal".to_string(),
+                    label: Some("personal".to_string()),
+                    is_active: false,
+                }),
+            );
+            output.reset_credits = Some(UsageResetCredits {
+                available_count: 1,
+                credits: Vec::new(),
+            });
+            app.subscription_usage = vec![output];
+
+            let body = render_footer_text(&mut app, width);
+            assert!(body.contains(" r  Refresh"), "{body}");
+            assert!(body.contains(" u  Use"), "{body}");
+            assert!(body.contains(" x  Reset"), "{body}");
+            assert!(!body.contains("Rst"), "{body}");
+        }
+    }
+
+    #[test]
+    fn tiny_footer_drops_summary_before_primary_actions() {
         let mut app = make_app_on(Tab::Overview);
         app.clear_status();
         let body = render_footer_text(&mut app, 28);
 
-        assert!(body.contains("Nav"), "{body}");
-        assert!(body.contains("All Time"), "{body}");
+        assert!(body.contains("Today"), "{body}");
+        assert!(body.contains("Ref"), "{body}");
+        assert!(!body.contains("All Time"), "{body}");
+    }
+
+    #[test]
+    fn tiny_overview_keeps_all_primary_actions_before_workspace_hints() {
+        let mut app = make_app_on(Tab::Overview);
+        app.clear_status();
+        app.data.models = vec![model_usage("gpt-5")];
+
+        let body = render_footer_text(&mut app, 35);
+
+        assert!(body.contains("Today"), "{body}");
+        assert!(body.contains("Details"), "{body}");
+        assert!(body.contains(" r  Ref"), "{body}");
+        assert!(!body.contains(" Ws"), "{body}");
     }
 
     #[test]

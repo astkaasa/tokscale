@@ -1,14 +1,16 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use super::weread::{self, WeReadSyncState};
-use super::{PulseSnapshotV1, PULSE_SCHEMA_VERSION};
+use super::{
+    AiPulse, AiQuotaMetric, AiQuotaSource, AiWorkInput, AiWorkPeriodInput, PulseFreshness,
+    PulseSnapshotV1, SourceHealth, PULSE_SCHEMA_VERSION,
+};
 
 const TRANSACTION_SCHEMA_VERSION: u32 = 1;
 const TRANSACTION_LOCK_FILENAME: &str = ".transaction.lock";
@@ -74,6 +76,14 @@ pub fn save(snapshot: &PulseSnapshotV1, weread: &WeReadSyncState) -> Result<Save
         return Ok(SaveOutcome::Superseded(latest));
     }
 
+    let snapshot = match latest.as_ref() {
+        Some(latest) => match reconcile_ai_sources(snapshot, latest, weread) {
+            Some(snapshot) => snapshot,
+            None => return Ok(SaveOutcome::Superseded(Some(latest.clone()))),
+        },
+        None => snapshot.clone(),
+    };
+
     let transaction = PendingPulseTransaction {
         schema_version: TRANSACTION_SCHEMA_VERSION,
         snapshot: snapshot.clone(),
@@ -87,7 +97,7 @@ pub fn save(snapshot: &PulseSnapshotV1, weread: &WeReadSyncState) -> Result<Save
     remove_file_durable(&pending_transaction_path())
         .context("failed to finish Pulse transaction")?;
     if committed {
-        Ok(SaveOutcome::Committed(snapshot.clone()))
+        Ok(SaveOutcome::Committed(snapshot))
     } else {
         Ok(SaveOutcome::Superseded(load_latest_locked()))
     }
@@ -99,7 +109,9 @@ pub(crate) fn recover_pending() -> Result<()> {
 }
 
 pub(crate) fn acquire_transaction_lock() -> Result<File> {
-    fs::create_dir_all(pulse_dir()).context("failed to create Pulse directory")?;
+    let pulse_dir = pulse_dir();
+    crate::fs_atomic::ensure_private_dir(&pulse_dir).context("failed to create Pulse directory")?;
+    crate::fs_atomic::repair_private_dir(&pulse_dir.join("history"));
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
@@ -175,26 +187,189 @@ fn snapshot_is_superseded(incoming: &PulseSnapshotV1, latest: &PulseSnapshotV1) 
             < (latest.period.start, latest.period.end_exclusive);
     }
 
-    match (ai_generation(incoming), ai_generation(latest)) {
-        (Some(incoming), Some(latest)) if latest != incoming => latest > incoming,
-        (None, Some(_)) => true,
-        (Some(_), None) => false,
-        _ => latest.generated_at > incoming.generated_at,
+    let generations = ["local-ai-usage", "subscription-usage-cache"]
+        .map(|source_id| ai_source_generation(incoming, latest, source_id));
+
+    if generations.contains(&SourceGeneration::Newer) {
+        return false;
+    }
+    if generations.contains(&SourceGeneration::Older) {
+        return true;
+    }
+
+    incoming.generated_at < latest.generated_at
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceGeneration {
+    Older,
+    Equal,
+    Newer,
+}
+
+fn ai_source_generation(
+    incoming: &PulseSnapshotV1,
+    latest: &PulseSnapshotV1,
+    source_id: &str,
+) -> SourceGeneration {
+    let incoming = ai_source(incoming, source_id);
+    let latest = ai_source(latest, source_id);
+    let incoming_is_present = incoming.is_some_and(ai_source_is_present);
+    let latest_is_present = latest.is_some_and(ai_source_is_present);
+
+    match (incoming_is_present, latest_is_present) {
+        (true, false) => return SourceGeneration::Newer,
+        (false, true) => return SourceGeneration::Older,
+        (false, false) => return SourceGeneration::Equal,
+        (true, true) => {}
+    }
+
+    match (
+        incoming.and_then(|source| source.observed_at),
+        latest.and_then(|source| source.observed_at),
+    ) {
+        (Some(incoming), Some(latest)) if incoming < latest => SourceGeneration::Older,
+        (Some(incoming), Some(latest)) if incoming > latest => SourceGeneration::Newer,
+        (None, Some(_)) => SourceGeneration::Older,
+        (Some(_), None) => SourceGeneration::Newer,
+        _ => SourceGeneration::Equal,
     }
 }
 
-fn ai_generation(snapshot: &PulseSnapshotV1) -> Option<chrono::DateTime<chrono::Utc>> {
+fn reconcile_ai_sources(
+    incoming: &PulseSnapshotV1,
+    latest: &PulseSnapshotV1,
+    weread: &WeReadSyncState,
+) -> Option<PulseSnapshotV1> {
+    if incoming.period.start != latest.period.start
+        || incoming.period.end_exclusive != latest.period.end_exclusive
+    {
+        return Some(incoming.clone());
+    }
+
+    let local_from_incoming = source_from_incoming(incoming, latest, "local-ai-usage");
+    let quota_from_incoming = source_from_incoming(incoming, latest, "subscription-usage-cache");
+    if local_from_incoming && quota_from_incoming {
+        return Some(incoming.clone());
+    }
+    if !local_from_incoming && !quota_from_incoming {
+        return None;
+    }
+
+    let local = if local_from_incoming {
+        incoming
+    } else {
+        latest
+    };
+    let quota = if quota_from_incoming {
+        incoming
+    } else {
+        latest
+    };
+    let local_observed_at = ai_source(local, "local-ai-usage")?.observed_at;
+    let quota_observed_at = ai_source(quota, "subscription-usage-cache")?.observed_at;
+    let input = ai_input_from_sources(&local.ai, &quota.ai);
+    let merged = PulseSnapshotV1::from_inputs_with_source_observed_at(
+        input,
+        local_observed_at,
+        quota_observed_at,
+        weread.clone(),
+    );
+
+    (merged.period.start == incoming.period.start
+        && merged.period.end_exclusive == incoming.period.end_exclusive)
+        .then_some(merged)
+}
+
+fn source_from_incoming(
+    incoming: &PulseSnapshotV1,
+    latest: &PulseSnapshotV1,
+    source_id: &str,
+) -> bool {
+    match ai_source_generation(incoming, latest, source_id) {
+        SourceGeneration::Newer => true,
+        SourceGeneration::Older => false,
+        SourceGeneration::Equal => incoming.generated_at >= latest.generated_at,
+    }
+}
+
+fn ai_input_from_sources(local: &AiPulse, quota: &AiPulse) -> AiWorkInput {
+    let current = match (local.total_tokens, local.total_cost, local.active_days) {
+        (Some(total_tokens), Some(total_cost), Some(active_days)) => Some(AiWorkPeriodInput {
+            total_tokens,
+            total_cost,
+            active_days,
+            peak_day: local.peak_day,
+            peak_day_tokens: local.peak_day_tokens.unwrap_or_default(),
+            leading_model: local.leading_model.clone(),
+            leading_provider: local.leading_provider.clone(),
+        }),
+        _ => None,
+    };
+    let previous = match (local.previous_total_tokens, local.previous_total_cost) {
+        (Some(total_tokens), Some(total_cost)) => Some(AiWorkPeriodInput {
+            total_tokens,
+            total_cost,
+            active_days: 0,
+            peak_day: None,
+            peak_day_tokens: 0,
+            leading_model: None,
+            leading_provider: None,
+        }),
+        _ => None,
+    };
+    let quota_count = quota
+        .provider_count
+        .max(if quota.max_used_percent.is_some() {
+            1
+        } else {
+            0
+        });
+    let quota_sources = (0..quota_count)
+        .map(|index| AiQuotaSource {
+            provider: if index == 0 {
+                quota
+                    .max_provider
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string())
+            } else {
+                format!("provider-{}", index + 1)
+            },
+            metrics: if index == 0 {
+                quota
+                    .max_used_percent
+                    .map(|used_percent| AiQuotaMetric {
+                        label: quota
+                            .max_metric_label
+                            .clone()
+                            .unwrap_or_else(|| "usage".to_string()),
+                        used_percent,
+                    })
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        })
+        .collect();
+
+    AiWorkInput {
+        current,
+        previous,
+        quota_sources,
+        observed_at: None,
+    }
+}
+
+fn ai_source<'a>(snapshot: &'a PulseSnapshotV1, source_id: &str) -> Option<&'a SourceHealth> {
     snapshot
         .sources
         .iter()
-        .filter(|source| {
-            matches!(
-                source.id.as_str(),
-                "local-ai-usage" | "subscription-usage-cache"
-            )
-        })
-        .filter_map(|source| source.observed_at)
-        .max()
+        .find(|source| source.id == source_id)
+}
+
+fn ai_source_is_present(source: &SourceHealth) -> bool {
+    source.freshness != PulseFreshness::Missing
 }
 
 fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
@@ -204,43 +379,8 @@ fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
             "Pulse snapshot path has no parent",
         )
     })?;
-    fs::create_dir_all(parent)?;
-
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let temp = parent.join(format!(
-        ".pulse-{}.{}.{nonce:x}.tmp",
-        std::process::id(),
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("snapshot")
-    ));
-
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-
-        let file = options.open(&temp)?;
-        let mut writer = BufWriter::new(file);
-        writer.write_all(content)?;
-        writer.flush()?;
-        writer.get_ref().sync_all()?;
-        crate::fs_atomic::replace_file(&temp, path)?;
-        sync_parent_directory(parent)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    crate::fs_atomic::ensure_private_dir(parent)?;
+    crate::fs_atomic::atomic_write_private(path, content)
 }
 
 fn remove_file_durable(path: &Path) -> std::io::Result<()> {
@@ -319,6 +459,41 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .ends_with(".tmp")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn save_repairs_pulse_directories_and_files_to_private_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = ConfigDirGuard::set(dir.path());
+        let history_dir = pulse_dir().join("history");
+        fs::create_dir_all(&history_dir).unwrap();
+        fs::set_permissions(&pulse_dir(), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&history_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let snapshot =
+            PulseSnapshotV1::from_inputs(AiWorkInput::default(), WeReadSyncState::default());
+
+        save(&snapshot, &WeReadSyncState::default()).unwrap();
+
+        for path in [pulse_dir(), history_dir] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+                0o700
+            );
+        }
+        for path in [
+            latest_path(),
+            history_path(&snapshot),
+            transaction_lock_path(),
+        ] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+                0o600
+            );
+        }
     }
 
     #[test]
@@ -442,6 +617,176 @@ mod tests {
 
     #[test]
     #[serial]
+    fn crossed_ai_source_generations_merge_without_regression() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = ConfigDirGuard::set(dir.path());
+        let newer = Utc::now();
+        let older = newer - chrono::Duration::minutes(1);
+        let incoming = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(200, 20.0),
+            Some(newer),
+            Some(older),
+            WeReadSyncState::default(),
+        );
+        let durable = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(100, 80.0),
+            Some(older),
+            Some(newer),
+            WeReadSyncState::default(),
+        );
+
+        assert!(!snapshot_is_superseded(&incoming, &durable));
+        save(&durable, &WeReadSyncState::default()).unwrap();
+
+        let outcome = save(&incoming, &WeReadSyncState::default()).unwrap();
+
+        let SaveOutcome::Committed(merged) = outcome else {
+            panic!("expected independent AI generations to merge");
+        };
+        assert_eq!(merged.ai.total_tokens, Some(200));
+        assert_eq!(merged.ai.max_used_percent, Some(80.0));
+        assert_eq!(
+            ai_source(&merged, "local-ai-usage").unwrap().observed_at,
+            Some(newer)
+        );
+        assert_eq!(
+            ai_source(&merged, "subscription-usage-cache")
+                .unwrap()
+                .observed_at,
+            Some(newer)
+        );
+        assert!(merged.validate_evidence_refs());
+    }
+
+    #[test]
+    #[serial]
+    fn fresh_local_usage_retains_durable_quota_when_incoming_quota_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = ConfigDirGuard::set(dir.path());
+        let newer = Utc::now();
+        let older = newer - chrono::Duration::minutes(10);
+        let durable = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(100, 80.0),
+            Some(older),
+            Some(older),
+            WeReadSyncState::default(),
+        );
+        let incoming =
+            PulseSnapshotV1::from_inputs(ai_input(newer, 250), WeReadSyncState::default());
+        save(&durable, &WeReadSyncState::default()).unwrap();
+
+        let outcome = save(&incoming, &WeReadSyncState::default()).unwrap();
+
+        let SaveOutcome::Committed(merged) = outcome else {
+            panic!("expected fresh local usage to merge with durable quota");
+        };
+        assert_eq!(merged.ai.total_tokens, Some(250));
+        assert_eq!(merged.ai.max_used_percent, Some(80.0));
+        assert_eq!(
+            ai_source(&merged, "local-ai-usage").unwrap().observed_at,
+            Some(newer)
+        );
+        assert_eq!(
+            ai_source(&merged, "subscription-usage-cache")
+                .unwrap()
+                .observed_at,
+            Some(older)
+        );
+        assert_eq!(load_latest().unwrap().snapshot_id, merged.snapshot_id);
+    }
+
+    #[test]
+    #[serial]
+    fn equal_ai_generation_allows_the_other_source_to_advance() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = ConfigDirGuard::set(dir.path());
+        let original = Utc::now() - chrono::Duration::minutes(1);
+        let newer_quota = Utc::now();
+        let durable = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(100, 20.0),
+            Some(original),
+            Some(original),
+            WeReadSyncState::default(),
+        );
+        let incoming = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(100, 80.0),
+            Some(original),
+            Some(newer_quota),
+            WeReadSyncState::default(),
+        );
+
+        assert!(!snapshot_is_superseded(&incoming, &durable));
+        save(&durable, &WeReadSyncState::default()).unwrap();
+
+        let outcome = save(&incoming, &WeReadSyncState::default()).unwrap();
+
+        assert!(matches!(outcome, SaveOutcome::Committed(_)));
+        assert_eq!(load_latest().unwrap().ai.max_used_percent, Some(80.0));
+    }
+
+    #[test]
+    #[serial]
+    fn equal_ai_generations_reject_delayed_older_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = ConfigDirGuard::set(dir.path());
+        let observed_at = Utc::now();
+        let latest = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(200, 80.0),
+            Some(observed_at),
+            Some(observed_at),
+            WeReadSyncState::default(),
+        );
+        let mut delayed = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(100, 20.0),
+            Some(observed_at),
+            Some(observed_at),
+            WeReadSyncState::default(),
+        );
+        delayed.generated_at = latest.generated_at - chrono::Duration::seconds(1);
+        save(&latest, &WeReadSyncState::default()).unwrap();
+
+        let outcome = save(&delayed, &WeReadSyncState::default()).unwrap();
+
+        let SaveOutcome::Superseded(Some(durable)) = outcome else {
+            panic!("expected delayed equal-generation writer to be superseded");
+        };
+        assert_eq!(durable.snapshot_id, latest.snapshot_id);
+        assert_eq!(load_latest().unwrap().ai.total_tokens, Some(200));
+        assert_eq!(load_latest().unwrap().ai.max_used_percent, Some(80.0));
+    }
+
+    #[test]
+    fn present_ai_source_cannot_regress_to_missing() {
+        let observed_at = Utc::now();
+        let durable = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(100, 20.0),
+            Some(observed_at),
+            Some(observed_at),
+            WeReadSyncState::default(),
+        );
+        let incoming =
+            PulseSnapshotV1::from_inputs(ai_input(observed_at, 200), WeReadSyncState::default());
+
+        assert!(snapshot_is_superseded(&incoming, &durable));
+    }
+
+    #[test]
+    fn legacy_observation_on_missing_source_does_not_block_replacement() {
+        let observed_at = Utc::now();
+        let durable =
+            PulseSnapshotV1::from_inputs(ai_input(observed_at, 100), WeReadSyncState::default());
+        let incoming = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_input_with_quota(200, 20.0),
+            Some(observed_at),
+            Some(observed_at - chrono::Duration::minutes(1)),
+            WeReadSyncState::default(),
+        );
+
+        assert!(!snapshot_is_superseded(&incoming, &durable));
+    }
+
+    #[test]
+    #[serial]
     fn delayed_previous_period_cannot_replace_latest_period() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = ConfigDirGuard::set(dir.path());
@@ -478,6 +823,28 @@ mod tests {
                 leading_model: Some("test-model".to_string()),
                 leading_provider: Some("test-provider".to_string()),
             }),
+            ..AiWorkInput::default()
+        }
+    }
+
+    fn ai_input_with_quota(total_tokens: u64, used_percent: f64) -> AiWorkInput {
+        AiWorkInput {
+            current: Some(AiWorkPeriodInput {
+                total_tokens,
+                total_cost: total_tokens as f64 / 100.0,
+                active_days: 1,
+                peak_day: None,
+                peak_day_tokens: total_tokens,
+                leading_model: Some("test-model".to_string()),
+                leading_provider: Some("test-provider".to_string()),
+            }),
+            quota_sources: vec![crate::pulse::AiQuotaSource {
+                provider: "test-provider".to_string(),
+                metrics: vec![crate::pulse::AiQuotaMetric {
+                    label: "weekly".to_string(),
+                    used_percent,
+                }],
+            }],
             ..AiWorkInput::default()
         }
     }

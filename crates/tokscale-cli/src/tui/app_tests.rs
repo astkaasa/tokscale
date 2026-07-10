@@ -128,7 +128,25 @@ fn fresh_cached_data_preserves_cache_generation_for_pulse() {
     )
     .unwrap();
 
-    assert_eq!(app.pulse_ai_observed_at, Some(observed_at));
+    assert_eq!(app.pulse_ai_observed_at.local, Some(observed_at));
+    assert_eq!(app.pulse_ai_observed_at.quota, None);
+}
+
+#[test]
+fn local_data_refresh_does_not_advance_quota_generation() {
+    let mut app = make_app();
+    let quota_observed_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+    app.subscription_usage = sample_subscription_usage();
+    app.pulse_ai_observed_at.quota = Some(quota_observed_at);
+
+    app.update_data(
+        current_week_usage_data(),
+        PulseDataProvenance::VerifiedDefaultScopeFresh,
+    )
+    .unwrap();
+
+    assert!(app.pulse_ai_observed_at.local.is_some());
+    assert_eq!(app.pulse_ai_observed_at.quota, Some(quota_observed_at));
 }
 
 #[test]
@@ -604,6 +622,18 @@ fn daily_usage(date: &str, cost: f64, models: Vec<(&str, &str, f64)>) -> DailyUs
         source_breakdown,
         message_count: 1,
         turn_count: 1,
+    }
+}
+
+fn current_week_usage_data() -> UsageData {
+    let start = tokscale_core::pulse::weread::week_start_for(chrono::Local::now().date_naive());
+    UsageData {
+        daily: vec![daily_usage(
+            &start.to_string(),
+            1.0,
+            vec![("gpt-5", "openai", 1.0)],
+        )],
+        ..UsageData::default()
     }
 }
 
@@ -1462,6 +1492,34 @@ fn test_handle_key_r_on_usage_refreshes_subscription_usage() {
 }
 
 #[test]
+fn quota_refresh_does_not_advance_local_generation() {
+    let mut app = make_app();
+    let local_observed_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+    let old_quota_observed_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+    app.pulse_ai_observed_at.local = Some(local_observed_at);
+    app.pulse_ai_observed_at.quota = Some(old_quota_observed_at);
+    app.pulse_data_provenance = PulseDataProvenance::VerifiedDefaultScopeFresh;
+    app.data = current_week_usage_data();
+    app.usage_fetcher = sample_usage_fetcher;
+    app.current_tab = Tab::Usage;
+
+    app.refresh_usage();
+    for _ in 0..20 {
+        app.on_tick();
+        if !app.is_fetching_usage() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(app.pulse_ai_observed_at.local, Some(local_observed_at));
+    assert!(app
+        .pulse_ai_observed_at
+        .quota
+        .is_some_and(|observed_at| observed_at > old_quota_observed_at));
+}
+
+#[test]
 fn usage_refresh_keeps_snapshot_persistence_failure_visible() {
     let mut app = make_app();
     app.usage_fetcher = sample_usage_fetcher;
@@ -1506,6 +1564,33 @@ fn test_handle_key_r_on_usage_reports_fetch_failure_diagnostic() {
     assert_eq!(
         app.status_message.as_deref(),
         Some("Usage fetch failed: Codex")
+    );
+}
+
+#[test]
+fn failed_usage_refresh_keeps_last_known_good_data_and_generation() {
+    let mut app = make_app();
+    let previous_generation = chrono::Utc::now() - chrono::Duration::minutes(2);
+    app.subscription_usage = sample_subscription_usage();
+    app.pulse_ai_observed_at.quota = Some(previous_generation);
+    app.usage_fetcher = failing_usage_fetcher;
+    app.current_tab = Tab::Usage;
+
+    app.refresh_usage();
+    for _ in 0..20 {
+        app.on_tick();
+        if !app.is_fetching_usage() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(app.subscription_usage.len(), 1);
+    assert_eq!(app.subscription_usage[0].provider, "Codex");
+    assert_eq!(app.pulse_ai_observed_at.quota, Some(previous_generation));
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Usage refresh failed; kept cached data (1 issue)")
     );
 }
 

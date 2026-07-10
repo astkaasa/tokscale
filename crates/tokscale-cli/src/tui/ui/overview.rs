@@ -618,55 +618,71 @@ fn render_summary_panel(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_summary_strip(frame: &mut Frame, app: &App, area: Rect) {
     let summary = overview_summary(app);
-    let line = if app.overview_mode == OverviewMode::Today {
-        Line::from(vec![
-            Span::styled("Today ", app.theme.subtle_text_style()),
-            Span::styled(
-                format_cost(summary.today_cost),
-                Style::default()
-                    .fg(app.theme.color(Color::Rgb(45, 212, 191)))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · Tokens ", app.theme.subtle_text_style()),
-            Span::styled(
-                format_tokens(summary.today_tokens),
-                Style::default().fg(app.theme.foreground),
-            ),
-            Span::styled(" · Models ", app.theme.subtle_text_style()),
-            Span::styled(
-                summary.model_count.to_string(),
-                Style::default().fg(app.theme.foreground),
-            ),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("Today ", app.theme.subtle_text_style()),
-            Span::styled(
-                format_cost(summary.today_cost),
-                Style::default()
-                    .fg(app.theme.color(Color::Rgb(45, 212, 191)))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · Total ", app.theme.subtle_text_style()),
+    let today = vec![
+        Span::styled("Today ", app.theme.subtle_text_style()),
+        Span::styled(
+            format_cost(summary.today_cost),
+            Style::default()
+                .fg(app.theme.color(Color::Rgb(45, 212, 191)))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let mut fields = vec![today];
+    if app.overview_mode == OverviewMode::All {
+        fields.push(vec![
+            Span::styled("Total ", app.theme.subtle_text_style()),
             Span::styled(
                 format_cost(summary.total_cost),
                 Style::default()
                     .fg(app.theme.color(Color::Rgb(96, 165, 250)))
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · Tokens ", app.theme.subtle_text_style()),
-            Span::styled(
-                format_tokens(summary.total_tokens),
-                Style::default().fg(app.theme.foreground),
-            ),
-            Span::styled(" · Models ", app.theme.subtle_text_style()),
-            Span::styled(
-                summary.model_count.to_string(),
-                Style::default().fg(app.theme.foreground),
-            ),
-        ])
-    };
+        ]);
+    }
+    fields.push(vec![
+        Span::styled("Tokens ", app.theme.subtle_text_style()),
+        Span::styled(
+            format_tokens(if app.overview_mode == OverviewMode::Today {
+                summary.today_tokens
+            } else {
+                summary.total_tokens
+            }),
+            Style::default().fg(app.theme.foreground),
+        ),
+    ]);
+    fields.push(vec![
+        Span::styled("Models ", app.theme.subtle_text_style()),
+        Span::styled(
+            summary.model_count.to_string(),
+            Style::default().fg(app.theme.foreground),
+        ),
+    ]);
+
+    let line = fit_summary_strip_fields(fields, area.width as usize);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+fn fit_summary_strip_fields(fields: Vec<Vec<Span<'static>>>, max_width: usize) -> Line<'static> {
+    let separator = Span::raw(" · ");
+    let separator_width = Line::from(vec![separator.clone()]).width();
+    let mut spans = Vec::new();
+    let mut used = 0;
+
+    for field in fields {
+        let field_width = Line::from(field.clone()).width();
+        let required = field_width + if spans.is_empty() { 0 } else { separator_width };
+        if used + required > max_width {
+            continue;
+        }
+        if !spans.is_empty() {
+            spans.push(separator.clone());
+            used += separator_width;
+        }
+        spans.extend(field);
+        used += field_width;
+    }
+
+    Line::from(spans)
 }
 
 fn render_provider_mix_panel(frame: &mut Frame, app: &App, area: Rect) {
@@ -1874,6 +1890,29 @@ mod tests {
             visual_end_col(header, "Total") <= visual_col(header, "▲"),
             "last table column should end before the scrollbar\n{body}"
         );
+    }
+
+    #[test]
+    fn tiny_summary_strip_omits_whole_fields_instead_of_clipping_labels() {
+        let mut app = make_app(35);
+        let today = chrono::Local::now().date_naive();
+        app.data.total_cost = 3_500.0;
+        app.data.total_tokens = 5_600_000_000;
+        app.data.daily = vec![daily_usage(today, 700.0, 1_000_000_000)];
+        let backend = TestBackend::new(35, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_summary_strip(frame, &app, Rect::new(0, 0, 35, 1)))
+            .unwrap();
+        let row = buffer_row_text(terminal.backend().buffer(), 0);
+        let row = row.trim_end();
+
+        assert!(row.contains("Today"), "{row}");
+        assert!(row.contains("Total"), "{row}");
+        assert!(!row.contains("Tokens"), "{row}");
+        assert!(!row.ends_with('·'), "{row}");
+        assert!(!row.ends_with("Tok"), "{row}");
     }
 
     #[test]

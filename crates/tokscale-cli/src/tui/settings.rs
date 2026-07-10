@@ -207,12 +207,11 @@ impl Settings {
 
     fn config_path() -> Result<PathBuf> {
         let config_dir = crate::paths::get_config_dir();
+        tokscale_core::fs_atomic::ensure_private_dir(&config_dir)?;
 
-        if !config_dir.exists() {
-            fs::create_dir_all(&config_dir)?;
-        }
-
-        Ok(config_dir.join("settings.json"))
+        let path = config_dir.join("settings.json");
+        tokscale_core::fs_atomic::repair_private_file(&path);
+        Ok(path)
     }
 
     fn explicit_home_config_path_for_layout(
@@ -251,7 +250,12 @@ impl Settings {
             return Self::load();
         };
 
-        let raw = fs::read_to_string(Self::explicit_home_config_path(home_dir)).ok();
+        let path = Self::explicit_home_config_path(home_dir);
+        if let Some(parent) = path.parent() {
+            tokscale_core::fs_atomic::repair_private_dir(parent);
+        }
+        tokscale_core::fs_atomic::repair_private_file(&path);
+        let raw = fs::read_to_string(path).ok();
 
         raw.and_then(|content| serde_json::from_str(&content).ok())
             .map(Settings::normalize)
@@ -261,33 +265,8 @@ impl Settings {
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
         let content = self.save_content_preserving_disk_env(&path)?;
-
-        // Atomic write: write to temp file, sync, then rename
-        // Matches the pattern used in tui/cache.rs and pricing/cache.rs
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        let tmp_filename = format!(".settings.{}.{:x}.tmp", std::process::id(), nanos);
-        let temp_path = path
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .join(&tmp_filename);
-
-        let write_result = (|| -> Result<()> {
-            let mut file = fs::File::create(&temp_path)?;
-            use std::io::Write;
-            file.write_all(content.as_bytes())?;
-            file.sync_all()?;
-            tokscale_core::fs_atomic::replace_file(&temp_path, &path)?;
-            Ok(())
-        })();
-
-        if write_result.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-
-        write_result
+        tokscale_core::fs_atomic::atomic_write_private(&path, content.as_bytes())?;
+        Ok(())
     }
 
     fn save_content_preserving_disk_env(&self, path: &Path) -> Result<String> {
@@ -824,6 +803,53 @@ mod tests {
         assert_eq!(
             saved["usage"]["excludedProviders"],
             serde_json::json!(["copilot"])
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn settings_save_replaces_legacy_file_with_private_modes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join("config");
+        fs::create_dir(&config_dir).unwrap();
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = config_dir.join("settings.json");
+        fs::write(&path, r#"{"uiTheme":"dark"}"#).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let legacy_inode = fs::metadata(&path).unwrap().ino();
+
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", &config_dir) };
+
+        assert_eq!(Settings::load().ui_theme, ThemePreference::Dark);
+        let repaired = fs::metadata(&path).unwrap();
+        assert_eq!(repaired.ino(), legacy_inode);
+        assert_eq!(repaired.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            fs::metadata(&config_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        Settings::default().save().unwrap();
+
+        let metadata = fs::metadata(&path).unwrap();
+        assert_ne!(metadata.ino(), legacy_inode);
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            fs::metadata(&config_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
         );
 
         unsafe {

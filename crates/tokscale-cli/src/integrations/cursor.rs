@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -31,20 +32,50 @@ fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().context("Could not determine home directory")
 }
 
-fn cursor_credentials_path(home_dir: &Path) -> PathBuf {
-    home_dir.join(".config/tokscale/cursor-credentials.json")
+fn config_dir_from_home(home_dir: &Path) -> PathBuf {
+    home_dir.join(".config/tokscale")
 }
 
-fn old_cursor_credentials_path(home_dir: &Path) -> PathBuf {
+fn cursor_credentials_path_in_config_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("cursor-credentials.json")
+}
+
+#[cfg(test)]
+fn cursor_credentials_path_from_home(home_dir: &Path) -> PathBuf {
+    cursor_credentials_path_in_config_dir(&config_dir_from_home(home_dir))
+}
+
+#[cfg(test)]
+fn old_cursor_credentials_path_from_home(home_dir: &Path) -> PathBuf {
     home_dir.join(".tokscale/cursor-credentials.json")
 }
 
-fn cursor_cache_dir(home_dir: &Path) -> PathBuf {
-    home_dir.join(".config/tokscale/cursor-cache")
+fn cursor_cache_dir_in_config_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("cursor-cache")
 }
 
-fn old_cursor_cache_dir(home_dir: &Path) -> PathBuf {
-    home_dir.join(".tokscale/cursor-cache")
+#[cfg(test)]
+fn cursor_cache_dir_from_home(home_dir: &Path) -> PathBuf {
+    cursor_cache_dir_in_config_dir(&config_dir_from_home(home_dir))
+}
+
+fn legacy_config_dirs_from_home(config_dir: &Path, home_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for candidate in [config_dir_from_home(home_dir), home_dir.join(".tokscale")] {
+        if candidate != config_dir && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+fn legacy_config_dirs(config_dir: &Path) -> Vec<PathBuf> {
+    if std::env::var_os("TOKSCALE_CONFIG_DIR").is_some_and(|value| !value.is_empty()) {
+        return Vec::new();
+    }
+    home_dir()
+        .map(|home_dir| legacy_config_dirs_from_home(config_dir, &home_dir))
+        .unwrap_or_default()
 }
 
 const USAGE_CSV_ENDPOINT: &str =
@@ -57,7 +88,7 @@ const USAGE_SUMMARY_ENDPOINT: &str = "https://cursor.com/api/usage-summary";
 /// partition) does not force an implicit sync on every invocation.
 const CURSOR_SYNC_ATTEMPT_MARKER: &str = "usage.last-sync-attempt";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorCredentials {
     #[serde(rename = "sessionToken")]
     pub session_token: String,
@@ -71,7 +102,7 @@ pub struct CursorCredentials {
     pub label: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorCredentialsStore {
     pub version: i32,
     #[serde(rename = "activeAccountId")]
@@ -100,11 +131,15 @@ pub struct SyncCursorResult {
 }
 
 pub fn get_cursor_credentials_path() -> Result<PathBuf> {
-    Ok(cursor_credentials_path(&home_dir()?))
+    Ok(cursor_credentials_path_in_config_dir(
+        &crate::paths::get_config_dir(),
+    ))
 }
 
 pub fn get_cursor_cache_dir() -> Result<PathBuf> {
-    Ok(cursor_cache_dir(&home_dir()?))
+    Ok(cursor_cache_dir_in_config_dir(
+        &crate::paths::get_config_dir(),
+    ))
 }
 
 pub fn run_cli_command(subcommand: crate::cli::CursorSubcommand) -> Result<()> {
@@ -122,28 +157,94 @@ pub fn run_cli_command(subcommand: crate::cli::CursorSubcommand) -> Result<()> {
     }
 }
 
-fn migrate_cache_dir_from_old_path_in_home(home_dir: &Path) {
-    let old_dir = old_cursor_cache_dir(home_dir);
-    let new_dir = cursor_cache_dir(home_dir);
-    if !new_dir.exists()
-        && old_dir.exists()
-        && fs::create_dir_all(&new_dir).is_ok()
-        && copy_dir_recursive(&old_dir, &new_dir).is_ok()
-    {
-        let _ = fs::remove_dir_all(&old_dir);
+fn migrate_cache_dir_from_old_path(old_dir: &Path, new_dir: &Path) {
+    if let Err(error) = try_migrate_cache_dir_from_old_path(old_dir, new_dir) {
+        eprintln!(
+            "Warning: Failed to migrate legacy Cursor cache from '{}' to '{}'; the legacy cache was preserved: {:#}",
+            old_dir.display(),
+            new_dir.display(),
+            error
+        );
     }
 }
 
+fn migrate_cache_dirs_from_legacy_config_dirs(legacy_dirs: &[PathBuf], config_dir: &Path) {
+    let new_dir = cursor_cache_dir_in_config_dir(config_dir);
+    for legacy_dir in legacy_dirs {
+        let old_dir = cursor_cache_dir_in_config_dir(legacy_dir);
+        if old_dir.exists() {
+            migrate_cache_dir_from_old_path(&old_dir, &new_dir);
+            break;
+        }
+    }
+}
+
+fn acquire_cursor_migration_lock(config_dir: &Path) -> Result<fs::File> {
+    tokscale_core::fs_atomic::ensure_private_dir(config_dir).with_context(|| {
+        format!(
+            "Failed to prepare Cursor migration root '{}'",
+            config_dir.display()
+        )
+    })?;
+    let lock_path = config_dir.join(".cursor-migration.lock");
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open migration lock '{}'", lock_path.display()))?;
+    tokscale_core::fs_atomic::repair_private_file(&lock_path);
+    FileExt::lock_exclusive(&file)
+        .with_context(|| format!("Failed to lock '{}'", lock_path.display()))?;
+    Ok(file)
+}
+
+fn try_migrate_cache_dir_from_old_path(old_dir: &Path, new_dir: &Path) -> Result<bool> {
+    if new_dir.exists() || !old_dir.exists() {
+        return Ok(false);
+    }
+
+    let config_dir = new_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Cursor cache destination has no parent directory"))?;
+    let _lock = acquire_cursor_migration_lock(config_dir)?;
+    if new_dir.exists() || !old_dir.exists() {
+        return Ok(false);
+    }
+
+    let staging_dir = config_dir.join(format!(".cursor-cache-migration-{}", uuid::Uuid::new_v4()));
+    let migrated = (|| -> Result<()> {
+        copy_dir_recursive(old_dir, &staging_dir)?;
+        fs::rename(&staging_dir, new_dir).with_context(|| {
+            format!(
+                "Failed to install migrated Cursor cache at '{}'",
+                new_dir.display()
+            )
+        })
+    })();
+    if let Err(error) = migrated {
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(error);
+    }
+
+    Ok(true)
+}
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    tokscale_core::fs_atomic::ensure_private_dir(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let path = entry.path();
         let target = dst.join(entry.file_name());
         if path.is_dir() {
-            fs::create_dir_all(&target)?;
             copy_dir_recursive(&path, &target)?;
         } else {
             fs::copy(&path, &target)?;
+            tokscale_core::fs_atomic::repair_private_file(&target);
         }
     }
     Ok(())
@@ -184,72 +285,8 @@ fn atomic_write_file(path: &std::path::Path, contents: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Invalid cache path"))?;
-    if !parent.exists() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let temp_name = format!(
-        ".tmp-{}-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("cursor"),
-        std::process::id()
-    );
-    let temp_path = parent.join(temp_name);
-
-    #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temp_path)?;
-        file.write_all(contents.as_bytes())?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::write(&temp_path, contents)?;
-    }
-
-    if let Err(err) = fs::rename(&temp_path, path) {
-        if path.exists() {
-            match fs::copy(&temp_path, path) {
-                Ok(_) => {
-                    let _ = fs::remove_file(&temp_path);
-                }
-                Err(copy_err) => {
-                    let _ = fs::remove_file(&temp_path);
-                    return Err(anyhow::anyhow!(
-                        "Failed to persist file with rename ({}) and copy fallback ({})",
-                        err,
-                        copy_err
-                    ));
-                }
-            }
-        } else {
-            let _ = fs::remove_file(&temp_path);
-            return Err(err.into());
-        }
-    }
-    Ok(())
-}
-
-fn ensure_config_dir_in_home(home_dir: &Path) -> Result<()> {
-    let config_dir = home_dir.join(".config/tokscale");
-
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700))?;
-        }
-    }
+    tokscale_core::fs_atomic::ensure_private_dir(parent)?;
+    tokscale_core::fs_atomic::atomic_write_private(path, contents.as_bytes())?;
     Ok(())
 }
 
@@ -310,78 +347,227 @@ fn sanitize_account_id_for_filename(account_id: &str) -> String {
 }
 
 pub fn load_credentials_store() -> Option<CursorCredentialsStore> {
-    let home_dir = home_dir().ok()?;
-    load_credentials_store_from_home(&home_dir)
+    let config_dir = crate::paths::get_config_dir();
+    let legacy_paths = legacy_config_dirs(&config_dir)
+        .into_iter()
+        .map(|legacy_dir| cursor_credentials_path_in_config_dir(&legacy_dir))
+        .collect::<Vec<_>>();
+    load_credentials_store_from_config_dir(&config_dir, &legacy_paths)
 }
 
 fn load_credentials_store_from_home(home_dir: &Path) -> Option<CursorCredentialsStore> {
-    let path = cursor_credentials_path(home_dir);
-    let old_path = old_cursor_credentials_path(home_dir);
-    let read_path = if path.exists() {
-        path.clone()
-    } else if old_path.exists() {
-        old_path
+    let config_dir = config_dir_from_home(home_dir);
+    let legacy_paths = legacy_config_dirs_from_home(&config_dir, home_dir)
+        .into_iter()
+        .map(|legacy_dir| cursor_credentials_path_in_config_dir(&legacy_dir))
+        .collect::<Vec<_>>();
+    load_credentials_store_from_config_dir(&config_dir, &legacy_paths)
+}
+
+fn load_credentials_store_from_config_dir(
+    config_dir: &Path,
+    legacy_paths: &[PathBuf],
+) -> Option<CursorCredentialsStore> {
+    let path = cursor_credentials_path_in_config_dir(config_dir);
+    let (read_path, is_legacy) = if path.exists() {
+        (path.clone(), false)
+    } else if let Some(legacy_path) = legacy_paths.iter().find(|path| path.exists()) {
+        (legacy_path.to_path_buf(), true)
     } else {
         return None;
     };
 
-    let content = fs::read_to_string(&read_path).ok()?;
+    let content = match fs::read_to_string(&read_path) {
+        Ok(content) => content,
+        Err(error) => {
+            let preservation_note = if is_legacy {
+                " The legacy file was preserved."
+            } else {
+                ""
+            };
+            eprintln!(
+                "Warning: Failed to read Cursor credentials at '{}': {}{}",
+                read_path.display(),
+                error,
+                preservation_note
+            );
+            return None;
+        }
+    };
 
-    if let Ok(mut store) = serde_json::from_str::<CursorCredentialsStore>(&content) {
-        if store.version == 1 && !store.accounts.is_empty() {
-            let mut changed = false;
-            if !store.accounts.contains_key(&store.active_account_id) {
-                if let Some(first_id) = store.accounts.keys().next().cloned() {
-                    store.active_account_id = first_id;
-                    changed = true;
-                }
-            }
-            if changed || read_path != path {
-                let _ = save_credentials_store_in_home(home_dir, &store);
-            }
-            if read_path != path {
-                let _ = fs::remove_file(old_cursor_credentials_path(home_dir));
-            }
-            return Some(store);
+    let (store, needs_rewrite) = match parse_credentials_store(&content) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let preservation_note = if is_legacy {
+                " The legacy file was preserved."
+            } else {
+                ""
+            };
+            eprintln!(
+                "Warning: Invalid Cursor credentials at '{}': {:#}.{}",
+                read_path.display(),
+                error,
+                preservation_note
+            );
+            return None;
+        }
+    };
+
+    if is_legacy {
+        if let Err(error) = migrate_legacy_credentials(config_dir, &read_path, &store) {
+            eprintln!(
+                "Warning: Failed to migrate legacy Cursor credentials from '{}' to '{}'; the legacy file was preserved: {:#}",
+                read_path.display(),
+                path.display(),
+                error
+            );
+        }
+    } else if needs_rewrite {
+        if let Err(error) = save_credentials_store_in_config_dir(config_dir, &store) {
+            eprintln!(
+                "Warning: Failed to normalize Cursor credentials at '{}': {:#}",
+                path.display(),
+                error
+            );
         }
     }
 
-    if let Ok(single) = serde_json::from_str::<CursorCredentials>(&content) {
-        let account_id = derive_account_id(&single.session_token);
-        let mut accounts = HashMap::new();
-        accounts.insert(account_id.clone(), single);
-        let migrated = CursorCredentialsStore {
-            version: 1,
-            active_account_id: account_id,
-            accounts,
-        };
-
-        let _ = save_credentials_store_in_home(home_dir, &migrated);
-        if read_path != path {
-            let _ = fs::remove_file(old_cursor_credentials_path(home_dir));
-        }
-        return Some(migrated);
-    }
-
-    None
+    Some(store)
 }
 
 pub fn save_credentials_store(store: &CursorCredentialsStore) -> Result<()> {
-    save_credentials_store_in_home(&home_dir()?, store)
+    save_credentials_store_in_config_dir(&crate::paths::get_config_dir(), store)
 }
 
+#[cfg(test)]
 fn save_credentials_store_in_home(home_dir: &Path, store: &CursorCredentialsStore) -> Result<()> {
-    ensure_config_dir_in_home(home_dir)?;
-    let path = cursor_credentials_path(home_dir);
+    save_credentials_store_in_config_dir(&config_dir_from_home(home_dir), store)
+}
+
+fn save_credentials_store_in_config_dir(
+    config_dir: &Path,
+    store: &CursorCredentialsStore,
+) -> Result<()> {
+    validate_credentials_store(store)?;
+    let path = cursor_credentials_path_in_config_dir(config_dir);
     let json = serde_json::to_string_pretty(store)?;
-    atomic_write_file(&path, &json)?;
+    atomic_write_file(&path, &json)
+        .with_context(|| format!("Failed to atomically write '{}'", path.display()))?;
+    Ok(())
+}
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+fn parse_credentials_store(content: &str) -> Result<(CursorCredentialsStore, bool)> {
+    match serde_json::from_str::<CursorCredentialsStore>(content) {
+        Ok(mut store) => {
+            let mut changed = false;
+            if !store.accounts.is_empty() && !store.accounts.contains_key(&store.active_account_id)
+            {
+                store.active_account_id = store.accounts.keys().next().cloned().unwrap_or_default();
+                changed = true;
+            }
+            validate_credentials_store(&store)?;
+            Ok((store, changed))
+        }
+        Err(store_error) => match serde_json::from_str::<CursorCredentials>(content) {
+            Ok(single) => {
+                let account_id = derive_account_id(&single.session_token);
+                let mut accounts = HashMap::new();
+                accounts.insert(account_id.clone(), single);
+                let store = CursorCredentialsStore {
+                    version: 1,
+                    active_account_id: account_id,
+                    accounts,
+                };
+                validate_credentials_store(&store)?;
+                Ok((store, true))
+            }
+            Err(single_error) => anyhow::bail!(
+                "expected a versioned store or legacy single-account object (store parse: {}; legacy parse: {})",
+                store_error,
+                single_error
+            ),
+        },
     }
+}
 
+fn validate_credentials_store(store: &CursorCredentialsStore) -> Result<()> {
+    anyhow::ensure!(
+        store.version == 1,
+        "unsupported credentials version {}",
+        store.version
+    );
+    anyhow::ensure!(
+        !store.accounts.is_empty(),
+        "credentials store has no accounts"
+    );
+    anyhow::ensure!(
+        store.accounts.contains_key(&store.active_account_id),
+        "active account '{}' is missing",
+        store.active_account_id
+    );
+    for (account_id, credentials) in &store.accounts {
+        anyhow::ensure!(!account_id.trim().is_empty(), "account id is empty");
+        anyhow::ensure!(
+            !credentials.session_token.trim().is_empty(),
+            "account '{}' has an empty session token",
+            account_id
+        );
+    }
+    Ok(())
+}
+
+fn verify_credentials_store_file(path: &Path, expected: &CursorCredentialsStore) -> Result<()> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read back '{}'", path.display()))?;
+    let persisted: CursorCredentialsStore = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Failed to parse persisted credentials at '{}'",
+            path.display()
+        )
+    })?;
+    validate_credentials_store(&persisted)
+        .with_context(|| format!("Persisted credentials at '{}' are invalid", path.display()))?;
+    anyhow::ensure!(
+        &persisted == expected,
+        "persisted credentials at '{}' do not match the migration source",
+        path.display()
+    );
+    Ok(())
+}
+
+fn migrate_legacy_credentials(
+    config_dir: &Path,
+    _legacy_path: &Path,
+    store: &CursorCredentialsStore,
+) -> Result<()> {
+    let destination = cursor_credentials_path_in_config_dir(config_dir);
+    validate_credentials_store(store)?;
+    tokscale_core::fs_atomic::ensure_private_dir(config_dir).with_context(|| {
+        format!(
+            "Failed to prepare credential migration destination '{}'",
+            config_dir.display()
+        )
+    })?;
+    let staging_path = config_dir.join(format!(
+        ".cursor-credentials-migration-{}.tmp",
+        uuid::Uuid::new_v4()
+    ));
+    let json = serde_json::to_string_pretty(store)?;
+    atomic_write_file(&staging_path, &json).with_context(|| {
+        format!(
+            "Failed to stage migrated credentials for '{}'",
+            destination.display()
+        )
+    })?;
+    let install_result = fs::hard_link(&staging_path, &destination).with_context(|| {
+        format!(
+            "Failed to install migrated credentials at '{}' without replacing existing state",
+            destination.display()
+        )
+    });
+    let _ = fs::remove_file(&staging_path);
+    install_result?;
+    verify_credentials_store_file(&destination, store)?;
     Ok(())
 }
 
@@ -664,8 +850,20 @@ fn is_cursor_usage_csv_filename(name: &str) -> bool {
 }
 
 pub fn has_cursor_usage_cache_in_home(home_dir: &Path) -> bool {
-    migrate_cache_dir_from_old_path_in_home(home_dir);
-    let cache_dir = cursor_cache_dir(home_dir);
+    let config_dir = config_dir_from_home(home_dir);
+    let legacy_dirs = legacy_config_dirs_from_home(&config_dir, home_dir);
+    has_cursor_usage_cache_in_config_dir(&config_dir, &legacy_dirs)
+}
+
+pub fn has_cursor_usage_cache() -> bool {
+    let config_dir = crate::paths::get_config_dir();
+    let legacy_dirs = legacy_config_dirs(&config_dir);
+    has_cursor_usage_cache_in_config_dir(&config_dir, &legacy_dirs)
+}
+
+fn has_cursor_usage_cache_in_config_dir(config_dir: &Path, legacy_dirs: &[PathBuf]) -> bool {
+    migrate_cache_dirs_from_legacy_config_dirs(legacy_dirs, config_dir);
+    let cache_dir = cursor_cache_dir_in_config_dir(config_dir);
     if !cache_dir.exists() {
         return false;
     }
@@ -679,10 +877,25 @@ pub fn has_cursor_usage_cache_in_home(home_dir: &Path) -> bool {
     }
 }
 
+#[cfg(test)]
 fn expected_cursor_usage_cache_paths_in(home_dir: &Path) -> Vec<PathBuf> {
-    let cache_dir = cursor_cache_dir(home_dir);
+    let config_dir = config_dir_from_home(home_dir);
+    let legacy_paths = legacy_config_dirs_from_home(&config_dir, home_dir)
+        .into_iter()
+        .map(|legacy_dir| cursor_credentials_path_in_config_dir(&legacy_dir))
+        .collect::<Vec<_>>();
+    expected_cursor_usage_cache_paths_in_config_dir(&config_dir, &legacy_paths)
+}
 
-    if let Some(store) = load_credentials_store_from_home(home_dir) {
+fn expected_cursor_usage_cache_paths_in_config_dir(
+    config_dir: &Path,
+    legacy_credentials_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let cache_dir = cursor_cache_dir_in_config_dir(config_dir);
+
+    if let Some(store) =
+        load_credentials_store_from_config_dir(config_dir, legacy_credentials_paths)
+    {
         if !store.accounts.is_empty() {
             let mut paths = store
                 .accounts
@@ -720,8 +933,20 @@ fn cursor_usage_cache_file_is_fresh(path: &Path, max_age: Duration) -> bool {
     }
 }
 
+#[cfg(test)]
 fn cursor_usage_cache_is_fresh_in(home_dir: &Path, max_age: Duration) -> bool {
-    let cache_dir = cursor_cache_dir(home_dir);
+    let config_dir = config_dir_from_home(home_dir);
+    let legacy_dirs = legacy_config_dirs_from_home(&config_dir, home_dir);
+    cursor_usage_cache_is_fresh_in_config_dir(&config_dir, &legacy_dirs, max_age)
+}
+
+fn cursor_usage_cache_is_fresh_in_config_dir(
+    config_dir: &Path,
+    legacy_dirs: &[PathBuf],
+    max_age: Duration,
+) -> bool {
+    migrate_cache_dirs_from_legacy_config_dirs(legacy_dirs, config_dir);
+    let cache_dir = cursor_cache_dir_in_config_dir(config_dir);
     if !cache_dir.exists() {
         return false;
     }
@@ -740,7 +965,11 @@ fn cursor_usage_cache_is_fresh_in(home_dir: &Path, max_age: Duration) -> bool {
     let marker_fresh =
         cursor_usage_cache_file_is_fresh(&cache_dir.join(CURSOR_SYNC_ATTEMPT_MARKER), max_age);
 
-    expected_cursor_usage_cache_paths_in(home_dir)
+    let legacy_credentials_paths = legacy_dirs
+        .iter()
+        .map(|legacy_dir| cursor_credentials_path_in_config_dir(legacy_dir))
+        .collect::<Vec<_>>();
+    expected_cursor_usage_cache_paths_in_config_dir(config_dir, &legacy_credentials_paths)
         .iter()
         .filter(|p| *p != &active_path)
         .all(|p| cursor_usage_cache_file_is_fresh(p, max_age) || marker_fresh)
@@ -757,10 +986,9 @@ fn cursor_usage_cache_is_fresh_in(home_dir: &Path, max_age: Duration) -> bool {
 /// The manual `tokscale cursor sync` CLI bypasses this — explicit user intent
 /// is always honored.
 pub fn cursor_usage_cache_is_fresh(max_age: Duration) -> bool {
-    let Ok(home_dir) = home_dir() else {
-        return false;
-    };
-    cursor_usage_cache_is_fresh_in(&home_dir, max_age)
+    let config_dir = crate::paths::get_config_dir();
+    let legacy_dirs = legacy_config_dirs(&config_dir);
+    cursor_usage_cache_is_fresh_in_config_dir(&config_dir, &legacy_dirs, max_age)
 }
 
 pub fn is_cursor_logged_in() -> bool {
@@ -898,20 +1126,12 @@ where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = Result<String>>,
 {
-    let home_dir = match home_dir() {
-        Ok(home_dir) => home_dir,
-        Err(e) => {
-            return SyncCursorResult {
-                synced: false,
-                rows: 0,
-                error: Some(format!("Failed to get home dir: {}", e)),
-            };
-        }
-    };
-
-    sync_cursor_cache_with_fetcher_in_home(&home_dir, fetch_usage_csv).await
+    let config_dir = crate::paths::get_config_dir();
+    let legacy_dirs = legacy_config_dirs(&config_dir);
+    sync_cursor_cache_with_fetcher_in_config_dir(&config_dir, &legacy_dirs, fetch_usage_csv).await
 }
 
+#[cfg(test)]
 async fn sync_cursor_cache_with_fetcher_in_home<F, Fut>(
     home_dir: &Path,
     fetch_usage_csv: F,
@@ -920,9 +1140,28 @@ where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = Result<String>>,
 {
-    migrate_cache_dir_from_old_path_in_home(home_dir);
+    let config_dir = config_dir_from_home(home_dir);
+    let legacy_dirs = legacy_config_dirs_from_home(&config_dir, home_dir);
+    sync_cursor_cache_with_fetcher_in_config_dir(&config_dir, &legacy_dirs, fetch_usage_csv).await
+}
 
-    let store = match load_credentials_store_from_home(home_dir) {
+async fn sync_cursor_cache_with_fetcher_in_config_dir<F, Fut>(
+    config_dir: &Path,
+    legacy_dirs: &[PathBuf],
+    fetch_usage_csv: F,
+) -> SyncCursorResult
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    migrate_cache_dirs_from_legacy_config_dirs(legacy_dirs, config_dir);
+
+    let legacy_credentials_paths = legacy_dirs
+        .iter()
+        .map(|legacy_dir| cursor_credentials_path_in_config_dir(legacy_dir))
+        .collect::<Vec<_>>();
+    let store = match load_credentials_store_from_config_dir(config_dir, &legacy_credentials_paths)
+    {
         Some(s) => s,
         None => {
             return SyncCursorResult {
@@ -941,7 +1180,7 @@ where
         };
     }
 
-    let cache_dir = cursor_cache_dir(home_dir);
+    let cache_dir = cursor_cache_dir_in_config_dir(config_dir);
     if let Err(e) = fs::create_dir_all(&cache_dir) {
         return SyncCursorResult {
             synced: false,
@@ -1317,8 +1556,227 @@ pub fn run_cursor_switch(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::collections::HashMap;
+    use std::ffi::OsString;
     use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn test_credentials_store(token: &str) -> CursorCredentialsStore {
+        let account_id = derive_account_id(token);
+        let mut accounts = HashMap::new();
+        accounts.insert(
+            account_id.clone(),
+            CursorCredentials {
+                session_token: token.to_string(),
+                user_id: extract_user_id_from_session_token(token),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                expires_at: None,
+                label: Some("test".to_string()),
+            },
+        );
+        CursorCredentialsStore {
+            version: 1,
+            active_account_id: account_id,
+            accounts,
+        }
+    }
+
+    #[test]
+    fn legacy_candidates_include_previous_default_root_when_platform_root_changes() {
+        let home_dir = Path::new("/tmp/tokscale-cursor-home");
+        let resolved_config = Path::new("/tmp/tokscale-xdg/tokscale");
+
+        assert_eq!(
+            legacy_config_dirs_from_home(resolved_config, home_dir),
+            vec![
+                home_dir.join(".config/tokscale"),
+                home_dir.join(".tokscale")
+            ]
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_default_cursor_paths_load_save_and_sync_honor_config_override() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config_dir = temp_dir.path().join("isolated-profile");
+        let home_dir = temp_dir.path().join("home");
+        fs::create_dir_all(&home_dir)?;
+        let _config_guard = EnvVarGuard::set("TOKSCALE_CONFIG_DIR", &config_dir);
+        let _home_guard = EnvVarGuard::set("HOME", &home_dir);
+
+        assert_eq!(
+            get_cursor_credentials_path()?,
+            config_dir.join("cursor-credentials.json")
+        );
+        assert_eq!(get_cursor_cache_dir()?, config_dir.join("cursor-cache"));
+
+        let store = test_credentials_store("override-user::test-token");
+        save_credentials_store(&store)?;
+        assert_eq!(load_credentials_store(), Some(store));
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        let result = runtime.block_on(sync_cursor_cache_with_fetcher(|session_token| async move {
+            assert_eq!(session_token, "override-user::test-token");
+            Ok("Date,Model,Tokens\n2026-01-01,gpt-5,42\n".to_string())
+        }));
+
+        assert!(result.synced, "sync failed: {:?}", result.error);
+        assert_eq!(result.rows, 1);
+        assert!(config_dir.join("cursor-cache/usage.csv").exists());
+        assert!(!config_dir_from_home(&home_dir).exists());
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_override_does_not_import_default_credentials() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let home_dir = temp_dir.path().join("home");
+        let override_dir = temp_dir.path().join("isolated-profile");
+        let home_store = test_credentials_store("home-user::test-token");
+        save_credentials_store_in_home(&home_dir, &home_store)?;
+        let previous_path = cursor_credentials_path_from_home(&home_dir);
+
+        let _config_guard = EnvVarGuard::set("TOKSCALE_CONFIG_DIR", &override_dir);
+        let _home_guard = EnvVarGuard::set("HOME", &home_dir);
+
+        assert_eq!(load_credentials_store(), None);
+        assert!(previous_path.exists());
+        assert!(!override_dir.join("cursor-credentials.json").exists());
+        assert_eq!(
+            load_credentials_store_from_home(&home_dir),
+            Some(home_store),
+            "an isolated profile must not move the default profile"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_override_does_not_import_default_cache() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let home_dir = temp_dir.path().join("home");
+        let override_dir = temp_dir.path().join("isolated-profile");
+        let previous_cache = cursor_cache_dir_from_home(&home_dir);
+        fs::create_dir_all(&previous_cache)?;
+        fs::write(previous_cache.join("usage.csv"), "Date,Model\n")?;
+
+        let _config_guard = EnvVarGuard::set("TOKSCALE_CONFIG_DIR", &override_dir);
+        let _home_guard = EnvVarGuard::set("HOME", &home_dir);
+
+        assert!(!has_cursor_usage_cache());
+        assert!(previous_cache.exists());
+        assert!(!override_dir.join("cursor-cache").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_credentials_migration_write_failure_preserves_legacy_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let home_dir = temp_dir.path();
+        let legacy_path = old_cursor_credentials_path_from_home(home_dir);
+        fs::create_dir_all(legacy_path.parent().unwrap())?;
+        let store = test_credentials_store("legacy-user::test-token");
+        fs::write(&legacy_path, serde_json::to_vec_pretty(&store)?)?;
+
+        fs::write(home_dir.join(".config"), "blocks config directory creation")?;
+
+        let loaded = load_credentials_store_from_home(home_dir)
+            .expect("legacy credentials should remain usable in memory");
+        assert_eq!(loaded, store);
+        assert!(legacy_path.exists(), "failed migration removed legacy file");
+        assert!(!cursor_credentials_path_from_home(home_dir).exists());
+
+        let error =
+            migrate_legacy_credentials(&config_dir_from_home(home_dir), &legacy_path, &store)
+                .expect_err("blocked destination should fail migration");
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("Failed to prepare credential migration destination"));
+        assert!(diagnostic.contains(".config/tokscale"));
+        assert!(legacy_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_credentials_migration_preserves_source_after_verified_write() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let home_dir = temp_dir.path();
+        let legacy_path = old_cursor_credentials_path_from_home(home_dir);
+        fs::create_dir_all(legacy_path.parent().unwrap())?;
+        let single = CursorCredentials {
+            session_token: "legacy-user::test-token".to_string(),
+            user_id: Some("legacy-user".to_string()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            expires_at: None,
+            label: Some("legacy".to_string()),
+        };
+        fs::write(&legacy_path, serde_json::to_vec_pretty(&single)?)?;
+
+        let loaded = load_credentials_store_from_home(home_dir)
+            .expect("valid legacy credentials should migrate");
+        let destination = cursor_credentials_path_from_home(home_dir);
+
+        assert!(legacy_path.exists());
+        assert!(destination.exists());
+        verify_credentials_store_file(&destination, &loaded)?;
+        assert_eq!(
+            loaded
+                .accounts
+                .get(&loaded.active_account_id)
+                .map(|credentials| credentials.session_token.as_str()),
+            Some("legacy-user::test-token")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_legacy_credentials_migration_never_replaces_destination() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config_dir = temp_dir.path().join("config");
+        let legacy_path = temp_dir.path().join("legacy/cursor-credentials.json");
+        fs::create_dir_all(legacy_path.parent().unwrap())?;
+        let legacy_store = test_credentials_store("legacy-user::test-token");
+        fs::write(&legacy_path, serde_json::to_vec_pretty(&legacy_store)?)?;
+
+        let current_store = test_credentials_store("current-user::test-token");
+        save_credentials_store_in_config_dir(&config_dir, &current_store)?;
+
+        let error = migrate_legacy_credentials(&config_dir, &legacy_path, &legacy_store)
+            .expect_err("an existing destination must win the migration race");
+
+        assert!(format!("{error:#}").contains("without replacing existing state"));
+        assert!(legacy_path.exists());
+        verify_credentials_store_file(
+            &cursor_credentials_path_in_config_dir(&config_dir),
+            &current_store,
+        )?;
+        Ok(())
+    }
 
     #[test]
     fn test_extract_user_id_from_session_token_with_url_encoding() {
@@ -1468,7 +1926,7 @@ mod tests {
     #[test]
     fn test_cursor_usage_cache_is_fresh_returns_false_when_no_csv_files() {
         let temp = tempfile::tempdir().unwrap();
-        let cache_dir = cursor_cache_dir(temp.path());
+        let cache_dir = cursor_cache_dir_from_home(temp.path());
         fs::create_dir_all(&cache_dir).unwrap();
         // Unrelated file present, but no usage*.csv.
         fs::write(cache_dir.join("README.txt"), "noise").unwrap();
@@ -1481,7 +1939,7 @@ mod tests {
     #[test]
     fn test_cursor_usage_cache_is_fresh_returns_true_for_recent_file() {
         let temp = tempfile::tempdir().unwrap();
-        let cache_dir = cursor_cache_dir(temp.path());
+        let cache_dir = cursor_cache_dir_from_home(temp.path());
         fs::create_dir_all(&cache_dir).unwrap();
         fs::write(cache_dir.join("usage.csv"), "Date,Model\n").unwrap();
         // Just-written file is fresh under any reasonable window.
@@ -1494,7 +1952,7 @@ mod tests {
     #[test]
     fn test_cursor_usage_cache_is_fresh_returns_false_for_old_file() {
         let temp = tempfile::tempdir().unwrap();
-        let cache_dir = cursor_cache_dir(temp.path());
+        let cache_dir = cursor_cache_dir_from_home(temp.path());
         fs::create_dir_all(&cache_dir).unwrap();
         let path = cache_dir.join("usage.csv");
         fs::write(&path, "Date,Model\n").unwrap();
@@ -1517,7 +1975,7 @@ mod tests {
         // account cache. The implicit sync gate should refresh the cache that
         // local reports read from `usage.csv`.
         let temp = tempfile::tempdir().unwrap();
-        let cache_dir = cursor_cache_dir(temp.path());
+        let cache_dir = cursor_cache_dir_from_home(temp.path());
         fs::create_dir_all(&cache_dir).unwrap();
         let stale_path = cache_dir.join("usage.csv");
         fs::write(&stale_path, "Date,Model\n").unwrap();
@@ -1543,7 +2001,7 @@ mod tests {
         // active account's `usage.csv`, the next report would use stale/missing
         // active data unless the implicit sync runs.
         let temp = tempfile::tempdir().unwrap();
-        let cache_dir = cursor_cache_dir(temp.path());
+        let cache_dir = cursor_cache_dir_from_home(temp.path());
         fs::create_dir_all(&cache_dir).unwrap();
         fs::write(cache_dir.join("usage.team-a.csv"), "Date,Model\n").unwrap();
         assert!(!cursor_usage_cache_is_fresh_in(
@@ -1585,7 +2043,7 @@ mod tests {
             },
         )?;
 
-        let cache_dir = cursor_cache_dir(temp_dir.path());
+        let cache_dir = cursor_cache_dir_from_home(temp_dir.path());
         fs::create_dir_all(&cache_dir)?;
         fs::write(cache_dir.join("usage.csv"), "Date,Model\n")?;
 
@@ -1648,7 +2106,7 @@ mod tests {
         .unwrap();
 
         let paths = expected_cursor_usage_cache_paths_in(temp_dir.path());
-        let cache_dir = cursor_cache_dir(temp_dir.path());
+        let cache_dir = cursor_cache_dir_from_home(temp_dir.path());
         let expected = vec![
             cache_dir.join("usage.csv"),
             cache_dir.join("usage.team-account-a.csv"),
@@ -1740,7 +2198,7 @@ mod tests {
         assert_eq!(result.rows, 3);
         assert_eq!(result.error, None);
 
-        let cache_dir = cursor_cache_dir(temp_dir.path());
+        let cache_dir = cursor_cache_dir_from_home(temp_dir.path());
         assert_eq!(
             fs::read_to_string(cache_dir.join("usage.csv"))?,
             "Date,Model,Tokens\n2026-01-01,gpt-5,100\n"
@@ -1913,6 +2371,66 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_migrate_cache_dir_makes_copied_state_private() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let old_dir = temp_dir.path().join("old-cache");
+        let new_dir = temp_dir.path().join("new-cache");
+        fs::create_dir(&old_dir)?;
+        let old_file = old_dir.join("usage.csv");
+        fs::write(&old_file, "Date,Model\n")?;
+        fs::set_permissions(&old_dir, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(&old_file, fs::Permissions::from_mode(0o644))?;
+
+        migrate_cache_dir_from_old_path(&old_dir, &new_dir);
+
+        let new_file = new_dir.join("usage.csv");
+        assert!(old_dir.exists());
+        assert_eq!(fs::read_to_string(&new_file)?, "Date,Model\n");
+        assert_eq!(fs::metadata(&new_dir)?.permissions().mode() & 0o7777, 0o700);
+        assert_eq!(
+            fs::metadata(&new_file)?.permissions().mode() & 0o7777,
+            0o600
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cache_migration_never_replaces_existing_destination() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let old_dir = temp_dir.path().join("old-cache");
+        let new_dir = temp_dir.path().join("config/cursor-cache");
+        fs::create_dir_all(&old_dir)?;
+        fs::create_dir_all(&new_dir)?;
+        fs::write(old_dir.join("usage.csv"), "legacy\n")?;
+        fs::write(new_dir.join("usage.csv"), "current\n")?;
+
+        assert!(!try_migrate_cache_dir_from_old_path(&old_dir, &new_dir)?);
+        assert_eq!(fs::read_to_string(old_dir.join("usage.csv"))?, "legacy\n");
+        assert_eq!(fs::read_to_string(new_dir.join("usage.csv"))?, "current\n");
+        Ok(())
+    }
+
+    #[test]
+    fn test_cache_migration_failure_preserves_source() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let old_dir = temp_dir.path().join("old-cache");
+        let blocked_config = temp_dir.path().join("config");
+        let new_dir = blocked_config.join("cursor-cache");
+        fs::create_dir_all(&old_dir)?;
+        fs::write(old_dir.join("usage.csv"), "legacy\n")?;
+        fs::write(&blocked_config, "not a directory")?;
+
+        assert!(try_migrate_cache_dir_from_old_path(&old_dir, &new_dir).is_err());
+        assert_eq!(fs::read_to_string(old_dir.join("usage.csv"))?, "legacy\n");
+        assert!(!new_dir.exists());
+        Ok(())
+    }
+
     /// Helper: build a two-account credentials store in `home_dir`.
     fn setup_two_account_store(home_dir: &std::path::Path) -> Result<()> {
         let mut accounts = HashMap::new();
@@ -1967,7 +2485,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         setup_two_account_store(temp_dir.path())?;
 
-        let cache_dir = cursor_cache_dir(temp_dir.path());
+        let cache_dir = cursor_cache_dir_from_home(temp_dir.path());
         fs::create_dir_all(&cache_dir)?;
 
         // Fresh active cache.
@@ -1998,7 +2516,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         setup_two_account_store(temp_dir.path())?;
 
-        let cache_dir = cursor_cache_dir(temp_dir.path());
+        let cache_dir = cursor_cache_dir_from_home(temp_dir.path());
         fs::create_dir_all(&cache_dir)?;
 
         fs::write(cache_dir.join("usage.csv"), "Date,Model\n")?;
@@ -2026,7 +2544,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         setup_two_account_store(temp_dir.path())?;
 
-        let cache_dir = cursor_cache_dir(temp_dir.path());
+        let cache_dir = cursor_cache_dir_from_home(temp_dir.path());
         fs::create_dir_all(&cache_dir)?;
 
         // Stale active cache.
@@ -2067,7 +2585,7 @@ mod tests {
             },
         ));
 
-        let cache_dir = cursor_cache_dir(temp_dir.path());
+        let cache_dir = cursor_cache_dir_from_home(temp_dir.path());
         assert!(
             cache_dir.join(CURSOR_SYNC_ATTEMPT_MARKER).exists(),
             "marker must be written even when a secondary account fetch fails"

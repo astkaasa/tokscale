@@ -14,6 +14,31 @@ use super::data::UsageData;
 use super::settings::Settings;
 use crate::commands::usage::UsageOutput;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AiSourceObservedAt {
+    pub(crate) local: Option<DateTime<Utc>>,
+    pub(crate) quota: Option<DateTime<Utc>>,
+}
+
+impl AiSourceObservedAt {
+    fn from_snapshot(snapshot: Option<&PulseSnapshotV1>) -> Self {
+        let observed_at = |source_id: &str| {
+            snapshot
+                .and_then(|snapshot| {
+                    snapshot
+                        .sources
+                        .iter()
+                        .find(|source| source.id == source_id)
+                })
+                .and_then(|source| source.observed_at)
+        };
+        Self {
+            local: observed_at("local-ai-usage"),
+            quota: observed_at("subscription-usage-cache"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct PulseState {
     pub(crate) weread: WeReadState,
@@ -39,19 +64,22 @@ impl PulseState {
             weread_sync.mark_auth_missing(Utc::now());
         }
         let weread = weread_sync.clone().into_legacy();
-
+        let snapshot = {
+            #[cfg(not(test))]
+            {
+                store::load_latest().map(|mut snapshot| {
+                    snapshot.refresh_time_sensitive_source_health(Utc::now());
+                    snapshot
+                })
+            }
+            #[cfg(test)]
+            {
+                None
+            }
+        };
         Self {
             weread,
-            snapshot: {
-                #[cfg(not(test))]
-                {
-                    store::load_latest()
-                }
-                #[cfg(test)]
-                {
-                    None
-                }
-            },
+            snapshot,
             weread_sync,
             durable_weread_revision,
             weread_job: BackgroundJob::default(),
@@ -75,6 +103,10 @@ impl PulseState {
 
     pub(crate) fn is_fetching_weread(&self) -> bool {
         self.weread_job.is_running()
+    }
+
+    pub(crate) fn ai_observed_at(&self) -> AiSourceObservedAt {
+        AiSourceObservedAt::from_snapshot(self.snapshot.as_ref())
     }
 
     pub(crate) fn refresh_weread(&mut self, settings: &Settings) -> Option<&'static str> {
@@ -153,7 +185,7 @@ impl PulseState {
         &mut self,
         data: &UsageData,
         quota_outputs: &[UsageOutput],
-        ai_observed_at: Option<DateTime<Utc>>,
+        ai_observed_at: AiSourceObservedAt,
         persist: bool,
     ) -> anyhow::Result<()> {
         if persist {
@@ -162,7 +194,8 @@ impl PulseState {
         let snapshot = crate::commands::pulse::build_snapshot(
             data,
             quota_outputs,
-            ai_observed_at,
+            ai_observed_at.local,
+            ai_observed_at.quota,
             self.weread_sync.clone(),
         );
         self.snapshot = Some(snapshot.clone());
@@ -176,7 +209,7 @@ impl PulseState {
         &mut self,
         data: &UsageData,
         quota_outputs: &[UsageOutput],
-        ai_observed_at: Option<DateTime<Utc>>,
+        ai_observed_at: AiSourceObservedAt,
         use_current_ai_data: bool,
     ) -> anyhow::Result<()> {
         self.reconcile_newer_durable_weread();
@@ -184,7 +217,8 @@ impl PulseState {
             crate::commands::pulse::build_snapshot(
                 data,
                 quota_outputs,
-                ai_observed_at,
+                ai_observed_at.local,
+                ai_observed_at.quota,
                 self.weread_sync.clone(),
             )
         } else {
@@ -399,10 +433,30 @@ mod tests {
         pulse.fail_snapshot_saves_for_test("disk full");
 
         let error = pulse
-            .rebuild_snapshot(&UsageData::default(), &[], None, true)
+            .rebuild_snapshot(
+                &UsageData::default(),
+                &[],
+                AiSourceObservedAt::default(),
+                true,
+            )
             .unwrap_err();
 
         assert!(error.to_string().contains("disk full"));
         assert!(pulse.snapshot.is_some());
+    }
+
+    #[test]
+    fn pulse_state_does_not_attach_generations_to_missing_sources() {
+        let generations = AiSourceObservedAt {
+            local: Some(Utc::now() - chrono::Duration::minutes(2)),
+            quota: Some(Utc::now() - chrono::Duration::minutes(1)),
+        };
+        let mut pulse = PulseState::empty_for_surface();
+
+        pulse
+            .rebuild_snapshot(&UsageData::default(), &[], generations, false)
+            .unwrap();
+
+        assert_eq!(pulse.ai_observed_at(), AiSourceObservedAt::default());
     }
 }

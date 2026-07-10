@@ -74,41 +74,17 @@ pub fn render_ascii_bar(remaining_percent: f64, width: usize) -> String {
 }
 
 pub fn atomic_write_secret(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
-    let dir = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path has no parent directory",
-        )
-    })?;
-    std::fs::create_dir_all(dir)?;
-    let temp_path = path.with_extension(format!("{}.tmp", std::process::id()));
-    {
-        #[cfg(unix)]
-        let mut opts = {
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut o = std::fs::OpenOptions::new();
-            o.mode(0o600);
-            o
-        };
-        #[cfg(not(unix))]
-        let mut opts = std::fs::OpenOptions::new();
-        let mut f = match opts.write(true).create_new(true).open(&temp_path) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(e);
-            }
-        };
-        if let Err(e) = std::io::Write::write_all(&mut f, data) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(e);
-        }
-    }
-    if let Err(e) = std::fs::rename(&temp_path, path) {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(e);
-    }
-    Ok(())
+    let dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path has no parent directory",
+            )
+        })?;
+    tokscale_core::fs_atomic::ensure_private_dir(dir)?;
+    tokscale_core::fs_atomic::atomic_write_private(path, data)
 }
 
 #[cfg(test)]
@@ -152,5 +128,41 @@ mod tests {
         );
 
         assert_eq!(label, "resets Jul 18 08:43");
+    }
+
+    #[test]
+    fn atomic_write_secret_replaces_existing_file_without_temp_leaks() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let directory = temp.path().join("credentials");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("auth.json");
+        std::fs::write(&path, b"old secret").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        atomic_write_secret(&path, b"new secret").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new secret");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                std::fs::metadata(&directory).unwrap().permissions().mode() & 0o7777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+                0o600
+            );
+        }
     }
 }

@@ -110,6 +110,8 @@ pub enum UsageFetchDiagnosticKind {
     FetchFailed,
     ImportCurrentLoginFailed,
     ProviderPanicked,
+    CachedDataStale,
+    CacheWriteFailed,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -273,25 +275,101 @@ impl UsageOutput {
 
 // ── Cache ──
 
+const SUBSCRIPTION_CACHE_FUTURE_TOLERANCE_SECS: u64 = 60;
+const SUBSCRIPTION_CACHE_TTL_SECS: u64 = 300;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageCacheIdentity {
+    pub(crate) provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) account_id: Option<String>,
+}
+
+impl UsageCacheIdentity {
+    pub(crate) fn from_output(output: &UsageOutput) -> Self {
+        Self {
+            provider: output.provider.clone(),
+            account_id: output.account.as_ref().map(|account| account.id.clone()),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionCacheDocument {
+    timestamp: u64,
+    data: Vec<UsageOutput>,
+    #[serde(default)]
+    partial: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stale_identities: Vec<UsageCacheIdentity>,
+}
+
+#[derive(Debug)]
+pub(crate) struct LoadedSubscriptionCache {
+    pub(crate) data: Vec<UsageOutput>,
+    pub(crate) observed_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) is_fresh: bool,
+    pub(crate) partial: bool,
+    pub(crate) stale_identities: Vec<UsageCacheIdentity>,
+}
+
 fn cache_path() -> Option<std::path::PathBuf> {
-    let dir = crate::paths::get_cache_dir();
-    if std::fs::create_dir_all(&dir).is_err() {
+    let config_dir = crate::paths::get_config_dir();
+    if tokscale_core::fs_atomic::ensure_private_dir(&config_dir).is_err() {
         return None;
     }
-    Some(dir.join("subscription-usage-cache.json"))
+
+    let dir = crate::paths::get_cache_dir();
+    if tokscale_core::fs_atomic::ensure_private_dir(&dir).is_err() {
+        return None;
+    }
+
+    let path = dir.join("subscription-usage-cache.json");
+    tokscale_core::fs_atomic::repair_private_file(&path);
+    Some(path)
 }
 
 pub fn save_cache(data: &[UsageOutput]) {
-    let Some(path) = cache_path() else { return };
+    let _ = save_cache_with_observed_at(data);
+}
+
+pub(crate) fn save_cache_with_observed_at(
+    data: &[UsageOutput],
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    save_cache_with_provenance(data, false, &[])
+}
+
+pub(crate) fn save_cache_with_provenance(
+    data: &[UsageOutput],
+    partial: bool,
+    stale_identities: &[UsageCacheIdentity],
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let path = cache_path()?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let json = serde_json::json!({
-        "timestamp": timestamp,
-        "data": data,
-    });
-    let _ = std::fs::write(&path, serde_json::to_string(&json).unwrap_or_default());
+    let mut seen_identities = HashSet::new();
+    let stale_identities = stale_identities
+        .iter()
+        .filter(|identity| seen_identities.insert((*identity).clone()))
+        .cloned()
+        .collect();
+    let document = SubscriptionCacheDocument {
+        timestamp,
+        data: data.to_vec(),
+        partial,
+        stale_identities,
+    };
+    let Ok(content) = serde_json::to_vec(&document) else {
+        return None;
+    };
+    tokscale_core::fs_atomic::atomic_write_private(&path, &content).ok()?;
+    i64::try_from(timestamp)
+        .ok()
+        .and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0))
 }
 
 pub fn clear_cache() {
@@ -301,24 +379,36 @@ pub fn clear_cache() {
 }
 
 pub fn load_cache_with_observed_at() -> Option<(Vec<UsageOutput>, chrono::DateTime<chrono::Utc>)> {
+    let cache = load_cache_for_tui()?;
+    if !cache.is_fresh || cache.partial || !cache.stale_identities.is_empty() {
+        return None;
+    }
+    Some((cache.data, cache.observed_at))
+}
+
+pub(crate) fn load_cache_for_tui() -> Option<LoadedSubscriptionCache> {
     let path = cache_path()?;
     let content = std::fs::read_to_string(&path).ok()?;
-    let doc: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let timestamp = doc.get("timestamp")?.as_u64()?;
+    let document: SubscriptionCacheDocument = serde_json::from_str(&content).ok()?;
+    let timestamp = document.timestamp;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let age = now.saturating_sub(timestamp);
-    // Cache expires after 5 minutes
-    if age > 300 {
+    if timestamp > now.saturating_add(SUBSCRIPTION_CACHE_FUTURE_TOLERANCE_SECS) {
         return None;
     }
+    let age = now.saturating_sub(timestamp);
     let observed_at = i64::try_from(timestamp)
         .ok()
         .and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0))?;
-    let data = serde_json::from_value(doc.get("data")?.clone()).ok()?;
-    Some((data, observed_at))
+    Some(LoadedSubscriptionCache {
+        data: document.data,
+        observed_at,
+        is_fresh: age <= SUBSCRIPTION_CACHE_TTL_SECS,
+        partial: document.partial,
+        stale_identities: document.stale_identities,
+    })
 }
 
 // ── Public API ──
@@ -544,6 +634,23 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    fn cache_output() -> UsageOutput {
+        UsageOutput {
+            provider: "Codex".to_string(),
+            account: Some(UsageAccount {
+                id: "acct-work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+            plan: None,
+            email: None,
+            metrics: Vec::new(),
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        }
+    }
+
     #[test]
     fn usage_fetch_intent_exposes_tui_surface_variant() {
         assert!(matches!(
@@ -646,5 +753,211 @@ mod tests {
         assert!(output.account.is_none());
         assert_eq!(output.display_name(), "Codex");
         Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn subscription_cache_rejects_timestamp_far_in_the_future() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join("config");
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", &config_dir) };
+
+        let path = cache_path().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let content = serde_json::json!({
+            "timestamp": now + SUBSCRIPTION_CACHE_FUTURE_TOLERANCE_SECS + 60,
+            "data": [],
+        });
+        std::fs::write(path, serde_json::to_vec(&content).unwrap()).unwrap();
+
+        assert!(load_cache_with_observed_at().is_none());
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn subscription_cache_save_returns_persisted_generation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join("config");
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", &config_dir) };
+
+        let saved_observed_at = save_cache_with_observed_at(&[]).unwrap();
+        let (loaded, loaded_observed_at) = load_cache_with_observed_at().unwrap();
+
+        assert!(loaded.is_empty());
+        assert_eq!(loaded_observed_at, saved_observed_at);
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn subscription_cache_save_reports_failure_without_generation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let blocked_config = temp.path().join("not-a-directory");
+        std::fs::write(&blocked_config, b"blocked").unwrap();
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", &blocked_config) };
+
+        assert!(save_cache_with_observed_at(&[]).is_none());
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn expired_subscription_cache_remains_available_as_tui_last_known_good() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join("config");
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", &config_dir) };
+
+        let path = cache_path().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let document = SubscriptionCacheDocument {
+            timestamp: now - SUBSCRIPTION_CACHE_TTL_SECS - 1,
+            data: vec![cache_output()],
+            partial: false,
+            stale_identities: Vec::new(),
+        };
+        std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let loaded = load_cache_for_tui().unwrap();
+        assert_eq!(loaded.data.len(), 1);
+        assert!(!loaded.is_fresh);
+        assert!(load_cache_with_observed_at().is_none());
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn partial_subscription_cache_round_trips_retained_row_provenance() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join("config");
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", &config_dir) };
+
+        let output = cache_output();
+        let identity = UsageCacheIdentity::from_output(&output);
+        save_cache_with_provenance(
+            std::slice::from_ref(&output),
+            true,
+            std::slice::from_ref(&identity),
+        )
+        .unwrap();
+
+        let loaded = load_cache_for_tui().unwrap();
+        assert!(loaded.is_fresh);
+        assert!(loaded.partial);
+        assert_eq!(loaded.stale_identities, vec![identity]);
+        assert!(load_cache_with_observed_at().is_none());
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn subscription_cache_atomically_replaces_legacy_file_with_private_modes() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join("config");
+        let cache_dir = config_dir.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&cache_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = cache_dir.join("subscription-usage-cache.json");
+        std::fs::write(&path, b"legacy cache").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let legacy_inode = std::fs::metadata(&path).unwrap().ino();
+
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", &config_dir) };
+
+        assert!(load_cache_with_observed_at().is_none());
+        let repaired = std::fs::metadata(&path).unwrap();
+        assert_eq!(repaired.ino(), legacy_inode);
+        assert_eq!(repaired.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&config_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&cache_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&cache_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let output = UsageOutput {
+            provider: "Test".to_string(),
+            account: None,
+            plan: None,
+            email: None,
+            metrics: Vec::new(),
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        };
+        save_cache(&[output]);
+
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_ne!(metadata.ino(), legacy_inode);
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&config_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&cache_dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        let (loaded, _) = load_cache_with_observed_at().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].provider, "Test");
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
     }
 }

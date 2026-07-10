@@ -10,9 +10,9 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-// 18: codex token_count dedup key scoped to the fork parent. Cached
-// messages store their dedup_key, so old entries must be reparsed.
-const CACHE_SCHEMA_VERSION: u32 = 18;
+// 19: Codex output tokens are normalized to exclude reasoning. Cached
+// messages and incremental cumulative baselines must be reparsed.
+const CACHE_SCHEMA_VERSION: u32 = 19;
 const CACHE_FILENAME: &str = "source-message-cache.bin";
 const CACHE_LOCK_FILENAME: &str = "source-message-cache.lock";
 const MAX_CACHE_FILE_BYTES: u64 = 256 * 1024 * 1024;
@@ -450,7 +450,14 @@ impl SourceMessageCache {
         // crash between delete and rename would lose the cache. The temp-file
         // pattern makes corruption-on-crash impossible.
         let write_result = (|| -> std::io::Result<()> {
-            let file = File::create(&tmp_path)?;
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let file = options.open(&tmp_path)?;
             let mut writer = BufWriter::new(file);
             bincode::options()
                 .with_limit(MAX_CACHE_FILE_BYTES)
@@ -477,21 +484,10 @@ impl SourceMessageCache {
 }
 
 fn read_store_from_path(path: &Path) -> Option<CachedSourceStore> {
-    let file = File::open(path).ok()?;
-    let metadata = file.metadata().ok()?;
-    if metadata.len() > MAX_CACHE_FILE_BYTES {
-        return None;
+    match read_store_from_path_status(path) {
+        CacheReadStatus::Loaded(store) => Some(store),
+        CacheReadStatus::Missing | CacheReadStatus::Invalid => None,
     }
-
-    let reader = BufReader::new(file);
-    let store: CachedSourceStore = bincode::options()
-        .with_limit(MAX_CACHE_FILE_BYTES)
-        .deserialize_from(reader)
-        .ok()?;
-    if store.schema_version != CACHE_SCHEMA_VERSION {
-        return None;
-    }
-    Some(store)
 }
 
 enum CacheReadStatus {
@@ -501,6 +497,7 @@ enum CacheReadStatus {
 }
 
 fn read_store_from_path_status(path: &Path) -> CacheReadStatus {
+    crate::fs_atomic::repair_private_file(path);
     let file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return CacheReadStatus::Missing,
@@ -1035,9 +1032,35 @@ mod tests {
         cache.insert(entry);
         cache.save_if_dirty();
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = cache_path().unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
         let loaded = SourceMessageCache::load();
         assert_eq!(loaded.entries.len(), 1);
         assert!(loaded.get(file.path()).is_some());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                std::fs::metadata(cache_path().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
 
         restore_cache_env(prev_env);
     }

@@ -8,12 +8,16 @@ use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::client_filter::ClientFilter;
+use crate::commands::usage::{
+    LoadedSubscriptionCache, UsageCacheIdentity, UsageFetchDiagnostic, UsageFetchDiagnosticKind,
+    UsageFetchDiagnosticSeverity, UsageOutput,
+};
 use crate::tui::background_job::{BackgroundJob, BackgroundJobPoll};
 use crate::tui::codex_login::{CodexLoginEvent, CodexLoginOutcome};
 use crate::tui::data::{DataLoader, UsageData};
 use crate::tui::drilldown_state::DrilldownView;
 use crate::tui::navigation::{ChartGranularity, Tab};
-use crate::tui::pulse_state::PulseState;
+use crate::tui::pulse_state::{AiSourceObservedAt, PulseState};
 use crate::tui::settings::Settings;
 use crate::tui::themes::Theme;
 use crate::tui::ui::dialog::DialogStack;
@@ -22,6 +26,113 @@ use crate::tui::ui::widgets::get_provider_shade;
 #[cfg(test)]
 use super::test_usage_fetcher;
 use super::{App, PulseDataProvenance, RefreshTrigger, TuiConfig};
+
+fn merge_usage_refresh(
+    previous: &[UsageOutput],
+    mut fresh: Vec<UsageOutput>,
+    diagnostics: &[UsageFetchDiagnostic],
+) -> (Vec<UsageOutput>, Vec<UsageCacheIdentity>) {
+    let mut retained = Vec::new();
+    for output in previous {
+        let already_replaced = fresh
+            .iter()
+            .any(|candidate| same_usage_identity(candidate, output));
+        let failed = diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == UsageFetchDiagnosticSeverity::Error
+                && diagnostic_matches_output(diagnostic, output)
+        });
+        if failed && !already_replaced {
+            retained.push(UsageCacheIdentity::from_output(output));
+            fresh.push(output.clone());
+        }
+    }
+    (fresh, retained)
+}
+
+fn same_usage_identity(left: &UsageOutput, right: &UsageOutput) -> bool {
+    left.provider.eq_ignore_ascii_case(&right.provider)
+        && match (&left.account, &right.account) {
+            (Some(left), Some(right)) => left.id == right.id,
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+fn diagnostic_matches_output(diagnostic: &UsageFetchDiagnostic, output: &UsageOutput) -> bool {
+    diagnostic.provider.eq_ignore_ascii_case(&output.provider)
+        && diagnostic.account.as_ref().is_none_or(|failed_account| {
+            output
+                .account
+                .as_ref()
+                .is_some_and(|account| account.id == failed_account.id)
+        })
+}
+
+fn persist_subscription_cache(
+    data: &[UsageOutput],
+    partial: bool,
+    stale_identities: &[UsageCacheIdentity],
+) -> Option<chrono::DateTime<Utc>> {
+    #[cfg(not(test))]
+    {
+        crate::commands::usage::save_cache_with_provenance(data, partial, stale_identities)
+    }
+
+    #[cfg(test)]
+    {
+        let _ = (data, partial, stale_identities);
+        Some(Utc::now())
+    }
+}
+
+fn clear_subscription_cache() {
+    #[cfg(not(test))]
+    crate::commands::usage::clear_cache();
+}
+
+fn quota_refresh_has_errors(diagnostics: &[UsageFetchDiagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == UsageFetchDiagnosticSeverity::Error)
+}
+
+fn quota_provenance_is_degraded(diagnostics: &[UsageFetchDiagnostic]) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == UsageFetchDiagnosticSeverity::Error
+            || matches!(
+                diagnostic.kind,
+                UsageFetchDiagnosticKind::CachedDataStale
+                    | UsageFetchDiagnosticKind::CacheWriteFailed
+            )
+    })
+}
+
+fn cache_diagnostics(cache: &LoadedSubscriptionCache) -> Vec<UsageFetchDiagnostic> {
+    if cache.is_fresh && !cache.partial && cache.stale_identities.is_empty() {
+        return Vec::new();
+    }
+
+    let message = match (
+        cache.is_fresh,
+        cache.partial || !cache.stale_identities.is_empty(),
+    ) {
+        (false, true) => "Cached usage is stale and has partial provider coverage",
+        (false, false) => "Cached usage is stale",
+        (true, true) => "Cached usage has partial provider coverage",
+        (true, false) => return Vec::new(),
+    };
+    vec![UsageFetchDiagnostic::with_kind(
+        "Local quota cache",
+        None,
+        UsageFetchDiagnosticKind::CachedDataStale,
+        UsageFetchDiagnosticSeverity::Warning,
+        message,
+    )]
+}
+
+fn should_publish_quota_pulse(fresh_count: usize, partial: bool, cache_persisted: bool) -> bool {
+    fresh_count > 0 && !partial && cache_persisted
+}
 
 impl App {
     #[cfg(test)]
@@ -130,37 +241,36 @@ impl App {
         } else {
             PulseState::empty_for_surface()
         };
-        let (subscription_usage, subscription_observed_at) = {
+        let (subscription_usage, subscription_observed_at, usage_cache_diagnostics) = {
             #[cfg(not(test))]
             {
                 if fetch_on_entry {
-                    match crate::commands::usage::load_cache_with_observed_at() {
-                        Some((usage, observed_at)) => (usage, Some(observed_at)),
-                        None => (Vec::new(), None),
+                    match crate::commands::usage::load_cache_for_tui() {
+                        Some(cache) => {
+                            let diagnostics = cache_diagnostics(&cache);
+                            (cache.data, Some(cache.observed_at), diagnostics)
+                        }
+                        None => (Vec::new(), None, Vec::new()),
                     }
                 } else {
-                    (Vec::new(), None)
+                    (Vec::new(), None, Vec::new())
                 }
             }
             #[cfg(test)]
             {
-                (Vec::new(), None)
+                (Vec::new(), None, Vec::new())
             }
         };
-        let pulse_ai_observed_at = pulse_data_provenance
-            .can_seed_global_snapshot()
-            .then(|| {
-                [
-                    has_data.then_some(cached_ai_observed_at).flatten(),
-                    (!subscription_usage.is_empty())
-                        .then_some(subscription_observed_at)
-                        .flatten(),
-                ]
-                .into_iter()
+        let pulse_ai_observed_at = AiSourceObservedAt {
+            local: pulse_data_provenance
+                .can_seed_global_snapshot()
+                .then_some(cached_ai_observed_at)
                 .flatten()
-                .max()
-            })
-            .flatten();
+                .filter(|_| has_data),
+            quota: (!subscription_usage.is_empty())
+                .then_some(subscription_observed_at)
+                .flatten(),
+        };
 
         let mut app = Self {
             should_quit: false,
@@ -210,7 +320,7 @@ impl App {
             confirmed_codex_reset_account_id,
             hide_usage_emails: true,
             usage_fetch_attempted: false,
-            usage_fetch_diagnostics: Vec::new(),
+            usage_fetch_diagnostics: usage_cache_diagnostics,
             usage_job: BackgroundJob::default(),
             codex_reset_job: BackgroundJob::default(),
             pulse,
@@ -238,12 +348,23 @@ impl App {
 
     pub fn update_data(&mut self, data: UsageData, provenance: PulseDataProvenance) -> Result<()> {
         self.pulse_data_provenance = provenance;
-        self.pulse_ai_observed_at = provenance.can_seed_global_snapshot().then(Utc::now);
+        self.pulse_ai_observed_at.local = provenance
+            .can_seed_global_snapshot()
+            .then(|| self.local_ai_cache_observed_at().unwrap_or_else(Utc::now));
+        let quota_degraded = !self.subscription_usage.is_empty()
+            && quota_provenance_is_degraded(&self.usage_fetch_diagnostics);
         self.data = data;
         self.data_version = self.data_version.saturating_add(1);
         self.last_refresh = Instant::now();
         self.build_model_shade_map();
-        let pulse_result = self.rebuild_pulse_snapshot();
+        let pulse_result = if quota_degraded {
+            self.rebuild_pulse_snapshot_preserving_quota()
+        } else {
+            self.rebuild_pulse_snapshot()
+        };
+        if quota_degraded {
+            self.mark_quota_source_degraded();
+        }
 
         if let Some(DrilldownView::Period(key)) = self.drilldown_view().cloned() {
             if !self
@@ -258,6 +379,28 @@ impl App {
 
         self.clamp_selection();
         pulse_result
+    }
+
+    fn mark_quota_source_degraded(&mut self) {
+        let issue_code = if self
+            .usage_fetch_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == UsageFetchDiagnosticKind::CacheWriteFailed)
+        {
+            "cache_write_failed"
+        } else if self
+            .usage_fetch_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == UsageFetchDiagnosticSeverity::Error)
+        {
+            "partial_refresh"
+        } else {
+            "stale_cache"
+        };
+        let Some(snapshot) = self.pulse.snapshot.as_mut() else {
+            return;
+        };
+        snapshot.mark_source_degraded("subscription-usage-cache", issue_code);
     }
 
     pub fn build_model_shade_map(&mut self) {
@@ -309,15 +452,61 @@ impl App {
 
         match self.usage_job.poll() {
             Some(BackgroundJobPoll::Ready(report)) => {
-                self.subscription_usage = report.outputs;
+                let fresh_count = report.outputs.len();
+                let partial = quota_refresh_has_errors(&report.diagnostics);
+                let (usage, retained_identities) = merge_usage_refresh(
+                    &self.subscription_usage,
+                    report.outputs,
+                    &report.diagnostics,
+                );
+                let retained_count = retained_identities.len();
+                self.subscription_usage = usage;
                 self.usage_fetch_diagnostics = report.diagnostics;
-                if self.pulse_data_provenance.can_seed_global_snapshot() {
-                    self.pulse_ai_observed_at = Some(Utc::now());
+                let mut cache_persisted = false;
+                if fresh_count > 0 {
+                    match persist_subscription_cache(
+                        &self.subscription_usage,
+                        partial,
+                        &retained_identities,
+                    ) {
+                        Some(observed_at) => {
+                            cache_persisted = true;
+                            if !partial {
+                                self.pulse_ai_observed_at.quota = Some(observed_at);
+                            }
+                        }
+                        None => {
+                            self.usage_fetch_diagnostics
+                                .push(UsageFetchDiagnostic::with_kind(
+                                    "Local quota cache",
+                                    None,
+                                    UsageFetchDiagnosticKind::CacheWriteFailed,
+                                    UsageFetchDiagnosticSeverity::Warning,
+                                    "Refreshed usage could not be persisted",
+                                ));
+                        }
+                    }
+                } else if self.usage_fetch_diagnostics.is_empty() {
+                    clear_subscription_cache();
+                    self.pulse_ai_observed_at.quota = None;
                 }
-                let pulse_result = self.rebuild_pulse_snapshot();
+
+                let publish_pulse =
+                    should_publish_quota_pulse(fresh_count, partial, cache_persisted)
+                        || (fresh_count == 0 && self.usage_fetch_diagnostics.is_empty());
+                let quota_degraded = partial || (!cache_persisted && fresh_count > 0);
+                let pulse_result = if publish_pulse {
+                    self.rebuild_pulse_snapshot()
+                } else if quota_degraded {
+                    self.rebuild_pulse_snapshot_preserving_quota()
+                } else {
+                    Ok(())
+                };
+                if quota_degraded {
+                    self.mark_quota_source_degraded();
+                }
                 self.clamp_selection();
-                let usage_status = if !self.subscription_usage.is_empty() {
-                    crate::commands::usage::save_cache(&self.subscription_usage);
+                let usage_status = if fresh_count > 0 {
                     if self.usage_fetch_diagnostics.is_empty() {
                         Some("Usage data loaded".into())
                     } else {
@@ -331,8 +520,17 @@ impl App {
                             }
                         ))
                     }
+                } else if retained_count > 0 {
+                    Some(format!(
+                        "Usage refresh failed; kept cached data ({} issue{})",
+                        self.usage_fetch_diagnostics.len(),
+                        if self.usage_fetch_diagnostics.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ))
                 } else {
-                    crate::commands::usage::clear_cache();
                     if let Some(diagnostic) = self.usage_fetch_diagnostics.first() {
                         Some(format!("Usage fetch failed: {}", diagnostic.display_name()))
                     } else {
@@ -346,7 +544,12 @@ impl App {
                 self.status_message_time = Some(std::time::Instant::now());
             }
             Some(BackgroundJobPoll::Disconnected) => {
-                self.usage_fetch_diagnostics.clear();
+                self.usage_fetch_diagnostics = vec![UsageFetchDiagnostic::new(
+                    "Quota providers",
+                    None,
+                    "Usage refresh worker stopped",
+                )];
+                self.mark_quota_source_degraded();
                 self.status_message = Some("Usage fetch failed".into());
                 self.status_message_time = Some(std::time::Instant::now());
             }
@@ -375,6 +578,28 @@ impl App {
 
         self.poll_weread_fetch();
         self.poll_codex_login();
+    }
+
+    fn local_ai_cache_observed_at(&self) -> Option<chrono::DateTime<Utc>> {
+        #[cfg(not(test))]
+        {
+            let enabled_clients = self.enabled_clients.borrow();
+            let group_by = self.group_by.borrow();
+            let report_scope = crate::tui::cache::CacheReportScope::new(
+                self.data_loader.since.clone(),
+                self.data_loader.until.clone(),
+                self.data_loader.year.clone(),
+            );
+            crate::tui::cache::load_cache_with_observed_at(
+                &enabled_clients,
+                &group_by,
+                &report_scope,
+            )
+            .1
+        }
+
+        #[cfg(test)]
+        None
     }
 
     pub(crate) fn poll_codex_login(&mut self) {
@@ -441,5 +666,141 @@ impl App {
                 self.refresh_usage();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod quota_resilience_tests {
+    use super::*;
+    use crate::commands::usage::UsageAccount;
+    use crate::tui::data::{DailyUsage, TokenBreakdown};
+    use std::collections::BTreeMap;
+
+    fn app() -> App {
+        App::new_with_cached_data(
+            TuiConfig {
+                theme: None,
+                refresh: 0,
+                clients: None,
+                since: None,
+                until: None,
+                year: None,
+                initial_tab: None,
+                initial_timeline_granularity: None,
+            },
+            None,
+        )
+        .unwrap()
+    }
+
+    fn output(account_id: &str) -> UsageOutput {
+        UsageOutput {
+            provider: "Codex".to_string(),
+            account: Some(UsageAccount {
+                id: account_id.to_string(),
+                label: None,
+                is_active: false,
+            }),
+            plan: None,
+            email: None,
+            metrics: Vec::new(),
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        }
+    }
+
+    #[test]
+    fn partial_refresh_retains_only_failed_account_with_identity() {
+        let fresh = output("fresh");
+        let retained = output("retained");
+        let diagnostic =
+            UsageFetchDiagnostic::new("Codex", retained.account.clone(), "provider unavailable");
+
+        let (merged, stale_identities) = merge_usage_refresh(
+            &[fresh.clone(), retained.clone()],
+            vec![fresh],
+            &[diagnostic],
+        );
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            stale_identities,
+            vec![UsageCacheIdentity::from_output(&retained)]
+        );
+    }
+
+    #[test]
+    fn stale_cache_load_creates_degraded_non_error_diagnostic() {
+        let cache = LoadedSubscriptionCache {
+            data: vec![output("cached")],
+            observed_at: Utc::now() - chrono::Duration::minutes(10),
+            is_fresh: false,
+            partial: true,
+            stale_identities: vec![UsageCacheIdentity::from_output(&output("cached"))],
+        };
+
+        let diagnostics = cache_diagnostics(&cache);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].kind,
+            UsageFetchDiagnosticKind::CachedDataStale
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            UsageFetchDiagnosticSeverity::Warning
+        );
+        assert!(quota_provenance_is_degraded(&diagnostics));
+    }
+
+    #[test]
+    fn pulse_publication_requires_complete_persisted_quota_refresh() {
+        assert!(should_publish_quota_pulse(1, false, true));
+        assert!(!should_publish_quota_pulse(1, false, false));
+        assert!(!should_publish_quota_pulse(1, true, true));
+        assert!(!should_publish_quota_pulse(0, false, true));
+    }
+
+    #[test]
+    fn cache_write_failure_still_publishes_local_pulse_without_untrusted_quota() {
+        let mut app = app();
+        app.subscription_usage = vec![output("cached")];
+        app.usage_fetch_diagnostics = vec![UsageFetchDiagnostic::with_kind(
+            "Local quota cache",
+            None,
+            UsageFetchDiagnosticKind::CacheWriteFailed,
+            UsageFetchDiagnosticSeverity::Warning,
+            "disk full",
+        )];
+        let mut data = UsageData::default();
+        data.daily.push(DailyUsage {
+            date: chrono::Local::now().date_naive(),
+            tokens: TokenBreakdown {
+                input: 42,
+                ..TokenBreakdown::default()
+            },
+            cost: 1.25,
+            source_breakdown: BTreeMap::new(),
+            message_count: 1,
+            turn_count: 1,
+        });
+
+        let result = app.update_data(data, PulseDataProvenance::VerifiedDefaultScopeFresh);
+
+        assert!(result.is_ok());
+        let snapshot = app.pulse.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.ai.total_tokens, Some(42));
+        let quota = snapshot
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap();
+        assert_eq!(quota.freshness, tokscale_core::pulse::PulseFreshness::Stale);
+        assert_eq!(quota.issue_code.as_deref(), Some("cache_write_failed"));
+        assert!(!snapshot
+            .evidence
+            .iter()
+            .any(|evidence| evidence.source_id == "subscription-usage-cache"));
     }
 }

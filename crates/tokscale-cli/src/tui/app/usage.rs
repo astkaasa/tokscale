@@ -5,6 +5,7 @@ use crate::tui::codex_login::{
 };
 use crate::tui::navigation::Tab;
 use crate::tui::privacy::looks_like_email;
+use crate::tui::pulse_state::AiSourceObservedAt;
 use crate::tui::ui::dialog::ConfirmDialog;
 
 impl App {
@@ -80,7 +81,10 @@ impl App {
                 self.pulse_ai_observed_at,
                 self.pulse_data_provenance.can_seed_global_snapshot(),
             ) {
-                Ok(()) => self.set_status(update.status),
+                Ok(()) => {
+                    self.pulse_ai_observed_at = self.pulse.ai_observed_at();
+                    self.set_status(update.status);
+                }
                 Err(error) => {
                     let message = format!("Pulse snapshot save failed: {error}");
                     self.set_status(&message);
@@ -94,12 +98,36 @@ impl App {
             return Ok(());
         }
 
-        self.pulse.rebuild_snapshot(
+        let result = self.pulse.rebuild_snapshot(
             &self.data,
             &self.subscription_usage,
             self.pulse_ai_observed_at,
             true,
-        )
+        );
+        if result.is_ok() {
+            self.pulse_ai_observed_at = self.pulse.ai_observed_at();
+        }
+        result
+    }
+
+    pub(crate) fn rebuild_pulse_snapshot_preserving_quota(&mut self) -> anyhow::Result<()> {
+        if !self.pulse_data_provenance.can_seed_global_snapshot() {
+            return Ok(());
+        }
+
+        let result = self.pulse.rebuild_snapshot(
+            &self.data,
+            &[],
+            AiSourceObservedAt {
+                local: self.pulse_ai_observed_at.local,
+                quota: None,
+            },
+            true,
+        );
+        if result.is_ok() {
+            self.pulse_ai_observed_at = self.pulse.ai_observed_at();
+        }
+        result
     }
 
     pub fn is_codex_login_running(&self) -> bool {

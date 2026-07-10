@@ -52,8 +52,11 @@ struct TimelineRowData {
 
 #[derive(Clone, Copy)]
 struct TimelineTableLayout {
+    show_rank: bool,
     show_provider: bool,
+    show_model: bool,
     show_messages: bool,
+    show_cache: bool,
     rank_width: usize,
     time_width: usize,
     model_width: usize,
@@ -162,33 +165,38 @@ fn timeline_table_header(app: &App, layout: TimelineTableLayout) -> Row<'static>
     let header_style = Style::default()
         .fg(app.theme.muted)
         .add_modifier(Modifier::BOLD);
-    let mut cells = vec![
-        table_right_cell("#", header_style),
-        table_text_cell(
-            format!(
-                "{}{}",
-                app.timeline_granularity.title_label(),
-                sort_indicator(app, SortField::Date)
-            ),
-            header_style,
+    let mut cells = Vec::new();
+    if layout.show_rank {
+        cells.push(table_right_cell("#", header_style));
+    }
+    cells.push(table_text_cell(
+        format!(
+            "{}{}",
+            app.timeline_granularity.title_label(),
+            sort_indicator(app, SortField::Date)
         ),
-        table_right_cell(
-            format!("Cost{}", sort_indicator(app, SortField::Cost)),
-            header_style,
-        ),
-        table_right_cell(
-            format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
-            header_style,
-        ),
-    ];
+        header_style,
+    ));
+    cells.push(table_right_cell(
+        format!("Cost{}", sort_indicator(app, SortField::Cost)),
+        header_style,
+    ));
+    cells.push(table_right_cell(
+        format!("Tokens{}", sort_indicator(app, SortField::Tokens)),
+        header_style,
+    ));
     if layout.show_provider {
         cells.push(table_text_cell("Top Provider", header_style));
     }
-    cells.push(table_text_cell("Top Model", header_style));
+    if layout.show_model {
+        cells.push(table_text_cell("Top Model", header_style));
+    }
     if layout.show_messages {
         cells.push(table_right_cell("Msgs", header_style));
     }
-    cells.push(table_right_cell("Cache Ratio", header_style));
+    if layout.show_cache {
+        cells.push(table_right_cell("Cache Ratio", header_style));
+    }
     Row::new(cells).height(1)
 }
 
@@ -220,55 +228,63 @@ fn timeline_table_row(
         app.theme.secondary_text_style()
     };
     let marker = if selected { "▶" } else { " " };
-    let mut cells = vec![
-        table_right_cell(
+    let mut cells = Vec::new();
+    if layout.show_rank {
+        cells.push(table_right_cell(
             format!("{marker}{}", index + 1),
             Style::default().fg(if selected {
                 app.theme.foreground
             } else {
                 app.theme.muted
             }),
-        ),
-        table_text_cell(timeline_row_label(app, row, layout), time_style),
-        table_right_cell(
-            format_cost(row.cost),
-            Style::default()
-                .fg(if selected {
-                    app.theme.foreground
-                } else {
-                    app.theme.success_color()
-                })
-                .add_modifier(Modifier::BOLD),
-        ),
-        table_right_cell(
-            format_tokens(row.tokens.total()),
-            app.theme.secondary_text_style(),
-        ),
-    ];
+        ));
+    }
+    cells.push(table_text_cell(
+        timeline_row_label(app, row, layout),
+        time_style,
+    ));
+    cells.push(table_right_cell(
+        format_cost(row.cost),
+        Style::default()
+            .fg(if selected {
+                app.theme.foreground
+            } else {
+                app.theme.success_color()
+            })
+            .add_modifier(Modifier::BOLD),
+    ));
+    cells.push(table_right_cell(
+        format_tokens(row.tokens.total()),
+        app.theme.secondary_text_style(),
+    ));
     if layout.show_provider {
         cells.push(table_text_cell(
             row.top_provider.clone(),
             app.theme.secondary_text_style(),
         ));
     }
-    cells.push(table_text_cell(
-        row.top_model.clone(),
-        app.theme.secondary_text_style(),
-    ));
+    if layout.show_model {
+        cells.push(table_text_cell(
+            row.top_model.clone(),
+            app.theme.secondary_text_style(),
+        ));
+    }
     if layout.show_messages {
         cells.push(table_right_cell(
             row.message_count.to_string(),
             app.theme.secondary_text_style(),
         ));
     }
-    cells.push(table_right_cell(
-        format_cache_ratio(
-            row.tokens.cache_read,
-            row.tokens.input,
-            row.tokens.cache_write,
-        ),
-        app.theme.info_style(),
-    ));
+    if layout.show_cache {
+        cells.push(table_right_cell(
+            format_cache_ratio(
+                row.tokens.cache_read,
+                row.tokens.input,
+                row.tokens.cache_write,
+            ),
+            app.theme.info_style(),
+        ));
+    }
     Row::new(cells).style(row_style).height(1)
 }
 
@@ -277,37 +293,62 @@ fn timeline_table_layout(app: &App, width: u16) -> TimelineTableLayout {
     let show_messages = width >= 94;
     let rank_width = 4usize;
     let full_time_width = timeline_full_time_width(app);
-    let cache_width = TIMELINE_CACHE_RATIO_WIDTH;
-    let mut fixed_without_model = rank_width + full_time_width + 10 + 10 + cache_width;
-    let mut columns = 6usize;
-    if show_provider {
-        fixed_without_model += 14;
-        columns += 1;
-    }
-    if show_messages {
-        fixed_without_model += 7;
-        columns += 1;
-    }
+    let min_model_width = "Top Model".len();
+    let minimum_width = |time_width: usize, show_rank: bool, show_model: bool, show_cache: bool| {
+        let mut widths = vec![time_width, 10, 10];
+        if show_rank {
+            widths.insert(0, rank_width);
+        }
+        if show_provider {
+            widths.push(14);
+        }
+        if show_model {
+            widths.push(min_model_width);
+        }
+        if show_messages {
+            widths.push(7);
+        }
+        if show_cache {
+            widths.push(TIMELINE_CACHE_RATIO_WIDTH);
+        }
+        widths.iter().sum::<usize>() + widths.len().saturating_sub(1)
+    };
 
-    let spacing = columns.saturating_sub(1);
-    let min_model_width = 8usize;
     let time_width = if app.timeline_granularity == TimelineGranularity::Day
-        && (width as usize) < fixed_without_model + spacing + min_model_width
+        && minimum_width(full_time_width, true, true, true) > width as usize
     {
         7
     } else {
         full_time_width
     };
-    if time_width != full_time_width {
-        fixed_without_model = fixed_without_model.saturating_sub(full_time_width - time_width);
+    let mut show_rank = true;
+    let mut show_model = true;
+    let mut show_cache = true;
+    if minimum_width(time_width, show_rank, show_model, show_cache) > width as usize {
+        show_cache = false;
     }
-    let model_width = (width as usize)
-        .saturating_sub(fixed_without_model + spacing)
-        .max(min_model_width);
+    if minimum_width(time_width, show_rank, show_model, show_cache) > width as usize {
+        show_model = false;
+    }
+    if minimum_width(time_width, show_rank, show_model, show_cache) > width as usize {
+        show_rank = false;
+    }
+
+    let model_width = if show_model {
+        let width_without_model = minimum_width(time_width, show_rank, false, show_cache);
+        (width as usize)
+            .saturating_sub(width_without_model.saturating_add(1))
+            .max(min_model_width)
+    } else {
+        0
+    };
 
     TimelineTableLayout {
+        show_rank,
         show_provider,
+        show_model,
         show_messages,
+        show_cache,
         rank_width,
         time_width,
         model_width,
@@ -315,20 +356,25 @@ fn timeline_table_layout(app: &App, width: u16) -> TimelineTableLayout {
 }
 
 fn timeline_table_widths(layout: TimelineTableLayout) -> Vec<Constraint> {
-    let mut widths = vec![
-        Constraint::Length(layout.rank_width as u16),
-        Constraint::Length(layout.time_width as u16),
-        Constraint::Length(10),
-        Constraint::Length(10),
-    ];
+    let mut widths = Vec::new();
+    if layout.show_rank {
+        widths.push(Constraint::Length(layout.rank_width as u16));
+    }
+    widths.push(Constraint::Length(layout.time_width as u16));
+    widths.push(Constraint::Length(10));
+    widths.push(Constraint::Length(10));
     if layout.show_provider {
         widths.push(Constraint::Length(14));
     }
-    widths.push(Constraint::Length(layout.model_width as u16));
+    if layout.show_model {
+        widths.push(Constraint::Length(layout.model_width as u16));
+    }
     if layout.show_messages {
         widths.push(Constraint::Length(7));
     }
-    widths.push(Constraint::Length(TIMELINE_CACHE_RATIO_WIDTH as u16));
+    if layout.show_cache {
+        widths.push(Constraint::Length(TIMELINE_CACHE_RATIO_WIDTH as u16));
+    }
     widths
 }
 
@@ -700,7 +746,7 @@ fn timeline_hour_row(hour: &HourlyUsage) -> TimelineRowData {
     let now = Local::now().naive_local();
     let current_hour = now.date().and_hms_opt(now.hour(), 0, 0).unwrap_or(now);
     TimelineRowData {
-        label: hour.datetime.format("%m-%d %H:00").to_string(),
+        label: hour.datetime.format("%m-%d %Hh").to_string(),
         period: None,
         cost: hour.cost,
         tokens: hour.tokens.clone(),
@@ -738,7 +784,7 @@ fn timeline_item_label(app: &App) -> &'static str {
 fn timeline_full_time_width(app: &App) -> usize {
     match app.timeline_granularity {
         TimelineGranularity::Day => 12,
-        TimelineGranularity::Hour => 13,
+        TimelineGranularity::Hour => 9,
     }
 }
 
@@ -1151,10 +1197,12 @@ fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
 mod tests {
     use super::*;
     use crate::tui::app::{Tab, TuiConfig};
-    use crate::tui::data::{DailyModelInfo, DailySourceInfo, DailyUsage, TokenBreakdown};
+    use crate::tui::data::{
+        DailyModelInfo, DailySourceInfo, DailyUsage, HourlyModelInfo, HourlyUsage, TokenBreakdown,
+    };
     use chrono::NaiveDate;
     use ratatui::{backend::TestBackend, Terminal};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn day(date: NaiveDate, cost: f64) -> DailyUsage {
         let tokens = TokenBreakdown {
@@ -1259,6 +1307,48 @@ mod tests {
         app
     }
 
+    fn make_hourly_app(width: u16) -> App {
+        let mut app = make_app(width);
+        let date = NaiveDate::from_ymd_opt(2026, 5, 29).unwrap();
+        app.timeline_granularity = TimelineGranularity::Hour;
+        app.data.daily.clear();
+        app.data.hourly = [9_u32, 10]
+            .into_iter()
+            .map(|hour| {
+                let tokens = TokenBreakdown {
+                    input: 10_000,
+                    output: 2_000,
+                    cache_read: 40_000,
+                    cache_write: 1_000,
+                    reasoning: 0,
+                };
+                let mut models = BTreeMap::new();
+                models.insert(
+                    "gpt-5".to_string(),
+                    HourlyModelInfo {
+                        provider: "openai".to_string(),
+                        display_name: "gpt-5".to_string(),
+                        color_key: "gpt-5".to_string(),
+                        tokens: tokens.clone(),
+                        cost: hour as f64,
+                    },
+                );
+                let mut clients = BTreeSet::new();
+                clients.insert("codex".to_string());
+                HourlyUsage {
+                    datetime: date.and_hms_opt(hour, 0, 0).unwrap(),
+                    tokens,
+                    cost: hour as f64,
+                    clients,
+                    models,
+                    message_count: hour,
+                    turn_count: 2,
+                }
+            })
+            .collect();
+        app
+    }
+
     fn render_body(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1290,6 +1380,17 @@ mod tests {
         visual_col(line, needle) + needle.chars().count()
     }
 
+    fn hourly_header(body: &str) -> &str {
+        body.lines()
+            .find(|line| line.contains("Hour") && line.contains("Cost"))
+            .unwrap_or_else(|| panic!("missing hourly timeline header\n{body}"))
+    }
+
+    fn assert_distinct_hour_labels(body: &str) {
+        assert!(body.contains("05-29 09h"), "missing first hour\n{body}");
+        assert!(body.contains("05-29 10h"), "missing second hour\n{body}");
+    }
+
     #[test]
     fn wide_terminal_keeps_year() {
         let mut app = make_app(130);
@@ -1309,6 +1410,76 @@ mod tests {
             "year should be dropped when the full layout does not fit\n{body}"
         );
         assert!(body.contains("05-29"), "expected compact date\n{body}");
+    }
+
+    #[test]
+    fn hourly_timeline_at_44_columns_keeps_time_and_hides_low_priority_columns() {
+        let mut app = make_hourly_app(44);
+        let body = render_body(&mut app, 44, 12);
+        let header = hourly_header(&body);
+
+        assert_distinct_hour_labels(&body);
+        assert!(header.contains('#'), "rank should remain visible\n{body}");
+        assert!(
+            !header.contains("Top Model"),
+            "model should be hidden\n{body}"
+        );
+        assert!(
+            !header.contains("Cache Ratio"),
+            "cache should be hidden\n{body}"
+        );
+        assert!(
+            !header.contains("Top Mode e Ratio"),
+            "columns overlapped\n{body}"
+        );
+    }
+
+    #[test]
+    fn hourly_timeline_at_52_columns_keeps_model_after_hiding_cache() {
+        let mut app = make_hourly_app(52);
+        let body = render_body(&mut app, 52, 12);
+        let header = hourly_header(&body);
+
+        assert_distinct_hour_labels(&body);
+        assert!(header.contains('#'), "rank should remain visible\n{body}");
+        assert!(
+            header.contains("Top Model"),
+            "model should remain visible\n{body}"
+        );
+        assert!(
+            !header.contains("Cache Ratio"),
+            "cache should be hidden first\n{body}"
+        );
+        assert!(
+            !header.contains("Top Mode e Ratio"),
+            "columns overlapped\n{body}"
+        );
+    }
+
+    #[test]
+    fn hourly_timeline_at_80_columns_keeps_complete_optional_headers() {
+        let mut app = make_hourly_app(80);
+        let body = render_body(&mut app, 80, 12);
+        let header = hourly_header(&body);
+
+        assert_distinct_hour_labels(&body);
+        assert!(header.contains('#'), "rank should remain visible\n{body}");
+        assert!(
+            header.contains("Top Provider"),
+            "provider should be visible\n{body}"
+        );
+        assert!(
+            header.contains("Top Model"),
+            "model should be visible\n{body}"
+        );
+        assert!(
+            header.contains("Cache Ratio"),
+            "cache should be visible\n{body}"
+        );
+        assert!(
+            !header.contains("Top Mode e Ratio"),
+            "columns overlapped\n{body}"
+        );
     }
 
     #[test]

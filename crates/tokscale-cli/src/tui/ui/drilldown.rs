@@ -772,7 +772,7 @@ fn model_breakdown_row(
         ),
         table_right_cell(
             format_cost(row.cost),
-            metric_style(app, selected, Color::Green),
+            metric_style(app, selected, app.theme.success_style()),
         ),
         table_right_cell(
             format_tokens(row.tokens.total()),
@@ -782,16 +782,16 @@ fn model_breakdown_row(
     if width >= 96 {
         cells.push(table_right_cell(
             format_tokens(row.tokens.input),
-            metric_style(app, selected, Color::Rgb(96, 165, 250)),
+            metric_style(app, selected, app.theme.metric_input_style()),
         ));
         cells.push(table_right_cell(
             format_tokens(row.tokens.output),
-            metric_style(app, selected, Color::Rgb(74, 222, 128)),
+            metric_style(app, selected, app.theme.metric_output_style()),
         ));
         let cache = row.tokens.cache_read.saturating_add(row.tokens.cache_write);
         cells.push(table_right_cell(
             format_tokens(cache),
-            metric_style(app, selected, Color::Rgb(167, 139, 250)),
+            metric_style(app, selected, app.theme.metric_cache_read_style()),
         ));
         cells.push(table_right_cell(
             row.messages.to_string(),
@@ -820,7 +820,7 @@ fn period_breakdown_row(
         table_bullet_cell(
             color,
             period_model_cell(&row.model, model_width),
-            metric_style(app, selected, color).add_modifier(Modifier::BOLD),
+            metric_style(app, selected, Style::default().fg(color)).add_modifier(Modifier::BOLD),
         ),
     ];
     if period_breakdown_provider_visible(width) {
@@ -836,7 +836,7 @@ fn period_breakdown_row(
     if period_breakdown_metrics_visible(width) {
         cells.push(table_right_cell(
             format_cost(row.cost),
-            metric_style(app, selected, Color::Green),
+            metric_style(app, selected, app.theme.success_style()),
         ));
         cells.push(table_right_cell(
             format_tokens(row.tokens.total()),
@@ -846,16 +846,16 @@ fn period_breakdown_row(
     if width >= 116 {
         cells.push(table_right_cell(
             format_tokens(row.tokens.input),
-            metric_style(app, selected, Color::Rgb(96, 165, 250)),
+            metric_style(app, selected, app.theme.metric_input_style()),
         ));
         cells.push(table_right_cell(
             format_tokens(row.tokens.output),
-            metric_style(app, selected, Color::Rgb(74, 222, 128)),
+            metric_style(app, selected, app.theme.metric_output_style()),
         ));
         let cache = row.tokens.cache_read.saturating_add(row.tokens.cache_write);
         cells.push(table_right_cell(
             format_tokens(cache),
-            metric_style(app, selected, Color::Rgb(167, 139, 250)),
+            metric_style(app, selected, app.theme.metric_cache_read_style()),
         ));
         cells.push(table_right_cell(
             row.messages.to_string(),
@@ -1068,11 +1068,11 @@ fn row_style(app: &App, index: usize, selected: bool) -> Style {
     }
 }
 
-fn metric_style(app: &App, selected: bool, color: Color) -> Style {
+fn metric_style(app: &App, selected: bool, style: Style) -> Style {
     if selected {
         Style::default().fg(app.theme.foreground)
     } else {
-        Style::default().fg(color)
+        style
     }
 }
 
@@ -1146,8 +1146,9 @@ mod tests {
     use crate::tui::data::{
         DailyModelInfo, DailySourceInfo, DailyUsage, TokenBreakdown, UsageData,
     };
+    use crate::tui::themes::{TerminalBackground, TerminalColorMode, Theme, ThemePreference};
     use chrono::NaiveDate;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
     use std::collections::BTreeMap;
 
     fn test_app() -> App {
@@ -1176,17 +1177,19 @@ mod tests {
             .map(|byte_index| line[..byte_index].chars().count())
     }
 
-    fn render_body(app: &mut App, width: u16, height: u16) -> String {
+    fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render(frame, app, Rect::new(0, 0, width, height)))
             .unwrap();
-        terminal
-            .backend()
-            .buffer()
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        buffer
             .content()
-            .chunks(width as usize)
+            .chunks(buffer.area.width as usize)
             .map(|row| {
                 row.iter()
                     .map(|cell| cell.symbol().to_string())
@@ -1194,6 +1197,40 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn render_body(app: &mut App, width: u16, height: u16) -> String {
+        buffer_text(&render_buffer(app, width, height))
+    }
+
+    fn cell_fg_on_row(buffer: &Buffer, row_needle: &str, cell_needle: &str) -> Color {
+        let width = buffer.area.width as usize;
+        let needle = cell_needle.chars().collect::<Vec<_>>();
+        for row in buffer.content.chunks(width) {
+            let text = row
+                .iter()
+                .map(|cell| cell.symbol().to_string())
+                .collect::<String>();
+            if !text.contains(row_needle) {
+                continue;
+            }
+
+            for start in 0..=row.len().saturating_sub(needle.len()) {
+                let matches =
+                    row[start..start + needle.len()]
+                        .iter()
+                        .zip(&needle)
+                        .all(|(cell, expected)| {
+                            let mut symbols = cell.symbol().chars();
+                            symbols.next() == Some(*expected) && symbols.next().is_none()
+                        });
+                if matches {
+                    return row[start].fg;
+                }
+            }
+        }
+
+        panic!("missing {cell_needle:?} on row containing {row_needle:?}");
     }
 
     fn daily_usage(date: NaiveDate) -> DailyUsage {
@@ -1292,6 +1329,89 @@ mod tests {
             cost,
             messages: 1,
         }
+    }
+
+    #[test]
+    fn light_theme_maps_drilldown_metric_colors_without_moving_columns() {
+        let first = NaiveDate::from_ymd_opt(2026, 4, 16).unwrap();
+        let second = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
+        let mut app = test_app();
+        app.theme = Theme::with_terminal(
+            ThemePreference::Light,
+            TerminalColorMode::FullColor,
+            TerminalBackground::Light,
+        );
+        app.data.daily = vec![daily_usage(first), daily_usage(second)];
+        app.open_model_detail(ModelDetailKey {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            color_key: "gpt-5".to_string(),
+        });
+        app.selected_index = 1;
+
+        let success = app.theme.success_style().fg.unwrap();
+        let input = app.theme.metric_input_style().fg.unwrap();
+        let output = app.theme.metric_output_style().fg.unwrap();
+        let cache = app.theme.metric_cache_read_style().fg.unwrap();
+        let buffer = render_buffer(&mut app, 120, 24);
+        let body = buffer_text(&buffer);
+
+        assert!(body.contains("Input"), "{body}");
+        assert!(body.contains("Output"), "{body}");
+        assert!(body.contains("Cache"), "{body}");
+        assert_eq!(cell_fg_on_row(&buffer, "2026-04-17", "$12.34"), success);
+        assert_eq!(cell_fg_on_row(&buffer, "2026-04-17", "10K"), input);
+        assert_eq!(cell_fg_on_row(&buffer, "2026-04-17", "1K"), output);
+        assert_eq!(cell_fg_on_row(&buffer, "2026-04-17", "22K"), cache);
+    }
+
+    #[test]
+    fn compatible_drilldown_breakdown_rows_do_not_leak_rgb_metrics() {
+        let first = NaiveDate::from_ymd_opt(2026, 4, 16).unwrap();
+        let second = NaiveDate::from_ymd_opt(2026, 4, 17).unwrap();
+        let mut app = test_app();
+        app.theme = Theme::with_terminal(
+            ThemePreference::Light,
+            TerminalColorMode::Compatible,
+            TerminalBackground::Light,
+        );
+        app.data.daily = vec![daily_usage(first), daily_usage(second)];
+        app.open_model_detail(ModelDetailKey {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            color_key: "gpt-5".to_string(),
+        });
+        app.selected_index = 1;
+
+        let buffer = render_buffer(&mut app, 120, 24);
+        let body = buffer_text(&buffer);
+
+        assert!(body.contains("2026-04-16"), "{body}");
+        assert!(body.contains("2026-04-17"), "{body}");
+        assert!(body.contains("Input"), "{body}");
+        let mut breakdown_rows = 0;
+        for row in buffer.content.chunks(buffer.area.width as usize) {
+            let text = row
+                .iter()
+                .map(|cell| cell.symbol().to_string())
+                .collect::<String>();
+            if !text.contains("2026-04-16") && !text.contains("2026-04-17") {
+                continue;
+            }
+
+            breakdown_rows += 1;
+            for cell in row {
+                assert!(
+                    !matches!(cell.fg, Color::Rgb(..)),
+                    "compatible breakdown foreground leaked RGB at cell {cell:?}"
+                );
+                assert!(
+                    !matches!(cell.bg, Color::Rgb(..)),
+                    "compatible breakdown background leaked RGB at cell {cell:?}"
+                );
+            }
+        }
+        assert_eq!(breakdown_rows, 2, "{body}");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use super::widgets::{
     format_cost, format_tokens, get_provider_display_name, get_provider_shade, scrollbar_state,
     table_bullet_cell, table_right_cell, table_text_cell, truncate_ellipsis as truncate_string,
 };
-use crate::tui::app::{App, ClickAction, PeriodDetailKey, SortDirection, SortField};
+use crate::tui::app::{App, ClickAction, SortDirection, SortField};
 use chrono::{NaiveDateTime, Timelike};
 
 struct TodaySummary {
@@ -559,22 +559,6 @@ fn render_today_hour_chart(frame: &mut Frame, app: &mut App, area: Rect, summary
             Rect::new(area.x, label_y + 1, area.width, 1),
             summary,
         );
-    }
-
-    if let Some(day_date) = app.today_usage().map(|day| day.date) {
-        for bucket in buckets.iter().filter(|bucket| !bucket.projected) {
-            let offset = (bucket.hour as usize).saturating_mul(slot_width);
-            let width = slot_width.max(1) as u16;
-            app.add_click_area(
-                Rect::new(
-                    plot_x.saturating_add(offset as u16),
-                    plot_y,
-                    width,
-                    plot_height.saturating_add(1),
-                ),
-                ClickAction::OpenPeriodDetail(PeriodDetailKey::day(day_date)),
-            );
-        }
     }
 }
 
@@ -1813,5 +1797,92 @@ fn signal_style(app: &App, signal: &str) -> Style {
         Style::default().fg(today_live_color(app))
     } else {
         app.theme.secondary_text_style()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::app::{OverviewMode, Tab, TuiConfig};
+    use crate::tui::data::{DailyUsage, HourlyModelInfo, HourlyUsage, TokenBreakdown};
+    use chrono::NaiveDate;
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn today_app() -> App {
+        let config = TuiConfig {
+            theme: None,
+            refresh: 0,
+            clients: None,
+            since: None,
+            until: None,
+            year: None,
+            initial_tab: None,
+            initial_timeline_granularity: None,
+        };
+        let mut app = App::new_with_cached_data(config, None).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let tokens = TokenBreakdown {
+            input: 10_000,
+            output: 2_000,
+            cache_read: 20_000,
+            cache_write: 1_000,
+            reasoning: 0,
+        };
+        let mut models = BTreeMap::new();
+        models.insert(
+            "gpt-5".to_string(),
+            HourlyModelInfo {
+                provider: "openai".to_string(),
+                display_name: "gpt-5".to_string(),
+                color_key: "gpt-5".to_string(),
+                tokens: tokens.clone(),
+                cost: 2.5,
+            },
+        );
+        let mut clients = BTreeSet::new();
+        clients.insert("codex".to_string());
+
+        app.current_tab = Tab::Overview;
+        app.overview_mode = OverviewMode::Today;
+        app.terminal_width = 80;
+        app.set_render_reference_now(date.and_hms_opt(12, 30, 0).unwrap());
+        app.data.daily = vec![DailyUsage {
+            date,
+            tokens: tokens.clone(),
+            cost: 2.5,
+            source_breakdown: BTreeMap::new(),
+            message_count: 4,
+            turn_count: 2,
+        }];
+        app.data.hourly = vec![HourlyUsage {
+            datetime: date.and_hms_opt(9, 0, 0).unwrap(),
+            tokens,
+            cost: 2.5,
+            clients,
+            models,
+            message_count: 4,
+            turn_count: 2,
+        }];
+        app
+    }
+
+    #[test]
+    fn today_hour_bars_do_not_register_day_detail_click_areas() {
+        let mut app = today_app();
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut app, Rect::new(0, 0, 80, 20)))
+            .unwrap();
+
+        assert!(app
+            .click_areas
+            .iter()
+            .all(|area| !matches!(&area.action, ClickAction::OpenPeriodDetail(_))));
+        assert!(app
+            .click_areas
+            .iter()
+            .any(|area| matches!(&area.action, ClickAction::OpenModelDetail(_))));
     }
 }

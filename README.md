@@ -28,7 +28,7 @@ Current priorities:
 
 ## What Works Now
 
-- Interactive TUI cockpit with Overview, Pulse, Models, Timeline, and Usage workspaces.
+- Interactive TUI cockpit with Overview, Models, Timeline, Usage, and Pulse workspaces.
 - Local AI usage parsing across supported coding clients. Run `tokscale clients` to see detected local sources and paths on your machine.
 - Subscription quota/status view via `tokscale usage` and the Usage TUI workspace.
 - WeRead Pulse in the TUI, backed by a WeRead API key stored in settings or provided through the environment.

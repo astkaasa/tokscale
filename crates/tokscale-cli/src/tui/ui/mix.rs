@@ -155,29 +155,41 @@ pub(crate) fn token_profile_lines(
         (
             "Input",
             format_tokens(tokens.input),
-            Color::Rgb(96, 165, 250),
+            app.theme
+                .metric_input_style()
+                .fg
+                .unwrap_or(app.theme.foreground),
         ),
         (
             "Output",
             format_tokens(tokens.output),
-            Color::Rgb(74, 222, 128),
+            app.theme
+                .metric_output_style()
+                .fg
+                .unwrap_or(app.theme.foreground),
         ),
         (
             "Cache read",
             format_tokens(tokens.cache_read),
-            Color::Rgb(167, 139, 250),
+            app.theme
+                .metric_cache_read_style()
+                .fg
+                .unwrap_or(app.theme.foreground),
         ),
         (
             "Cache write",
             format_tokens(tokens.cache_write),
-            Color::Rgb(251, 146, 60),
+            app.theme
+                .metric_cache_write_style()
+                .fg
+                .unwrap_or(app.theme.foreground),
         ),
     ];
     if tokens.reasoning > 0 {
         rows.push((
             "Reasoning",
             format_tokens(tokens.reasoning),
-            Color::Rgb(244, 114, 182),
+            app.theme.info_color(),
         ));
     }
     rows.push((
@@ -681,6 +693,7 @@ mod tests {
     use super::*;
     use crate::tui::app::TuiConfig;
     use crate::tui::data::UsageData;
+    use crate::tui::themes::{TerminalBackground, TerminalColorMode, Theme, ThemePreference};
 
     fn test_app() -> App {
         let config = TuiConfig {
@@ -757,6 +770,33 @@ mod tests {
         assert!(!body.contains("█"), "{body}");
         assert!(!body.contains("▏"), "{body}");
         assert!(lines.iter().all(|line| line.width() <= 33), "{body}");
+    }
+
+    #[test]
+    fn compatible_token_profile_uses_only_terminal_palette_colors() {
+        let mut app = test_app();
+        app.theme = Theme::with_terminal(
+            ThemePreference::Light,
+            TerminalColorMode::Compatible,
+            TerminalBackground::Light,
+        );
+        let tokens = TokenBreakdown {
+            input: 10,
+            output: 20,
+            cache_read: 30,
+            cache_write: 40,
+            reasoning: 50,
+        };
+
+        let lines = token_profile_lines(&app, 33, 7, &tokens);
+
+        assert!(lines
+            .iter()
+            .any(|line| line_text(line).contains("Reasoning")));
+        for span in lines.iter().flat_map(|line| &line.spans) {
+            assert!(!matches!(span.style.fg, Some(Color::Rgb(..))), "{span:?}");
+            assert!(!matches!(span.style.bg, Some(Color::Rgb(..))), "{span:?}");
+        }
     }
 
     #[test]

@@ -11,20 +11,22 @@ Usage is the operational account/quota workspace. It owns refreshing subscriptio
 Current top-level tabs:
 
 1. `Overview`
-2. `Pulse`
-3. `Models`
-4. `Timeline`
-5. `Usage`
+2. `Models`
+3. `Timeline`
+4. `Usage`
+5. `Pulse`
+
+The header always preserves this canonical order. It uses full labels with normal spacing when they fit, then tighter spacing or short labels while keeping every workspace visible. At extremely narrow widths, it shows a continuous window that contains the current workspace without changing the relative order. Mouse hit regions follow the tabs' rendered positions.
 
 `Overview` is the default landing workspace. It shows the broad picture and can focus on today without becoming a separate tab.
-
-`Pulse` is the personal signal workspace. It shows current local signals, evidence, and lightweight sync health without becoming a long-form report surface.
 
 `Models` is the durable model-analysis workspace. It stays table-first, with an inspector for the selected model.
 
 `Timeline` owns historical time-granularity views. Day and hour are modes inside the workspace because the user is still asking the same question: when did usage happen?
 
 `Usage` is not historical analytics. It is the operational status surface for subscriptions, quotas, credentials, cache/sync state, and provider account health.
+
+`Pulse` is the personal signal workspace. It shows current local signals, evidence, and lightweight sync health without becoming a long-form report surface.
 
 ## Deferred Or Hidden Top-Level Tabs
 

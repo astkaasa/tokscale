@@ -4,7 +4,29 @@ use crate::client_filter::{
 };
 use crate::{cursor, warp};
 use anyhow::Result;
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+pub(crate) struct PricingCacheOnlyGuard(Option<OsString>);
+
+impl PricingCacheOnlyGuard {
+    pub(crate) fn enable() -> Self {
+        let previous = std::env::var_os("TOKSCALE_PRICING_CACHE_ONLY");
+        unsafe { std::env::set_var("TOKSCALE_PRICING_CACHE_ONLY", "1") };
+        Self(previous)
+    }
+}
+
+impl Drop for PricingCacheOnlyGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TOKSCALE_PRICING_CACHE_ONLY", value),
+                None => std::env::remove_var("TOKSCALE_PRICING_CACHE_ONLY"),
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 struct CursorSetupState {
@@ -15,24 +37,29 @@ struct CursorSetupState {
 }
 
 fn cursor_setup_state(home_dir: &Option<String>) -> Option<CursorSetupState> {
-    let (home_path, home_override) = match home_dir {
-        Some(home) => (PathBuf::from(home), true),
-        None => (dirs::home_dir()?, false),
+    let (has_credentials, has_cache, cache_dir, home_override) = match home_dir {
+        Some(home) => {
+            let home_path = PathBuf::from(home);
+            let cache_dir = PathBuf::from(
+                tokscale_core::ClientId::Cursor
+                    .data()
+                    .resolve_path_with_env_strategy(home, false),
+            );
+            (
+                cursor::has_active_credentials_in_home(&home_path),
+                cursor::has_cursor_usage_cache_in_home(&home_path),
+                cache_dir,
+                true,
+            )
+        }
+        None => (
+            cursor::is_cursor_logged_in(),
+            cursor::has_cursor_usage_cache(),
+            cursor::get_cursor_cache_dir().ok()?,
+            false,
+        ),
     };
-    let has_credentials = if home_override {
-        cursor::has_active_credentials_in_home(&home_path)
-    } else {
-        cursor::is_cursor_logged_in()
-    };
-    let has_cache = cursor::has_cursor_usage_cache_in_home(&home_path);
-    let cache_glob = if home_override {
-        home_path
-            .join(".config/tokscale/cursor-cache/usage*.csv")
-            .to_string_lossy()
-            .to_string()
-    } else {
-        "~/.config/tokscale/cursor-cache/usage*.csv".to_string()
-    };
+    let cache_glob = cache_dir.join("usage*.csv").to_string_lossy().to_string();
 
     Some(CursorSetupState {
         has_credentials,
@@ -239,6 +266,65 @@ pub(crate) fn emit_cursor_sync_warning(
 mod tests {
     use super::*;
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pricing_cache_only_guard_restores_environment() {
+        let original = std::env::var_os("TOKSCALE_PRICING_CACHE_ONLY");
+
+        unsafe { std::env::set_var("TOKSCALE_PRICING_CACHE_ONLY", "previous") };
+        let existing_enabled = {
+            let _guard = PricingCacheOnlyGuard::enable();
+            std::env::var_os("TOKSCALE_PRICING_CACHE_ONLY")
+        };
+        let existing_restored = std::env::var_os("TOKSCALE_PRICING_CACHE_ONLY");
+
+        unsafe { std::env::remove_var("TOKSCALE_PRICING_CACHE_ONLY") };
+        let missing_enabled = {
+            let _guard = PricingCacheOnlyGuard::enable();
+            std::env::var_os("TOKSCALE_PRICING_CACHE_ONLY")
+        };
+        let missing_restored = std::env::var_os("TOKSCALE_PRICING_CACHE_ONLY");
+
+        unsafe {
+            match original {
+                Some(value) => std::env::set_var("TOKSCALE_PRICING_CACHE_ONLY", value),
+                None => std::env::remove_var("TOKSCALE_PRICING_CACHE_ONLY"),
+            }
+        }
+
+        assert_eq!(existing_enabled.as_deref(), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(
+            existing_restored.as_deref(),
+            Some(std::ffi::OsStr::new("previous"))
+        );
+        assert_eq!(missing_enabled.as_deref(), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(missing_restored, None);
+    }
+
     #[test]
     fn warp_setup_warning_explains_missing_aggregate_cache() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -250,6 +336,28 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("tokscale warp"));
         assert!(warnings[0].contains("does not infer tokens from request counts"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cursor_setup_warning_uses_resolved_config_root() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join("isolated-config");
+        let home_dir = temp.path().join("home");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let _config_guard = EnvVarGuard::set("TOKSCALE_CONFIG_DIR", &config_dir);
+        let _home_guard = EnvVarGuard::set("HOME", &home_dir);
+
+        let warnings = cursor_setup_warnings_for_report(&None, &Some(vec!["cursor".to_string()]));
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains(
+            config_dir
+                .join("cursor-cache/usage*.csv")
+                .to_string_lossy()
+                .as_ref()
+        ));
+        assert!(!warnings[0].contains("~/.config/tokscale"));
     }
 
     #[test]

@@ -33,6 +33,8 @@ impl PathRoot {
                     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
                         return format!("{xdg_config_home}/tokscale");
                     }
+                } else {
+                    return format!("{home_dir}/.config/tokscale");
                 }
 
                 // Match paths::get_config_dir() platform branches so the
@@ -192,8 +194,8 @@ define_clients!(
     },
     Cursor = 3 => {
         id: "cursor",
-        root: PathRoot::Home,
-        relative: ".config/tokscale/cursor-cache",
+        root: PathRoot::Config,
+        relative: "cursor-cache",
         pattern: "usage*.csv",
         headless: false,
         parse_local: false
@@ -712,8 +714,41 @@ mod tests {
     }
 
     #[test]
-    fn test_cursor_parse_local_is_false() {
+    fn test_cursor_uses_tokscale_config_root() {
+        let cursor = ClientId::Cursor.data();
+        assert_eq!(cursor.root, PathRoot::Config);
+        assert_eq!(cursor.relative_path, "cursor-cache");
         assert!(!ClientId::Cursor.data().parse_local);
+    }
+
+    #[test]
+    fn test_cursor_scanner_honors_tokscale_config_override() {
+        let _guard = env_lock().lock().unwrap();
+        let previous_override = std::env::var("TOKSCALE_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", "/tmp/custom-tokscale-profile") };
+
+        assert_eq!(
+            ClientId::Cursor.data().resolve_path("/tmp/home"),
+            "/tmp/custom-tokscale-profile/cursor-cache"
+        );
+
+        restore_env("TOKSCALE_CONFIG_DIR", previous_override);
+    }
+
+    #[test]
+    fn test_cursor_home_override_ignores_config_environment() {
+        let _guard = env_lock().lock().unwrap();
+        let previous_override = std::env::var("TOKSCALE_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("TOKSCALE_CONFIG_DIR", "/tmp/custom-tokscale-profile") };
+
+        assert_eq!(
+            ClientId::Cursor
+                .data()
+                .resolve_path_with_env_strategy("/tmp/report-home", false),
+            "/tmp/report-home/.config/tokscale/cursor-cache"
+        );
+
+        restore_env("TOKSCALE_CONFIG_DIR", previous_override);
     }
 
     #[test]

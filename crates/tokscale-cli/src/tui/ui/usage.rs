@@ -293,10 +293,7 @@ fn button_label(label: &str) -> String {
 
 fn button_style(app: &App, kind: ButtonKind, selected: bool) -> Style {
     if selected {
-        return Style::default()
-            .fg(Color::White)
-            .bg(Color::Blue)
-            .add_modifier(Modifier::BOLD);
+        return app.theme.active_control_style();
     }
 
     match kind {
@@ -305,8 +302,10 @@ fn button_style(app: &App, kind: ButtonKind, selected: bool) -> Style {
             .bg(app.theme.accent)
             .add_modifier(Modifier::BOLD),
         ButtonKind::Secondary => Style::default().fg(app.theme.accent).bg(app.theme.border),
-        ButtonKind::Warning => Style::default().fg(Color::Black).bg(Color::Yellow),
-        ButtonKind::Danger => Style::default().fg(Color::Red).bg(app.theme.border),
+        ButtonKind::Warning => Style::default()
+            .fg(app.theme.background)
+            .bg(app.theme.warning_color()),
+        ButtonKind::Danger => app.theme.danger_style().bg(app.theme.border),
         ButtonKind::Disabled => Style::default().fg(app.theme.muted).bg(app.theme.border),
     }
 }
@@ -392,9 +391,7 @@ fn render_codex_login_panel(frame: &mut Frame, app: &mut App, area: Rect) -> Rec
                 ),
                 Style::default().fg(app.theme.accent),
             ),
-            CodexLoginOutcome::Failed(error) => {
-                (format!("  {error}"), Style::default().fg(Color::Red))
-            }
+            CodexLoginOutcome::Failed(error) => (format!("  {error}"), app.theme.danger_style()),
         };
         lines.push(Line::from(Span::styled(
             truncate_string(&label, area.width as usize),
@@ -466,7 +463,7 @@ fn render_empty(frame: &mut Frame, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     truncate_string(&diagnostic.display_name(), area.width as usize),
-                    Style::default().fg(diagnostic_severity_color(diagnostic.severity)),
+                    Style::default().fg(diagnostic_severity_color(app, diagnostic.severity)),
                 )),
             ]
         } else {
@@ -479,7 +476,7 @@ fn render_empty(frame: &mut Frame, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     truncate_string(&diagnostic.display_name(), area.width as usize),
-                    Style::default().fg(diagnostic_severity_color(diagnostic.severity)),
+                    Style::default().fg(diagnostic_severity_color(app, diagnostic.severity)),
                 )),
                 Line::from(Span::styled(
                     truncate_string(&diagnostic.message, area.width as usize),
@@ -728,7 +725,7 @@ fn render_usage_status(frame: &mut Frame, app: &mut App, area: Rect, outputs: &[
 
             let hidden_count = attention_outputs.len().saturating_sub(visible_count);
             if hidden_count > 0 && lines.len() < inner.height as usize {
-                lines.push(attention_more_line(hidden_count, inner.width as usize));
+                lines.push(attention_more_line(app, hidden_count, inner.width as usize));
             }
         }
     }
@@ -812,9 +809,7 @@ fn usage_status_summary_lines(
             app,
             "Active",
             &active,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
+            app.theme.success_style().add_modifier(Modifier::BOLD),
             width,
         );
     };
@@ -941,7 +936,7 @@ fn append_usage_diagnostic_lines(
         app.usage_fetch_diagnostics.len().min(available)
     };
     for diagnostic in app.usage_fetch_diagnostics.iter().take(visible_count) {
-        lines.push(usage_diagnostic_line(diagnostic, width));
+        lines.push(usage_diagnostic_line(app, diagnostic, width));
     }
 
     let hidden_count = app
@@ -963,20 +958,24 @@ fn append_usage_diagnostic_lines(
     }
 }
 
-fn usage_diagnostic_line(diagnostic: &UsageFetchDiagnostic, width: usize) -> Line<'static> {
+fn usage_diagnostic_line(
+    app: &App,
+    diagnostic: &UsageFetchDiagnostic,
+    width: usize,
+) -> Line<'static> {
     let label = diagnostic.display_name();
     let text = format!("  {label}: {}", diagnostic.message);
     Line::from(Span::styled(
         truncate_string(&text, width),
-        Style::default().fg(diagnostic_severity_color(diagnostic.severity)),
+        Style::default().fg(diagnostic_severity_color(app, diagnostic.severity)),
     ))
 }
 
-fn diagnostic_severity_color(severity: UsageFetchDiagnosticSeverity) -> Color {
+fn diagnostic_severity_color(app: &App, severity: UsageFetchDiagnosticSeverity) -> Color {
     match severity {
-        UsageFetchDiagnosticSeverity::Info => Color::Cyan,
-        UsageFetchDiagnosticSeverity::Warning => Color::Yellow,
-        UsageFetchDiagnosticSeverity::Error => Color::Red,
+        UsageFetchDiagnosticSeverity::Info => app.theme.info_color(),
+        UsageFetchDiagnosticSeverity::Warning => app.theme.warning_color(),
+        UsageFetchDiagnosticSeverity::Error => app.theme.danger_color(),
     }
 }
 
@@ -1113,7 +1112,7 @@ fn attention_line(app: &App, output: &UsageOutput, width: usize) -> Line<'static
     ])
 }
 
-fn attention_more_line(hidden_count: usize, width: usize) -> Line<'static> {
+fn attention_more_line(app: &App, hidden_count: usize, width: usize) -> Line<'static> {
     let label = if hidden_count == 1 {
         "+1 more at risk".to_string()
     } else {
@@ -1121,9 +1120,7 @@ fn attention_more_line(hidden_count: usize, width: usize) -> Line<'static> {
     };
     Line::from(Span::styled(
         format!("  {}", truncate_string(&label, width.saturating_sub(2))),
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+        app.theme.warning_style().add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -1158,7 +1155,7 @@ fn provider_summary_line(
         Span::styled(
             format!("  {}", truncate_string(group.provider, 18)),
             Style::default()
-                .fg(get_provider_shade(group.provider, 0))
+                .fg(app.theme.color(get_provider_shade(group.provider, 0)))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {summary}"), app.theme.subtle_text_style()),
@@ -1312,9 +1309,7 @@ fn append_selected_reset_credit_lines(
 
     let count_label = reset_credit_count_label(credits.available_count);
     let value_style = if has_available_reset_credit(selected) {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        app.theme.warning_style().add_modifier(Modifier::BOLD)
     } else {
         app.theme.secondary_text_style()
     };
@@ -1412,9 +1407,7 @@ fn append_credit_bank_summary_lines(
                 &reset_bank_summary(outputs, width.saturating_sub(15)),
                 width.saturating_sub(15),
             ),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            app.theme.warning_style().add_modifier(Modifier::BOLD),
         ),
     ]));
 
@@ -1467,9 +1460,7 @@ fn reset_credit_account_line(
                 truncate_string(&account, label_width.saturating_sub(1)),
                 width = label_width
             ),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            app.theme.warning_style().add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{:<width$}", count, width = count_width),
@@ -1870,11 +1861,13 @@ fn narrow_table_row(app: &mut App, output: &UsageOutput, index: usize, area: Rec
     let left = format!("{} {}", output.provider, row.account_summary);
     let mut first = vec![
         styled(
+            app,
             format!(" {:<2} ", index + 1),
             app.theme.secondary_text_style(),
             selected,
         ),
         styled(
+            app,
             format!(
                 "{:<width$}",
                 truncate_string(&left, left_width.saturating_sub(1)),
@@ -1886,6 +1879,7 @@ fn narrow_table_row(app: &mut App, output: &UsageOutput, index: usize, area: Rec
     ];
     if state_width > 0 {
         first.push(styled(
+            app,
             format!(
                 "{:>width$}",
                 truncate_string(&state, state_width),
@@ -1895,6 +1889,7 @@ fn narrow_table_row(app: &mut App, output: &UsageOutput, index: usize, area: Rec
             selected,
         ));
         first.push(styled(
+            app,
             " ".repeat(state_right_padding),
             Style::default(),
             selected,
@@ -1922,8 +1917,9 @@ fn narrow_table_row(app: &mut App, output: &UsageOutput, index: usize, area: Rec
         .map(|metric| Style::default().fg(metric_color(app, metric)))
         .unwrap_or_else(|| app.theme.secondary_text_style());
     let mut second = vec![
-        styled("    ", Style::default(), selected),
+        styled(app, "    ", Style::default(), selected),
         styled(
+            app,
             truncate_string(&detail, detail_width.saturating_sub(1)),
             detail_style,
             selected,
@@ -1931,12 +1927,12 @@ fn narrow_table_row(app: &mut App, output: &UsageOutput, index: usize, area: Rec
     ];
     let used = Line::from(second.clone()).width();
     if action_width > 0 && area.width as usize > used + action_width {
-        second.push(styled(" ", Style::default(), selected));
+        second.push(styled(app, " ", Style::default(), selected));
     }
     if let Some(label) = managed_label {
-        second.push(styled(label, app.theme.subtle_text_style(), selected));
+        second.push(styled(app, label, app.theme.subtle_text_style(), selected));
     }
-    pad_selected_row(&mut second, area.width as usize, selected);
+    pad_selected_row(app, &mut second, area.width as usize, selected);
 
     Row::new([Cell::from(Text::from(vec![
         Line::from(first),
@@ -2033,7 +2029,7 @@ fn account_table_row(app: &App, output: &UsageOutput, index: usize) -> Row<'stat
 
     let auth = account_auth_label(output);
     let health = readiness_label(row.readiness);
-    let auth_color = account_auth_color(output);
+    let auth_color = account_auth_color(app, output);
     let health_color = readiness_color(app, row.readiness);
     let metric_color = row.metric.map(|metric| metric_color(app, metric));
 
@@ -2042,7 +2038,7 @@ fn account_table_row(app: &App, output: &UsageOutput, index: usize) -> Row<'stat
         table_text_cell(
             output.provider.clone(),
             Style::default()
-                .fg(get_provider_shade(&output.provider, 0))
+                .fg(app.theme.color(get_provider_shade(&output.provider, 0)))
                 .add_modifier(Modifier::BOLD),
         ),
         table_text_cell(row.account, app.theme.secondary_text_style()),
@@ -2061,10 +2057,15 @@ fn account_table_row(app: &App, output: &UsageOutput, index: usize) -> Row<'stat
     .height(1)
 }
 
-fn pad_selected_row(spans: &mut Vec<Span<'static>>, width: usize, selected: bool) {
+fn pad_selected_row(app: &App, spans: &mut Vec<Span<'static>>, width: usize, selected: bool) {
     let used = Line::from(spans.clone()).width();
     if used < width {
-        spans.push(styled(" ".repeat(width - used), Style::default(), selected));
+        spans.push(styled(
+            app,
+            " ".repeat(width - used),
+            Style::default(),
+            selected,
+        ));
     }
 }
 
@@ -2212,9 +2213,9 @@ fn readiness_label(status: UsageReadiness) -> &'static str {
 
 fn readiness_color(app: &App, status: UsageReadiness) -> Color {
     match status {
-        UsageReadiness::Ready => app.theme.accent,
-        UsageReadiness::Watch => Color::Yellow,
-        UsageReadiness::Critical => Color::Red,
+        UsageReadiness::Ready => app.theme.success_color(),
+        UsageReadiness::Watch => app.theme.warning_color(),
+        UsageReadiness::Critical => app.theme.danger_color(),
         UsageReadiness::Unknown => app.theme.muted,
     }
 }
@@ -2382,11 +2383,11 @@ fn account_auth_label(output: &UsageOutput) -> &'static str {
     }
 }
 
-fn account_auth_color(output: &UsageOutput) -> Color {
+fn account_auth_color(app: &App, output: &UsageOutput) -> Color {
     match &output.account {
-        Some(account) if account.is_active => Color::Green,
-        Some(_) => Color::Blue,
-        None => Color::Yellow,
+        Some(account) if account.is_active => app.theme.success_color(),
+        Some(_) => app.theme.info_color(),
+        None => app.theme.warning_color(),
     }
 }
 
@@ -2482,11 +2483,11 @@ fn format_expiry_time(value: &str) -> String {
 
 fn metric_color(app: &App, metric: &UsageMetric) -> Color {
     if metric.remaining_percent < 10.0 {
-        Color::Red
+        app.theme.danger_color()
     } else if metric.remaining_percent < 25.0 {
-        Color::Yellow
+        app.theme.warning_color()
     } else {
-        app.theme.accent
+        app.theme.success_color()
     }
 }
 
@@ -2504,9 +2505,9 @@ fn quota_bar_spans(
     )
 }
 
-fn styled<T: Into<String>>(text: T, style: Style, selected: bool) -> Span<'static> {
+fn styled<T: Into<String>>(app: &App, text: T, style: Style, selected: bool) -> Span<'static> {
     let style = if selected {
-        style.bg(Color::Blue).fg(Color::White)
+        style.bg(app.theme.selection).fg(app.theme.foreground)
     } else {
         style
     };
@@ -2522,8 +2523,9 @@ mod tests {
     };
     use crate::tui::app::{Tab, TuiConfig};
     use crate::tui::data::UsageData;
+    use crate::tui::themes::{TerminalBackground, TerminalColorMode, Theme, ThemePreference};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 
     fn output(provider: &str, account: Option<UsageAccount>) -> UsageOutput {
         UsageOutput {
@@ -2615,17 +2617,19 @@ mod tests {
         app
     }
 
-    fn render_body(app: &mut App, width: u16, height: u16) -> String {
+    fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render(frame, app, Rect::new(0, 0, width, height)))
             .unwrap();
-        terminal
-            .backend()
-            .buffer()
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        buffer
             .content()
-            .chunks(width as usize)
+            .chunks(buffer.area.width as usize)
             .map(|row| {
                 row.iter()
                     .map(|cell| cell.symbol().to_string())
@@ -2633,6 +2637,10 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn render_body(app: &mut App, width: u16, height: u16) -> String {
+        buffer_text(&render_buffer(app, width, height))
     }
 
     fn line_text(line: &Line<'_>) -> String {
@@ -2645,6 +2653,90 @@ mod tests {
     fn visual_col(line: &str, needle: &str) -> Option<usize> {
         let byte = line.find(needle)?;
         Some(Line::from(&line[..byte]).width())
+    }
+
+    #[test]
+    fn light_theme_maps_usage_status_colors_without_changing_labels() {
+        let mut app = make_app();
+        app.theme = Theme::with_terminal(
+            ThemePreference::Light,
+            TerminalColorMode::FullColor,
+            TerminalBackground::Light,
+        );
+
+        assert_eq!(
+            readiness_color(&app, UsageReadiness::Ready),
+            app.theme.success_color()
+        );
+        assert_eq!(
+            readiness_color(&app, UsageReadiness::Watch),
+            app.theme.warning_color()
+        );
+        assert_eq!(
+            readiness_color(&app, UsageReadiness::Critical),
+            app.theme.danger_color()
+        );
+        assert_eq!(
+            diagnostic_severity_color(&app, UsageFetchDiagnosticSeverity::Info),
+            app.theme.info_color()
+        );
+        assert_eq!(
+            diagnostic_severity_color(&app, UsageFetchDiagnosticSeverity::Warning),
+            app.theme.warning_color()
+        );
+        assert_eq!(
+            diagnostic_severity_color(&app, UsageFetchDiagnosticSeverity::Error),
+            app.theme.danger_color()
+        );
+
+        let line = attention_more_line(&app, 2, 24);
+        assert_eq!(line_text(&line), "  +2 more at risk");
+        assert!(line.width() <= 24);
+        assert_eq!(line.spans[0].style.fg, Some(app.theme.warning_color()));
+
+        let selected = styled(&app, "Ready", Style::default(), true);
+        assert_eq!(selected.content, "Ready");
+        assert_eq!(selected.style.fg, Some(app.theme.foreground));
+        assert_eq!(selected.style.bg, Some(app.theme.selection));
+    }
+
+    #[test]
+    fn compatible_usage_render_downgrades_provider_rgb_colors() {
+        let mut app = make_app();
+        app.theme = Theme::with_terminal(
+            ThemePreference::Light,
+            TerminalColorMode::Compatible,
+            TerminalBackground::Light,
+        );
+        app.subscription_usage = vec![
+            output(
+                "Codex",
+                Some(UsageAccount {
+                    id: "acct_work".to_string(),
+                    label: Some("work".to_string()),
+                    is_active: true,
+                }),
+            ),
+            output_with_remaining("Claude", None, 20.0),
+        ];
+
+        assert!(matches!(get_provider_shade("Codex", 0), Color::Rgb(..)));
+        let buffer = render_buffer(&mut app, 180, 24);
+        let body = buffer_text(&buffer);
+
+        assert!(body.contains("Usage Summary"), "{body}");
+        assert!(body.contains("Selected Account"), "{body}");
+        assert!(body.contains("Accounts"), "{body}");
+        for cell in &buffer.content {
+            assert!(
+                !matches!(cell.fg, Color::Rgb(..)),
+                "compatible usage foreground leaked RGB at cell {cell:?}"
+            );
+            assert!(
+                !matches!(cell.bg, Color::Rgb(..)),
+                "compatible usage background leaked RGB at cell {cell:?}"
+            );
+        }
     }
 
     #[test]
