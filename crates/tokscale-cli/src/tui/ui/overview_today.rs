@@ -7,7 +7,7 @@ use super::widgets::{
     table_bullet_cell, table_right_cell, table_text_cell, truncate_ellipsis as truncate_string,
 };
 use crate::tui::app::{App, ClickAction, PeriodDetailKey, SortDirection, SortField};
-use chrono::{Local, NaiveDateTime, Timelike};
+use chrono::{NaiveDateTime, Timelike};
 
 struct TodaySummary {
     now: NaiveDateTime,
@@ -90,7 +90,7 @@ struct TodayModelRowData {
 }
 
 pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    let now = Local::now().naive_local();
+    let now = app.overview_now();
 
     if area.width < 88 || area.height < 22 {
         render_today_compact_dashboard(frame, app, area, now);

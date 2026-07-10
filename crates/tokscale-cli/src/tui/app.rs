@@ -3,11 +3,13 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use ratatui::style::Color;
 
 use crate::ClientFilter;
 
 use super::background_job::BackgroundJob;
+use super::cache::{CacheReportScope, TUI_DEFAULT_GROUP_BY};
 use super::codex_login::{CodexLoginChildSlot, CodexLoginEvent, CodexLoginOutcome};
 use super::data::{DataLoader, UsageData};
 use super::drilldown_state::DrilldownState;
@@ -35,6 +37,42 @@ pub struct TuiConfig {
     pub year: Option<String>,
     pub initial_tab: Option<Tab>,
     pub initial_timeline_granularity: Option<TimelineGranularity>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PulseDataProvenance {
+    VerifiedDefaultScopeFresh,
+    VerifiedDefaultScopeStale,
+    #[default]
+    Unverified,
+}
+
+impl PulseDataProvenance {
+    pub(crate) fn from_scan_scope(
+        enabled_clients: &HashSet<ClientFilter>,
+        group_by: &tokscale_core::GroupBy,
+        report_scope: &CacheReportScope,
+    ) -> Self {
+        if enabled_clients == &ClientFilter::default_set()
+            && group_by == &TUI_DEFAULT_GROUP_BY
+            && report_scope == &CacheReportScope::default()
+        {
+            Self::VerifiedDefaultScopeFresh
+        } else {
+            Self::Unverified
+        }
+    }
+
+    pub(crate) fn as_stale(self) -> Self {
+        match self {
+            Self::VerifiedDefaultScopeFresh => Self::VerifiedDefaultScopeStale,
+            provenance => provenance,
+        }
+    }
+
+    pub(crate) fn can_seed_global_snapshot(self) -> bool {
+        self == Self::VerifiedDefaultScopeFresh
+    }
 }
 
 #[cfg(test)]
@@ -117,6 +155,9 @@ pub struct App {
     codex_reset_job:
         BackgroundJob<Result<crate::commands::usage::codex::RateLimitResetConsumeResult, String>>,
     pub pulse: PulseState,
+    pulse_data_provenance: PulseDataProvenance,
+    pulse_ai_observed_at: Option<DateTime<Utc>>,
+    render_reference_now: Option<NaiveDateTime>,
     #[cfg(test)]
     usage_fetcher: UsageFetcher,
     codex_login_rx: Option<std::sync::mpsc::Receiver<CodexLoginEvent>>,

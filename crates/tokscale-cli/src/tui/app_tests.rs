@@ -1,8 +1,8 @@
 use super::super::ui::widgets::get_provider_shade;
 use super::{
     App, ChartGranularity, ClickAction, DrilldownView, ModelDetailKey, OverviewMode,
-    PeriodDetailKey, SortDirection, SortField, Tab, ThemePreference, TimelineGranularity,
-    TuiConfig,
+    PeriodDetailKey, PulseDataProvenance, SortDirection, SortField, Tab, ThemePreference,
+    TimelineGranularity, TuiConfig,
 };
 use crate::commands::usage::{
     UsageAccount, UsageFetchDiagnostic, UsageFetchReport, UsageMetric, UsageOutput,
@@ -74,6 +74,103 @@ fn config_theme_overrides_settings_default() {
         app.theme.foreground,
         Color::Rgb(22, 22, 22) | Color::Black
     ));
+}
+
+#[test]
+fn pulse_snapshot_persistence_waits_for_default_scope_data_load() {
+    let config = TuiConfig {
+        theme: None,
+        refresh: 0,
+        clients: None,
+        since: None,
+        until: None,
+        year: None,
+        initial_tab: None,
+        initial_timeline_granularity: None,
+    };
+    let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
+
+    assert_eq!(app.pulse_data_provenance, PulseDataProvenance::Unverified);
+    app.update_data(
+        UsageData::default(),
+        PulseDataProvenance::VerifiedDefaultScopeFresh,
+    )
+    .unwrap();
+    assert_eq!(
+        app.pulse_data_provenance,
+        PulseDataProvenance::VerifiedDefaultScopeFresh
+    );
+}
+
+#[test]
+fn fresh_cached_data_preserves_cache_generation_for_pulse() {
+    let config = TuiConfig {
+        theme: None,
+        refresh: 0,
+        clients: None,
+        since: None,
+        until: None,
+        year: None,
+        initial_tab: None,
+        initial_timeline_granularity: None,
+    };
+    let observed_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+    let data = UsageData {
+        total_tokens: 1,
+        ..UsageData::default()
+    };
+
+    let app = App::new_with_cached_data_and_provenance(
+        config,
+        Some(data),
+        PulseDataProvenance::VerifiedDefaultScopeFresh,
+        Some(observed_at),
+    )
+    .unwrap();
+
+    assert_eq!(app.pulse_ai_observed_at, Some(observed_at));
+}
+
+#[test]
+fn filtered_tui_data_cannot_persist_as_global_pulse_snapshot() {
+    let config = TuiConfig {
+        theme: None,
+        refresh: 0,
+        clients: None,
+        since: Some("2026-01-01".to_string()),
+        until: None,
+        year: None,
+        initial_tab: None,
+        initial_timeline_granularity: None,
+    };
+    let mut app = App::new_with_cached_data(config, None).unwrap();
+
+    app.update_data(UsageData::default(), PulseDataProvenance::Unverified)
+        .unwrap();
+    assert_eq!(app.pulse_data_provenance, PulseDataProvenance::Unverified);
+}
+
+#[test]
+fn completed_scan_keeps_provenance_captured_before_filter_change() {
+    let config = TuiConfig {
+        theme: None,
+        refresh: 0,
+        clients: None,
+        since: None,
+        until: None,
+        year: None,
+        initial_tab: None,
+        initial_timeline_granularity: None,
+    };
+    let mut app = App::new_with_cached_data(config, None).unwrap();
+    let captured = PulseDataProvenance::VerifiedDefaultScopeFresh;
+    app.enabled_clients
+        .borrow_mut()
+        .remove(&ClientFilter::Claude);
+
+    app.update_data(UsageData::default(), captured).unwrap();
+
+    assert_eq!(app.pulse_data_provenance, captured);
 }
 
 #[test]
@@ -924,7 +1021,8 @@ fn test_update_data_exits_daily_detail_when_date_disappears() {
         ],
         ..Default::default()
     };
-    app.update_data(refreshed);
+    app.update_data(refreshed, PulseDataProvenance::Unverified)
+        .unwrap();
 
     assert!(
         !app.is_daily_detail_active(),
@@ -965,7 +1063,8 @@ fn test_update_data_keeps_daily_detail_when_date_still_present() {
         ],
         ..Default::default()
     };
-    app.update_data(refreshed);
+    app.update_data(refreshed, PulseDataProvenance::Unverified)
+        .unwrap();
 
     assert!(app.is_daily_detail_active());
     assert_eq!(app.daily_detail_date(), Some(target_date));
@@ -1363,6 +1462,30 @@ fn test_handle_key_r_on_usage_refreshes_subscription_usage() {
 }
 
 #[test]
+fn usage_refresh_keeps_snapshot_persistence_failure_visible() {
+    let mut app = make_app();
+    app.usage_fetcher = sample_usage_fetcher;
+    app.current_tab = Tab::Usage;
+    app.pulse_data_provenance = PulseDataProvenance::VerifiedDefaultScopeFresh;
+    app.pulse.fail_snapshot_saves_for_test("disk full");
+
+    app.handle_key_event(key(KeyCode::Char('r')));
+    for _ in 0..20 {
+        app.on_tick();
+        if !app.is_fetching_usage() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Pulse snapshot save failed: disk full")
+    );
+    assert!(app.pulse.snapshot.is_some());
+}
+
+#[test]
 fn test_handle_key_r_on_usage_reports_fetch_failure_diagnostic() {
     let mut app = make_app();
     app.usage_fetcher = failing_usage_fetcher;
@@ -1594,7 +1717,7 @@ fn test_auto_refresh_on_usage_refreshes_usage_only() {
 
 #[test]
 #[serial_test::serial]
-fn test_auto_refresh_on_pulse_checks_stale_weread_only() {
+fn test_auto_refresh_on_pulse_reports_missing_auth_without_global_reload() {
     let prev_api_key = env::var_os("WEREAD_API_KEY");
     let prev_config_dir = env::var_os("TOKSCALE_CONFIG_DIR");
     let temp = tempfile::TempDir::new().unwrap();
@@ -1609,7 +1732,7 @@ fn test_auto_refresh_on_pulse_checks_stale_weread_only() {
     app.auto_refresh = true;
     app.auto_refresh_interval = Duration::from_millis(1);
     app.last_auto_refresh = Instant::now() - Duration::from_secs(1);
-    app.pulse.weread = WeReadState {
+    app.pulse.replace_legacy_weread_for_test(WeReadState {
         weekly: None,
         monthly: None,
         shelf: None,
@@ -1621,12 +1744,12 @@ fn test_auto_refresh_on_pulse_checks_stale_weread_only() {
         status: WeReadStatus::Fresh,
         last_refresh_ms: Some(0),
         error: None,
-    };
+    });
 
     app.on_tick();
 
     assert!(!app.needs_reload);
-    assert_eq!(app.pulse.weread.status, WeReadStatus::Stale);
+    assert_eq!(app.pulse.weread.status, WeReadStatus::AuthMissing);
     assert!(!app.is_fetching_weread());
 
     unsafe {
@@ -2340,7 +2463,8 @@ fn test_shade_map_rebuilds_on_update_data() {
         models: vec![model_usage("claude-sonnet-4-5", 5.0, None)],
         ..UsageData::default()
     };
-    app.update_data(fresh);
+    app.update_data(fresh, PulseDataProvenance::Unverified)
+        .unwrap();
 
     assert!(!app
         .model_shade_map

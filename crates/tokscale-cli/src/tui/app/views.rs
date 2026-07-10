@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime};
 
 use crate::tui::data::{DailyUsage, HourlyUsage, ModelUsage, TokenBreakdown};
 use crate::tui::drilldown_state::{
@@ -34,7 +34,16 @@ impl App {
     }
 
     pub fn overview_date(&self) -> NaiveDate {
-        chrono::Local::now().date_naive()
+        self.overview_now().date()
+    }
+
+    pub(crate) fn overview_now(&self) -> NaiveDateTime {
+        self.render_reference_now
+            .unwrap_or_else(|| chrono::Local::now().naive_local())
+    }
+
+    pub(crate) fn set_render_reference_now(&mut self, now: NaiveDateTime) {
+        self.render_reference_now = Some(now);
     }
 
     pub fn overview_title(&self) -> String {

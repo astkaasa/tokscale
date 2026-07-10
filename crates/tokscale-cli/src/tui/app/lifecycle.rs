@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use chrono::Utc;
 use ratatui::style::Color;
 
 use crate::client_filter::ClientFilter;
@@ -20,26 +21,61 @@ use crate::tui::ui::widgets::get_provider_shade;
 
 #[cfg(test)]
 use super::test_usage_fetcher;
-use super::{App, RefreshTrigger, TuiConfig};
+use super::{App, PulseDataProvenance, RefreshTrigger, TuiConfig};
 
 impl App {
+    #[cfg(test)]
     pub fn new_with_cached_data(config: TuiConfig, cached_data: Option<UsageData>) -> Result<Self> {
-        Self::build_with_cached_data(config, cached_data, true)
+        Self::build_with_cached_data(
+            config,
+            cached_data,
+            PulseDataProvenance::Unverified,
+            None,
+            true,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_cached_data_and_provenance(
+        config: TuiConfig,
+        cached_data: Option<UsageData>,
+        provenance: PulseDataProvenance,
+        cache_observed_at: Option<chrono::DateTime<Utc>>,
+    ) -> Result<Self> {
+        Self::build_with_cached_data(
+            config,
+            cached_data,
+            provenance,
+            cache_observed_at,
+            true,
+            None,
+        )
     }
 
     pub(crate) fn new_surface_with_cached_data(
         config: TuiConfig,
         cached_data: Option<UsageData>,
+        settings: Settings,
     ) -> Result<Self> {
-        Self::build_with_cached_data(config, cached_data, false)
+        Self::build_with_cached_data(
+            config,
+            cached_data,
+            PulseDataProvenance::Unverified,
+            None,
+            false,
+            Some(settings),
+        )
     }
 
     fn build_with_cached_data(
         config: TuiConfig,
         cached_data: Option<UsageData>,
+        pulse_data_provenance: PulseDataProvenance,
+        cached_ai_observed_at: Option<chrono::DateTime<Utc>>,
         fetch_on_entry: bool,
+        settings_override: Option<Settings>,
     ) -> Result<Self> {
-        let settings = Settings::load();
+        let settings = settings_override.unwrap_or_else(Settings::load);
         let theme_preference = config.theme.unwrap_or(settings.ui_theme);
         let theme = Theme::for_current_terminal_with_preference(theme_preference);
 
@@ -75,7 +111,11 @@ impl App {
         let data_loader = DataLoader::with_filters(config.since, config.until, config.year);
 
         let data = cached_data.unwrap_or_default();
-        let has_data = !data.models.is_empty();
+        let has_data = !data.models.is_empty()
+            || !data.daily.is_empty()
+            || !data.agents.is_empty()
+            || data.total_tokens > 0
+            || data.total_cost > 0.0;
         let dialog_stack = DialogStack::new(theme.clone());
         let dialog_needs_reload = Rc::new(RefCell::new(false));
         let confirmed_codex_use_account_id = Rc::new(RefCell::new(None));
@@ -85,7 +125,42 @@ impl App {
         let current_tab = requested_tab;
         let (sort_field, sort_direction) = Self::default_sort_for_tab(current_tab);
         let timeline_granularity = config.initial_timeline_granularity.unwrap_or_default();
-        let pulse = PulseState::new(&settings);
+        let pulse = if fetch_on_entry {
+            PulseState::new(&settings)
+        } else {
+            PulseState::empty_for_surface()
+        };
+        let (subscription_usage, subscription_observed_at) = {
+            #[cfg(not(test))]
+            {
+                if fetch_on_entry {
+                    match crate::commands::usage::load_cache_with_observed_at() {
+                        Some((usage, observed_at)) => (usage, Some(observed_at)),
+                        None => (Vec::new(), None),
+                    }
+                } else {
+                    (Vec::new(), None)
+                }
+            }
+            #[cfg(test)]
+            {
+                (Vec::new(), None)
+            }
+        };
+        let pulse_ai_observed_at = pulse_data_provenance
+            .can_seed_global_snapshot()
+            .then(|| {
+                [
+                    has_data.then_some(cached_ai_observed_at).flatten(),
+                    (!subscription_usage.is_empty())
+                        .then_some(subscription_observed_at)
+                        .flatten(),
+                ]
+                .into_iter()
+                .flatten()
+                .max()
+            })
+            .flatten();
 
         let mut app = Self {
             should_quit: false,
@@ -127,16 +202,7 @@ impl App {
             dialog_stack,
             dialog_needs_reload,
             model_shade_map: HashMap::new(),
-            subscription_usage: {
-                #[cfg(not(test))]
-                {
-                    crate::commands::usage::load_cache().unwrap_or_default()
-                }
-                #[cfg(test)]
-                {
-                    Vec::new()
-                }
-            },
+            subscription_usage,
             codex_login_lines: Vec::new(),
             codex_login_outcome: None,
             confirmed_codex_use_account_id,
@@ -148,6 +214,9 @@ impl App {
             usage_job: BackgroundJob::default(),
             codex_reset_job: BackgroundJob::default(),
             pulse,
+            pulse_data_provenance,
+            pulse_ai_observed_at,
+            render_reference_now: None,
             #[cfg(test)]
             usage_fetcher: test_usage_fetcher,
             codex_login_rx: None,
@@ -167,11 +236,14 @@ impl App {
         // Don't set data.loading - let cached data remain visible during background refresh
     }
 
-    pub fn update_data(&mut self, data: UsageData) {
+    pub fn update_data(&mut self, data: UsageData, provenance: PulseDataProvenance) -> Result<()> {
+        self.pulse_data_provenance = provenance;
+        self.pulse_ai_observed_at = provenance.can_seed_global_snapshot().then(Utc::now);
         self.data = data;
         self.data_version = self.data_version.saturating_add(1);
         self.last_refresh = Instant::now();
         self.build_model_shade_map();
+        let pulse_result = self.rebuild_pulse_snapshot();
 
         if let Some(DrilldownView::Period(key)) = self.drilldown_view().cloned() {
             if !self
@@ -185,6 +257,7 @@ impl App {
         }
 
         self.clamp_selection();
+        pulse_result
     }
 
     pub fn build_model_shade_map(&mut self) {
@@ -238,10 +311,14 @@ impl App {
             Some(BackgroundJobPoll::Ready(report)) => {
                 self.subscription_usage = report.outputs;
                 self.usage_fetch_diagnostics = report.diagnostics;
+                if self.pulse_data_provenance.can_seed_global_snapshot() {
+                    self.pulse_ai_observed_at = Some(Utc::now());
+                }
+                let pulse_result = self.rebuild_pulse_snapshot();
                 self.clamp_selection();
-                if !self.subscription_usage.is_empty() {
+                let usage_status = if !self.subscription_usage.is_empty() {
                     crate::commands::usage::save_cache(&self.subscription_usage);
-                    self.status_message = if self.usage_fetch_diagnostics.is_empty() {
+                    if self.usage_fetch_diagnostics.is_empty() {
                         Some("Usage data loaded".into())
                     } else {
                         Some(format!(
@@ -253,16 +330,19 @@ impl App {
                                 "s"
                             }
                         ))
-                    };
+                    }
                 } else {
                     crate::commands::usage::clear_cache();
-                    self.status_message =
-                        if let Some(diagnostic) = self.usage_fetch_diagnostics.first() {
-                            Some(format!("Usage fetch failed: {}", diagnostic.display_name()))
-                        } else {
-                            Some("No usage data available".into())
-                        };
-                }
+                    if let Some(diagnostic) = self.usage_fetch_diagnostics.first() {
+                        Some(format!("Usage fetch failed: {}", diagnostic.display_name()))
+                    } else {
+                        Some("No usage data available".into())
+                    }
+                };
+                self.status_message = match pulse_result {
+                    Ok(()) => usage_status,
+                    Err(error) => Some(format!("Pulse snapshot save failed: {error}")),
+                };
                 self.status_message_time = Some(std::time::Instant::now());
             }
             Some(BackgroundJobPoll::Disconnected) => {

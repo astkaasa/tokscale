@@ -111,7 +111,13 @@ fn render_workspace_tabs(
         return;
     }
 
-    let visible_tabs = header_tabs_for_layout(app, is_very_narrow);
+    let left_guard = area.x.saturating_add(if is_very_narrow { 7 } else { 18 });
+    let right_guard = area.right().saturating_sub(right_reserved);
+    if right_guard <= left_guard {
+        return;
+    }
+    let available_width = right_guard.saturating_sub(left_guard);
+    let visible_tabs = header_tabs_for_layout(app, is_very_narrow, available_width);
     let tab_count = visible_tabs.len();
     if tab_count == 0 {
         return;
@@ -127,11 +133,6 @@ fn render_workspace_tabs(
         .copied()
         .sum::<u16>()
         .saturating_add(divider_width.saturating_mul(tab_count.saturating_sub(1) as u16));
-    let left_guard = area.x.saturating_add(if is_very_narrow { 7 } else { 18 });
-    let right_guard = area.right().saturating_sub(right_reserved);
-    if right_guard <= left_guard {
-        return;
-    }
     let centered = area.x + area.width.saturating_sub(total_width) / 2;
     let mut x = centered.max(left_guard);
     if x.saturating_add(total_width) > right_guard {
@@ -201,9 +202,12 @@ fn header_tabs(app: &App) -> Vec<Tab> {
     app.visible_workspaces().to_vec()
 }
 
-fn header_tabs_for_layout(app: &App, is_very_narrow: bool) -> Vec<Tab> {
+fn header_tabs_for_layout(app: &App, is_very_narrow: bool, available_width: u16) -> Vec<Tab> {
     let tabs = header_tabs(app);
-    if !is_very_narrow || tabs.len() <= 1 || !tabs.contains(&app.current_tab) {
+    if tabs.len() <= 1
+        || !tabs.contains(&app.current_tab)
+        || header_tabs_width(&tabs, is_very_narrow) <= available_width
+    {
         return tabs;
     }
     prioritize_current_tab(tabs, app.current_tab)
@@ -366,7 +370,7 @@ mod tests {
         assert!(row.contains("Tok"), "{row}");
         assert!(row.contains("Use"), "{row}");
         assert_eq!(
-            header_tabs_for_layout(&app, true),
+            header_tabs_for_layout(&app, true, 19),
             vec![
                 Tab::Timeline,
                 Tab::Usage,
@@ -375,5 +379,16 @@ mod tests {
                 Tab::Overview
             ]
         );
+    }
+
+    #[test]
+    fn constrained_normal_header_keeps_current_workspace_tab_visible() {
+        let mut app = make_app(68);
+        app.current_tab = Tab::Pulse;
+
+        let rows = render_header(&mut app, 68);
+        let row = row_text(&rows, 1);
+
+        assert!(row.contains("Pulse"), "{row}");
     }
 }

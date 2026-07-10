@@ -17,9 +17,10 @@ pub(crate) mod surface;
 mod themes;
 mod ui;
 
-pub(crate) use app::{App, Tab, TimelineGranularity, TuiConfig};
+pub(crate) use app::{App, PulseDataProvenance, Tab, TimelineGranularity, TuiConfig};
 pub(crate) use cache::{
-    load_cache, save_cached_data, CacheReportScope, CacheResult, TUI_DEFAULT_GROUP_BY,
+    load_cache, load_cache_with_observed_at, save_cached_data, CacheReportScope, CacheResult,
+    TUI_DEFAULT_GROUP_BY,
 };
 pub(crate) use data::{DataLoader, UsageData};
 pub(crate) use event::{Event, EventHandler};
@@ -52,13 +53,45 @@ use tokscale_core::ClientId;
 
 use crate::ClientFilter;
 
-fn decide_initial_data(load_result: CacheResult) -> (Option<UsageData>, bool) {
-    let cached_data = match load_result {
-        CacheResult::Fresh(data) | CacheResult::Stale(data) => Some(data),
-        CacheResult::Miss => None,
+fn decide_initial_data(
+    load_result: CacheResult,
+    cache_observed_at: Option<chrono::DateTime<chrono::Utc>>,
+    requested_provenance: PulseDataProvenance,
+) -> (
+    Option<UsageData>,
+    bool,
+    PulseDataProvenance,
+    Option<chrono::DateTime<chrono::Utc>>,
+) {
+    let (cached_data, provenance, observed_at) = match load_result {
+        CacheResult::Fresh(data) => (Some(data), requested_provenance, cache_observed_at),
+        CacheResult::Stale(data) => (Some(data), requested_provenance.as_stale(), None),
+        CacheResult::StaleSubset(data) => (Some(data), PulseDataProvenance::Unverified, None),
+        CacheResult::Miss => (None, PulseDataProvenance::Unverified, None),
     };
 
-    (cached_data, true)
+    (cached_data, true, provenance, observed_at)
+}
+
+struct BackgroundLoadResult {
+    result: Result<UsageData>,
+    provenance: PulseDataProvenance,
+}
+
+fn apply_background_load_result(app: &mut App, message: BackgroundLoadResult) {
+    app.set_background_loading(false);
+    match message.result {
+        Ok(data) => match app.update_data(data, message.provenance) {
+            Ok(()) => app.set_status("Data loaded"),
+            Err(error) => {
+                app.set_status(&format!("Pulse snapshot save failed: {error}"));
+            }
+        },
+        Err(error) => {
+            app.set_error(Some(error.to_string()));
+            app.set_status(&format!("Error: {error}"));
+        }
+    }
 }
 
 fn background_data_loader(
@@ -127,11 +160,15 @@ pub fn run(
     // cache entries.
     let initial_group_by = TUI_DEFAULT_GROUP_BY;
     let initial_report_scope = background_cache_scope(&since, &until, &year);
-    let (cached_data, needs_background_load) = decide_initial_data(load_cache(
+    let requested_provenance = PulseDataProvenance::from_scan_scope(
         &enabled_clients,
         &initial_group_by,
         &initial_report_scope,
-    ));
+    );
+    let (cache_result, cache_observed_at) =
+        load_cache_with_observed_at(&enabled_clients, &initial_group_by, &initial_report_scope);
+    let (cached_data, needs_background_load, cached_data_provenance, cache_observed_at) =
+        decide_initial_data(cache_result, cache_observed_at, requested_provenance);
 
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -160,7 +197,12 @@ pub fn run(
         }
     };
 
-    let mut app = match App::new_with_cached_data(config, cached_data) {
+    let mut app = match App::new_with_cached_data_and_provenance(
+        config,
+        cached_data,
+        cached_data_provenance,
+        cache_observed_at,
+    ) {
         Ok(a) => a,
         Err(e) => {
             restore_terminal(&mut terminal);
@@ -168,7 +210,7 @@ pub fn run(
         }
     };
 
-    let (bg_tx, bg_rx) = mpsc::channel::<Result<UsageData>>();
+    let (bg_tx, bg_rx) = mpsc::channel::<BackgroundLoadResult>();
 
     if needs_background_load {
         app.set_background_loading(true);
@@ -198,7 +240,10 @@ pub fn run(
                 save_cached_data(data, &bg_enabled_clients, &bg_group_by, &bg_report_scope);
             }
 
-            let _ = tx.send(result);
+            let _ = tx.send(BackgroundLoadResult {
+                result,
+                provenance: requested_provenance,
+            });
         });
     }
 
@@ -255,8 +300,8 @@ fn run_loop_with_background(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     events: &mut EventHandler,
-    bg_tx: mpsc::Sender<Result<UsageData>>,
-    bg_rx: mpsc::Receiver<Result<UsageData>>,
+    bg_tx: mpsc::Sender<BackgroundLoadResult>,
+    bg_rx: mpsc::Receiver<BackgroundLoadResult>,
     #[cfg(unix)] sigcont_flag: &Arc<AtomicBool>,
 ) -> Result<()> {
     loop {
@@ -274,18 +319,8 @@ fn run_loop_with_background(
         terminal.draw(|f| ui::render(f, app))?;
 
         match bg_rx.try_recv() {
-            Ok(result) => {
-                app.set_background_loading(false);
-                match result {
-                    Ok(data) => {
-                        app.update_data(data);
-                        app.set_status("Data loaded");
-                    }
-                    Err(e) => {
-                        app.set_error(Some(e.to_string()));
-                        app.set_status(&format!("Error: {}", e));
-                    }
-                }
+            Ok(message) => {
+                apply_background_load_result(app, message);
             }
             Err(TryRecvError::Disconnected) => {
                 if app.background_loading {
@@ -311,6 +346,8 @@ fn run_loop_with_background(
             let enabled_clients = app.enabled_clients.borrow().clone();
             let group_by = app.group_by.borrow().clone();
             let report_scope = background_cache_scope(&since, &until, &year);
+            let provenance =
+                PulseDataProvenance::from_scan_scope(&enabled_clients, &group_by, &report_scope);
 
             thread::spawn(move || {
                 let loader = background_data_loader(since, until, year);
@@ -318,7 +355,7 @@ fn run_loop_with_background(
                 if let Ok(ref data) = result {
                     save_cached_data(data, &enabled_clients, &group_by, &report_scope);
                 }
-                let _ = tx.send(result);
+                let _ = tx.send(BackgroundLoadResult { result, provenance });
             });
         }
 
@@ -352,19 +389,75 @@ mod tests {
 
     #[test]
     fn launches_with_stale_cache_renders_immediately() {
-        let (cached_data, needs_background_load) =
-            decide_initial_data(CacheResult::Stale(UsageData::default()));
+        let (cached_data, needs_background_load, provenance, observed_at) = decide_initial_data(
+            CacheResult::Stale(UsageData::default()),
+            Some(chrono::Utc::now()),
+            PulseDataProvenance::VerifiedDefaultScopeFresh,
+        );
 
         assert!(cached_data.is_some());
         assert!(needs_background_load);
+        assert_eq!(provenance, PulseDataProvenance::VerifiedDefaultScopeStale);
+        assert_eq!(observed_at, None);
+        assert!(!provenance.can_seed_global_snapshot());
+    }
+
+    #[test]
+    fn strict_subset_cache_cannot_claim_global_pulse_provenance() {
+        let (cached_data, needs_background_load, provenance, observed_at) = decide_initial_data(
+            CacheResult::StaleSubset(UsageData::default()),
+            Some(chrono::Utc::now()),
+            PulseDataProvenance::VerifiedDefaultScopeFresh,
+        );
+
+        assert!(cached_data.is_some());
+        assert!(needs_background_load);
+        assert_eq!(provenance, PulseDataProvenance::Unverified);
+        assert_eq!(observed_at, None);
+    }
+
+    #[test]
+    fn background_load_does_not_mask_snapshot_persistence_failure() {
+        let config = TuiConfig {
+            theme: None,
+            refresh: 0,
+            clients: None,
+            since: None,
+            until: None,
+            year: None,
+            initial_tab: None,
+            initial_timeline_granularity: None,
+        };
+        let mut app = App::new_with_cached_data(config, None).unwrap();
+        app.pulse.fail_snapshot_saves_for_test("disk full");
+
+        apply_background_load_result(
+            &mut app,
+            BackgroundLoadResult {
+                result: Ok(UsageData::default()),
+                provenance: PulseDataProvenance::VerifiedDefaultScopeFresh,
+            },
+        );
+
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Pulse snapshot save failed: disk full")
+        );
+        assert!(app.pulse.snapshot.is_some());
     }
 
     #[test]
     fn miss_renders_empty_until_background_completes() {
-        let (cached_data, needs_background_load) = decide_initial_data(CacheResult::Miss);
+        let (cached_data, needs_background_load, provenance, observed_at) = decide_initial_data(
+            CacheResult::Miss,
+            None,
+            PulseDataProvenance::VerifiedDefaultScopeFresh,
+        );
 
         assert!(cached_data.is_none());
         assert!(needs_background_load);
+        assert_eq!(provenance, PulseDataProvenance::Unverified);
+        assert_eq!(observed_at, None);
     }
 
     #[test]

@@ -32,7 +32,7 @@ Current priorities:
 - Local AI usage parsing across supported coding clients. Run `tokscale clients` to see detected local sources and paths on your machine.
 - Subscription quota/status view via `tokscale usage` and the Usage TUI workspace.
 - WeRead Pulse in the TUI, backed by a WeRead API key stored in settings or provided through the environment.
-- Local read-only Overview HTML surface via `tokscale serve`.
+- Local read-only Overview and Pulse Weekly Review surfaces via `tokscale serve`.
 - Personal Pulse digest export:
 
 ```bash
@@ -40,7 +40,7 @@ tokscale pulse --weekly
 tokscale pulse --json
 ```
 
-`--weekly` emits Markdown for review notes or Obsidian. `--json` emits agent-readable local context.
+`--weekly` emits Markdown for review notes or Obsidian. `--json` emits agent-readable local context. Both read the latest durable local snapshot by default.
 
 ## Install And Run
 
@@ -59,8 +59,9 @@ Useful commands:
 ./target/debug/tokscale --light --no-spinner
 ./target/debug/tokscale models --json --no-spinner
 ./target/debug/tokscale --no-spinner usage
-./target/debug/tokscale pulse --weekly
-./target/debug/tokscale pulse --json
+./target/debug/tokscale pulse sync --no-spinner
+./target/debug/tokscale pulse --weekly --no-spinner
+./target/debug/tokscale pulse --json --no-spinner
 ./target/debug/tokscale serve
 ./target/debug/tokscale clients
 ```
@@ -136,9 +137,14 @@ Then run the TUI and open the Pulse workspace:
 Digest exports:
 
 ```bash
-./target/debug/tokscale pulse --weekly > weekly-pulse.md
-./target/debug/tokscale pulse --json
+./target/debug/tokscale pulse sync --no-spinner
+./target/debug/tokscale pulse --weekly --no-spinner > weekly-pulse.md
+./target/debug/tokscale pulse --json --no-spinner
 ```
+
+`pulse sync` refreshes connectors and writes the durable snapshot. Exports are local-only unless `--refresh` is passed. `tokscale serve` exposes the same snapshot at `/review`, `/api/v1/pulse`, and `/exports/pulse.md` without refreshing connectors.
+
+`tokscale serve` has no user authentication and freezes its data at startup. Other users or sandboxes on the same machine may be able to read served titles and IDs; do not run it under that threat model, and restart it after later syncs.
 
 If `WEREAD_API_KEY` is set in the real process environment, it overrides `settings.json` for that run.
 
@@ -165,7 +171,7 @@ core connector + normalized signal
   -> CLI command adapter
   -> TUI runtime state
   -> TUI renderer
-  -> Markdown / JSON export
+  -> Markdown / JSON / local web export
 ```
 
 ## Development

@@ -4,11 +4,14 @@ pub mod model;
 
 pub use client::{
     fetch_current, normalize_monthly, normalize_notes, normalize_shelf, normalize_weekly,
+    sync_current, sync_current_unpersisted,
 };
 pub use model::{
-    format_compare_ratio, format_read_duration, now_millis, WeReadBookRef, WeReadCategory,
-    WeReadDay, WeReadFocusBook, WeReadMonthly, WeReadNotebookSummary, WeReadNotesSummary,
-    WeReadShelfSummary, WeReadState, WeReadStatus, WeReadWeekly, UPGRADE_REQUIRED_PREFIX,
+    format_compare_ratio, format_read_duration, now_millis, week_start_for, Dataset,
+    DatasetCoverage, DatasetFreshness, RetryClassification, SourceIssue, SourceIssueCode,
+    WeReadBookRef, WeReadCategory, WeReadDatasets, WeReadDay, WeReadFocusBook, WeReadMonthly,
+    WeReadNotebookSummary, WeReadNotesSummary, WeReadShelfSummary, WeReadState, WeReadStatus,
+    WeReadSyncState, WeReadWeekly, SKILL_VERSION, UPGRADE_REQUIRED_PREFIX,
 };
 
 pub fn sanitize_error(error: anyhow::Error, secret: &str) -> String {

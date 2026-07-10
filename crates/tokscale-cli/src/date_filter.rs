@@ -15,7 +15,7 @@ pub(crate) fn build_date_filter(
     )
 }
 
-fn build_date_filter_for_date(
+pub(crate) fn build_date_filter_for_date(
     today: bool,
     week: bool,
     month: bool,

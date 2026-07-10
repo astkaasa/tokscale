@@ -173,7 +173,7 @@ pub(crate) enum Commands {
         #[command(flatten)]
         date: DateRangeFlags,
     },
-    #[command(about = "Serve a local read-only HTML overview")]
+    #[command(about = "Serve local read-only telemetry surfaces")]
     Serve {
         #[arg(long, default_value_t = 8765, help = "Localhost port to bind")]
         port: u16,
@@ -213,10 +213,21 @@ pub(crate) enum Commands {
     },
     #[command(about = "Generate a local Personal Pulse digest")]
     Pulse {
-        #[arg(long, help = "Output agent-readable JSON")]
+        #[command(subcommand)]
+        subcommand: Option<PulseSubcommand>,
+        #[arg(long, global = true, help = "Output agent-readable JSON")]
         json: bool,
-        #[arg(long, conflicts_with = "json", help = "Output Markdown weekly digest")]
+        #[arg(
+            long,
+            global = true,
+            conflicts_with = "json",
+            help = "Output Markdown weekly digest"
+        )]
         weekly: bool,
+        #[arg(long, help = "Refresh local and connector inputs before rendering")]
+        refresh: bool,
+        #[arg(long, global = true, help = "Disable Pulse spinner")]
+        no_spinner: bool,
     },
     #[command(about = "Cursor API cache integration commands")]
     Cursor {
@@ -251,6 +262,12 @@ pub(crate) enum Commands {
         #[arg(long, help = "Disable spinner")]
         no_spinner: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PulseSubcommand {
+    #[command(about = "Refresh Pulse inputs and write the local snapshot")]
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -364,7 +381,33 @@ pub(crate) enum WarpSubcommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::pulse::PulseRunArgs;
     use clap::Parser;
+
+    fn assert_pulse_sync_export_rejected(args: &[&str]) {
+        let cli = Cli::try_parse_from(args).expect("clap should accept either flag position");
+        let Some(Commands::Pulse {
+            subcommand,
+            json,
+            weekly,
+            refresh,
+            no_spinner,
+        }) = cli.command
+        else {
+            panic!("expected pulse command");
+        };
+        let error = PulseRunArgs {
+            json,
+            weekly,
+            refresh,
+            sync_only: matches!(subcommand, Some(PulseSubcommand::Sync)),
+            no_spinner,
+        }
+        .validate()
+        .unwrap_err();
+
+        assert!(error.to_string().contains("cannot be combined"));
+    }
 
     #[test]
     fn clap_rejects_write_cache_without_light() {
@@ -419,6 +462,25 @@ mod tests {
             "--no-spinner",
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn clap_accepts_pulse_exports_and_sync() {
+        assert!(Cli::try_parse_from(["tokscale", "pulse", "--weekly"]).is_ok());
+        assert!(Cli::try_parse_from(["tokscale", "pulse", "--json", "--refresh"]).is_ok());
+        assert!(Cli::try_parse_from(["tokscale", "pulse", "sync", "--no-spinner"]).is_ok());
+    }
+
+    #[test]
+    fn pulse_sync_rejects_export_flags_before_subcommand() {
+        assert_pulse_sync_export_rejected(&["tokscale", "pulse", "--json", "sync"]);
+        assert_pulse_sync_export_rejected(&["tokscale", "pulse", "--weekly", "sync"]);
+    }
+
+    #[test]
+    fn pulse_sync_rejects_export_flags_after_subcommand() {
+        assert_pulse_sync_export_rejected(&["tokscale", "pulse", "sync", "--json"]);
+        assert_pulse_sync_export_rejected(&["tokscale", "pulse", "sync", "--weekly"]);
     }
 
     #[test]

@@ -916,8 +916,7 @@ fn pulse_summary_line(app: &App, width: u16) -> Line<'static> {
     } else {
         match app.pulse.weread.status {
             WeReadStatus::Fresh => Color::Green,
-            WeReadStatus::Loading => Color::Yellow,
-            WeReadStatus::Stale => Color::Yellow,
+            WeReadStatus::Loading | WeReadStatus::Partial | WeReadStatus::Stale => Color::Yellow,
             WeReadStatus::AuthMissing | WeReadStatus::Error | WeReadStatus::UpgradeRequired => {
                 app.theme.muted
             }
@@ -944,7 +943,7 @@ fn pulse_summary_line(app: &App, width: u16) -> Line<'static> {
         .map(|notes| format!("{} notes", notes.total_notes))
         .unwrap_or_else(|| "notes n/a".to_string());
 
-    let fields = vec![
+    let mut fields = vec![
         vec![
             Span::styled("WeRead: ", app.theme.subtle_text_style()),
             Span::styled(
@@ -958,6 +957,20 @@ fn pulse_summary_line(app: &App, width: u16) -> Line<'static> {
         vec![Span::styled(week, app.theme.subtle_text_style())],
         vec![Span::styled(notes, app.theme.subtle_text_style())],
     ];
+    if let Some(ai) = app.pulse.snapshot.as_ref().map(|snapshot| &snapshot.ai) {
+        if let (Some(tokens), Some(cost)) = (ai.total_tokens, ai.total_cost) {
+            fields.insert(
+                1,
+                vec![
+                    Span::styled("AI: ", app.theme.subtle_text_style()),
+                    Span::styled(
+                        format!("{} · {}", format_tokens(tokens), format_cost(cost)),
+                        app.theme.subtle_text_style(),
+                    ),
+                ],
+            );
+        }
+    }
 
     fit_summary_fields(
         fields,

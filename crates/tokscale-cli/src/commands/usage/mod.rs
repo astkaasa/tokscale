@@ -300,21 +300,25 @@ pub fn clear_cache() {
     }
 }
 
-pub fn load_cache() -> Option<Vec<UsageOutput>> {
+pub fn load_cache_with_observed_at() -> Option<(Vec<UsageOutput>, chrono::DateTime<chrono::Utc>)> {
     let path = cache_path()?;
     let content = std::fs::read_to_string(&path).ok()?;
     let doc: serde_json::Value = serde_json::from_str(&content).ok()?;
     let timestamp = doc.get("timestamp")?.as_u64()?;
-    let age = std::time::SystemTime::now()
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
-        .saturating_sub(timestamp);
+        .as_secs();
+    let age = now.saturating_sub(timestamp);
     // Cache expires after 5 minutes
     if age > 300 {
         return None;
     }
-    serde_json::from_value(doc.get("data")?.clone()).ok()
+    let observed_at = i64::try_from(timestamp)
+        .ok()
+        .and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0))?;
+    let data = serde_json::from_value(doc.get("data")?.clone()).ok()?;
+    Some((data, observed_at))
 }
 
 // ── Public API ──

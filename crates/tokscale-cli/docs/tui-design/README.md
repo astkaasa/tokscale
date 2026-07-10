@@ -14,10 +14,11 @@ These notes document the current local-first TUI direction. They are product and
 
 - [personal-pulse-architecture.md](personal-pulse-architecture.md): product boundary and module admission rules.
 - [personal-pulse.md](personal-pulse.md): current WeRead Pulse contract.
+- [pulse-snapshot-v1.md](pulse-snapshot-v1.md): implemented versioned snapshot, sync, export, and local review contract.
 
 ## Companion Surfaces
 
-- [local-web-surface.md](local-web-surface.md): localhost Overview projection and JSON boundary.
+- [local-web-surface.md](local-web-surface.md): localhost Overview projection, Pulse review, and read-only API boundary.
 
 ## Assets
 

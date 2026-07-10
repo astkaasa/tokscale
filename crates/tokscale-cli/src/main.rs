@@ -11,9 +11,9 @@ mod spinner;
 mod tui;
 mod web;
 
-use crate::cli::{Cli, Commands};
+use crate::cli::{Cli, Commands, PulseSubcommand};
 use crate::commands::reports::{ModelsReportArgs, PeriodReportArgs, TimeMetricsReportArgs};
-use crate::date_filter::{build_date_filter, normalize_year_filter};
+use crate::date_filter::{build_date_filter, build_date_filter_for_date, normalize_year_filter};
 use crate::integrations::{antigravity, cursor, trae, warp};
 use crate::report_support::auto_sync_cursor_before_tui;
 use anyhow::Result;
@@ -215,7 +215,15 @@ fn main() -> Result<()> {
             let today = date.today;
             let week = date.week;
             let month = date.month;
-            let (since, until) = build_date_filter(today, week, month, date.since, date.until);
+            let reference_now = chrono::Local::now().naive_local();
+            let (since, until) = build_date_filter_for_date(
+                today,
+                week,
+                month,
+                date.since,
+                date.until,
+                reference_now.date(),
+            );
             let year = normalize_year_filter(today, week, month, date.year);
             let clients = build_client_filter(clients, &cli.home);
             let group_by: tokscale_core::GroupBy = group_by.parse().unwrap_or_else(|e| {
@@ -233,6 +241,7 @@ fn main() -> Result<()> {
                 month,
                 group_by,
                 no_spinner,
+                reference_now,
             })
         }
         Some(Commands::Headless {
@@ -257,9 +266,21 @@ fn main() -> Result<()> {
             reject_unsupported_home_override(&cli.home, "usage")?;
             commands::usage::run(json, light)
         }
-        Some(Commands::Pulse { json, weekly: _ }) => {
+        Some(Commands::Pulse {
+            subcommand,
+            json,
+            weekly,
+            refresh,
+            no_spinner,
+        }) => {
             reject_unsupported_home_override(&cli.home, "pulse")?;
-            commands::pulse::run(json)
+            commands::pulse::run(commands::pulse::PulseRunArgs {
+                json,
+                weekly,
+                refresh,
+                sync_only: matches!(subcommand, Some(PulseSubcommand::Sync)),
+                no_spinner: no_spinner || cli.no_spinner,
+            })
         }
         Some(Commands::Trae { subcommand }) => {
             reject_unsupported_home_override(&cli.home, "trae")?;

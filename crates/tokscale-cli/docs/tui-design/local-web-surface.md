@@ -1,15 +1,23 @@
 # Local Web Surface
 
-The local web surface is a companion surface for Tokscale, not a replacement for the TUI and not a hosted web dashboard. Its first job is to render the Overview screen from the same local telemetry and the same TUI rendering path.
+The local web surface is a companion surface for Tokscale, not a replacement for the TUI and not a hosted web dashboard. It serves both TUI-parity operational views and longer semantic Pulse review from immutable local data.
 
 ## Current Slice
 
 `tokscale serve` starts a localhost-only HTTP server and renders:
 
-- The Overview tab as a styled HTML projection of the Ratatui buffer.
-- A small JSON summary at `/data.json`.
+- `/` and `/overview`: the Overview tab as a styled HTML projection of the Ratatui buffer.
+- `/surface`: a dynamically sized projection using the same TUI renderer.
+- `/data.json`: the compact Overview JSON summary.
+- `/review`: a responsive Weekly Review generated from `PulseSnapshotV1`.
+- `/api/v1/pulse`: the versioned Pulse snapshot as JSON.
+- `/exports/pulse.md`: the same Markdown report exposed by the CLI.
 
-The current slice intentionally does not include Today mode, authentication setup, long-form Pulse reports, JavaScript interactions, remote assets, or a bundled frontend toolchain.
+Pulse routes are present only when a durable local snapshot exists. The command reads that snapshot and never performs a connector refresh. Overview data, its Today reference clock, and the Pulse snapshot are frozen at startup; restart `tokscale serve` to see later syncs or local usage changes.
+
+The current slice intentionally does not include user authentication, browser writes, interactive mode switching, application interactions beyond resize projection, remote assets, or a bundled frontend toolchain. A frozen Today projection is available when `tokscale serve` starts with the Today date scope.
+
+The Overview page contains a small inline script that measures the viewport, requests a matching `/surface` projection, and repeats that request after resize. It loads no remote scripts, styles, fonts, or other assets.
 
 The local web surface also intentionally does not embed xterm.js, a PTY, or a real terminal emulator. It renders the TUI output as HTML; it does not run a terminal in the browser.
 
@@ -35,7 +43,7 @@ Poor local web responsibilities for the first phase:
 
 ## Implementation Shape
 
-The local web path should stay adapter-shaped:
+Overview stays buffer-projection-shaped:
 
 ```text
 local scan / normalized data
@@ -45,7 +53,15 @@ local scan / normalized data
   -> localhost server
 ```
 
-The renderer should consume the same app/report/Pulse state used by other surfaces. HTML code should not perform connector I/O.
+Weekly Review stays snapshot-projection-shaped:
+
+```text
+PulseSnapshotV1
+  -> semantic review / JSON / Markdown
+  -> localhost server
+```
+
+`commands::serve` assembles frozen site inputs before accepting requests. Request handling and rendering perform no connector, settings, cache, or scan I/O, so later local commits are not visible until the server restarts.
 
 For screens whose primary value is visual parity with the TUI, prefer a buffer projection:
 
@@ -63,13 +79,14 @@ Current code placement:
 - `commands::serve`: CLI adapter, filter resolution, startup scan.
 - `tui::surface`: render helpers that project the TUI into a Ratatui buffer.
 - `web::overview`: Overview HTML surface renderer and JSON summary.
+- `web::review`: semantic Pulse Weekly Review renderer.
 - `web::server`: minimal localhost HTTP response layer.
 
 Do not add a separate `web::templates` dashboard layout for Overview unless the product explicitly decides to diverge from TUI parity.
 
 ## Interaction Boundary
 
-If interaction is added, the TUI should remain the source of behavior:
+If stateful application interaction is added, the TUI should remain the source of behavior:
 
 ```text
 Browser key/click/wheel event
@@ -87,15 +104,19 @@ Low-risk interactions are tab switching, sorting, selection movement, drilldown 
 
 Default behavior must remain local-first:
 
+`tokscale serve` has no user authentication. Loopback binding and Host validation limit network exposure, but they are not an access boundary between users, processes, or sandboxes on the same machine. Those peers may be able to request served pages and read book or model titles and snapshot or source IDs. Users with that threat model should not run `tokscale serve`.
+
 - Bind to `127.0.0.1`.
+- Accept only `GET` and `HEAD`, and reject missing, duplicate, or non-local Host values.
 - Do not load remote assets.
 - Do not add tracking or external analytics.
 - Keep output inspectable as plain HTML and JSON.
+- Send no-store and browser hardening headers.
 - Treat future LAN or sharing modes as explicit opt-in features.
 
 ## Out Of Scope For Current Slice
 
-Keep these out until the Overview projection and JSON contract are stable:
+Keep these out until a later explicit product decision:
 
 - hosted sync or sharing
 - connector setup and login flows

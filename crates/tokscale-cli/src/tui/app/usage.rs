@@ -1,3 +1,4 @@
+use super::App;
 use crate::commands::usage::UsageOutput;
 use crate::tui::codex_login::{
     cancel_codex_login_child, run_codex_login_worker, CodexLoginChildSlot,
@@ -5,8 +6,6 @@ use crate::tui::codex_login::{
 use crate::tui::navigation::Tab;
 use crate::tui::privacy::looks_like_email;
 use crate::tui::ui::dialog::ConfirmDialog;
-
-use super::App;
 
 impl App {
     pub fn fetch_subscription_usage(&mut self) {
@@ -75,8 +74,32 @@ impl App {
             if update.loaded {
                 self.clamp_selection();
             }
-            self.set_status(update.status);
+            match self.pulse.rebuild_snapshot_after_weread(
+                &self.data,
+                &self.subscription_usage,
+                self.pulse_ai_observed_at,
+                self.pulse_data_provenance.can_seed_global_snapshot(),
+            ) {
+                Ok(()) => self.set_status(update.status),
+                Err(error) => {
+                    let message = format!("Pulse snapshot save failed: {error}");
+                    self.set_status(&message);
+                }
+            }
         }
+    }
+
+    pub(crate) fn rebuild_pulse_snapshot(&mut self) -> anyhow::Result<()> {
+        if !self.pulse_data_provenance.can_seed_global_snapshot() {
+            return Ok(());
+        }
+
+        self.pulse.rebuild_snapshot(
+            &self.data,
+            &self.subscription_usage,
+            self.pulse_ai_observed_at,
+            true,
+        )
     }
 
     pub fn is_codex_login_running(&self) -> bool {

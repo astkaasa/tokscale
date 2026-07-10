@@ -1,10 +1,11 @@
 use anyhow::Result;
-use chrono::Local;
+use chrono::{Local, NaiveDate, NaiveDateTime};
 use serde::Serialize;
 use tokscale_core::GroupBy;
 
 use crate::report_format::format_currency;
-use crate::tui::{surface::render_app_buffer, App, Theme, TuiConfig, UsageData};
+use crate::tui::settings::Settings;
+use crate::tui::{surface::render_app_buffer, App, DataLoader, Theme, TuiConfig, UsageData};
 
 mod html;
 mod overlay;
@@ -18,6 +19,50 @@ use surface::render_buffer_surface;
 const DEFAULT_WIDTH: u16 = 220;
 const DEFAULT_HEIGHT: u16 = 69;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverviewReference {
+    date: NaiveDate,
+    is_today: bool,
+}
+
+impl OverviewReference {
+    fn from_filters(
+        since: &Option<String>,
+        until: &Option<String>,
+        year: &Option<String>,
+        date: NaiveDate,
+    ) -> Self {
+        let date_filter = date.format("%Y-%m-%d").to_string();
+        let is_today = year.is_none()
+            && since.as_deref() == Some(date_filter.as_str())
+            && until.as_deref() == Some(date_filter.as_str());
+
+        Self { date, is_today }
+    }
+
+    fn for_serve(
+        since: &Option<String>,
+        until: &Option<String>,
+        year: &Option<String>,
+        today_requested: bool,
+        fallback_date: NaiveDate,
+    ) -> Self {
+        if today_requested {
+            let date = since
+                .as_deref()
+                .filter(|since| until.as_deref() == Some(*since) && year.is_none())
+                .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                .unwrap_or(fallback_date);
+            return Self {
+                date,
+                is_today: true,
+            };
+        }
+
+        Self::from_filters(since, until, year, fallback_date)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct OverviewRenderOptions {
     pub clients: Option<Vec<String>>,
@@ -27,6 +72,9 @@ pub(crate) struct OverviewRenderOptions {
     pub group_by: GroupBy,
     pub width: u16,
     pub height: u16,
+    settings: Settings,
+    reference: OverviewReference,
+    reference_now: NaiveDateTime,
 }
 
 impl OverviewRenderOptions {
@@ -36,7 +84,16 @@ impl OverviewRenderOptions {
         until: Option<String>,
         year: Option<String>,
         group_by: GroupBy,
+        today_requested: bool,
+        reference_now: NaiveDateTime,
     ) -> Self {
+        let reference = OverviewReference::for_serve(
+            &since,
+            &until,
+            &year,
+            today_requested,
+            reference_now.date(),
+        );
         Self {
             clients,
             since,
@@ -45,7 +102,14 @@ impl OverviewRenderOptions {
             group_by,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
+            settings: Settings::load(),
+            reference,
+            reference_now,
         }
+    }
+
+    pub(crate) fn reference_date(&self) -> NaiveDate {
+        self.reference.date
     }
 }
 
@@ -71,9 +135,9 @@ pub(crate) fn build_overview_json(
     range_label: String,
     width: u16,
     height: u16,
+    reference_date: NaiveDate,
 ) -> OverviewJson {
-    let today = Local::now().date_naive();
-    let (today_tokens, today_cost) = today_totals(data, today);
+    let (today_tokens, today_cost) = today_totals(data, reference_date);
 
     OverviewJson {
         generated_at: generated_at(),
@@ -144,20 +208,32 @@ fn render_overview_surface_parts(
 ) -> Result<(String, HtmlColorPalette)> {
     let width = options.width.max(40);
     let height = options.height.max(16);
+    let settings = options.settings.clone();
+    let data_loader = DataLoader::with_filters(
+        options.since.clone(),
+        options.until.clone(),
+        options.year.clone(),
+    );
     let mut app = App::new_surface_with_cached_data(
         TuiConfig {
             theme: None,
             refresh: 0,
             clients: options.clients,
-            since: options.since,
-            until: options.until,
-            year: options.year,
+            since: None,
+            until: None,
+            year: None,
             initial_tab: Some(crate::tui::Tab::Overview),
             initial_timeline_granularity: None,
         },
         Some(data),
+        settings,
     )?;
     app.theme = Theme::for_web_with_preference(app.settings.ui_theme);
+    app.set_render_reference_now(options.reference_now);
+    app.data_loader = data_loader;
+    if options.reference.is_today {
+        app.toggle_overview_mode();
+    }
 
     *app.group_by.borrow_mut() = options.group_by;
     app.status_message = None;
@@ -266,6 +342,15 @@ mod tests {
                 group_by: GroupBy::Model,
                 width: 100,
                 height: 28,
+                settings: Settings::default(),
+                reference: OverviewReference {
+                    date: NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
+                    is_today: false,
+                },
+                reference_now: NaiveDate::from_ymd_opt(2026, 6, 18)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -273,6 +358,8 @@ mod tests {
         assert!(html.contains("terminal-screen"));
         assert!(html.contains("Tokscale"));
         assert!(html.contains("Overview"));
+        assert!(html.contains("Today"), "{html}");
+        assert!(html.contains("3K"), "{html}");
         assert!(html.contains("Top Models"));
         assert!(html.contains(r#"data-cols="100""#));
         assert!(html.contains("--terminal-cols:100;"));
@@ -300,6 +387,15 @@ mod tests {
                 group_by: GroupBy::Model,
                 width: 88,
                 height: 24,
+                settings: Settings::default(),
+                reference: OverviewReference {
+                    date: NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
+                    is_today: false,
+                },
+                reference_now: NaiveDate::from_ymd_opt(2026, 6, 18)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -323,6 +419,15 @@ mod tests {
                 group_by: GroupBy::Model,
                 width: 132,
                 height: 37,
+                settings: Settings::default(),
+                reference: OverviewReference {
+                    date: NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
+                    is_today: false,
+                },
+                reference_now: NaiveDate::from_ymd_opt(2026, 6, 18)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -332,6 +437,91 @@ mod tests {
         assert!(html.contains("--terminal-cols:132;"));
         assert!(html.contains("--terminal-rows:37;"));
         assert!(html.contains(r#"<span class="terminal-overlay" aria-hidden="true">"#));
+    }
+
+    #[test]
+    fn overview_reference_keeps_startup_today_scope_after_rollover() {
+        let startup_date = NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
+        let next_date = startup_date.succ_opt().unwrap();
+        let date_filter = startup_date.format("%Y-%m-%d").to_string();
+        let since = Some(date_filter.clone());
+        let until = Some(date_filter);
+
+        let frozen = OverviewReference::from_filters(&since, &until, &None, startup_date);
+        let recomputed_after_midnight =
+            OverviewReference::from_filters(&since, &until, &None, next_date);
+        let explicit_today_after_midnight =
+            OverviewReference::for_serve(&since, &until, &None, true, next_date);
+
+        assert_eq!(frozen.date, startup_date);
+        assert!(frozen.is_today);
+        assert!(!recomputed_after_midnight.is_today);
+        assert_eq!(explicit_today_after_midnight.date, startup_date);
+        assert!(explicit_today_after_midnight.is_today);
+    }
+
+    #[test]
+    fn surface_keeps_frozen_today_date_and_time() {
+        let startup_date = NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
+        let mut usage = usage_fixture();
+        usage.daily[0].date = startup_date;
+        usage.hourly = vec![HourlyUsage {
+            datetime: startup_date.and_hms_opt(9, 30, 0).unwrap(),
+            tokens: TokenBreakdown::default(),
+            cost: 1.25,
+            clients: BTreeSet::new(),
+            models: BTreeMap::new(),
+            message_count: 1,
+            turn_count: 1,
+        }];
+        let date_filter = startup_date.format("%Y-%m-%d").to_string();
+        let options = OverviewRenderOptions {
+            clients: None,
+            since: Some(date_filter.clone()),
+            until: Some(date_filter),
+            year: None,
+            group_by: GroupBy::Model,
+            width: 120,
+            height: 30,
+            settings: Settings::default(),
+            reference: OverviewReference {
+                date: startup_date,
+                is_today: true,
+            },
+            reference_now: startup_date.and_hms_opt(16, 30, 0).unwrap(),
+        };
+
+        let html = render_overview_surface(usage, options).unwrap();
+
+        assert!(html.contains("Today"), "{html}");
+        assert!(html.contains("Now 16:30"), "{html}");
+    }
+
+    #[test]
+    fn surface_applies_frozen_today_scope() {
+        let today = Local::now().date_naive();
+        let date_filter = today.format("%Y-%m-%d").to_string();
+        let mut usage = usage_fixture();
+        usage.daily[0].date = today;
+        let options = OverviewRenderOptions {
+            clients: None,
+            since: Some(date_filter.clone()),
+            until: Some(date_filter),
+            year: None,
+            group_by: GroupBy::Model,
+            width: 88,
+            height: 24,
+            settings: Settings::default(),
+            reference: OverviewReference {
+                date: today,
+                is_today: true,
+            },
+            reference_now: today.and_hms_opt(12, 0, 0).unwrap(),
+        };
+
+        let html = render_overview_surface(usage, options).unwrap();
+
+        assert!(html.contains("Today"));
     }
 
     #[test]
@@ -771,7 +961,8 @@ mod tests {
         let mut usage = usage_fixture();
         usage.daily[0].date = Local::now().date_naive();
 
-        let json = build_overview_json(&usage, "All time".to_string(), 160, 48);
+        let today = Local::now().date_naive();
+        let json = build_overview_json(&usage, "All time".to_string(), 160, 48, today);
 
         assert_eq!(json.range_label, "All time");
         assert_eq!(json.width, 160);
@@ -805,7 +996,7 @@ mod tests {
             turn_count: 1,
         }];
 
-        let json = build_overview_json(&usage, "Today".to_string(), 160, 48);
+        let json = build_overview_json(&usage, "Today".to_string(), 160, 48, today);
 
         assert_eq!(json.today_tokens, 6_000);
         assert_eq!(json.today_cost_label, "$2.75");

@@ -3232,7 +3232,7 @@ mod tests {
         assert!(body.contains(" Reset "), "{body}");
         assert!(body.contains("Credit Bank"), "{body}");
         assert!(body.contains("2 credits"), "{body}");
-        assert!(body.contains("expires Jul 12"), "{body}");
+        assert!(body.contains("nearest expires"), "{body}");
         let state_line = body
             .lines()
             .find(|line| line.contains("State"))
