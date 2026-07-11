@@ -487,6 +487,34 @@ fn positive_token_total(tokens: &TokenBreakdown) -> i64 {
         + tokens.reasoning.max(0)
 }
 
+fn load_report_messages(
+    options: &ReportOptions,
+    pricing: Option<&crate::pricing::PricingService>,
+    telemetry_store_path: Option<&std::path::Path>,
+) -> Result<Vec<UnifiedMessage>, String> {
+    let home_dir = get_home_dir_string(&options.home_dir)?;
+    let clients = options.clients.clone().unwrap_or_else(|| {
+        let mut clients: Vec<String> = ClientId::ALL
+            .iter()
+            .map(|client| client.as_str().to_string())
+            .collect();
+        clients.push("synthetic".to_string());
+        clients
+    });
+
+    let messages = parse_all_messages_with_pricing_with_env_strategy(
+        &home_dir,
+        &clients,
+        pricing,
+        options.use_env_roots,
+        &options.scanner_settings,
+    );
+    let messages =
+        telemetry::reconcile_legacy_messages_best_effort(telemetry_store_path, messages, &clients);
+
+    Ok(filter_messages_for_report(messages, options))
+}
+
 pub async fn get_model_report(options: ReportOptions) -> Result<ModelReport, String> {
     get_model_report_with_telemetry(options, None).await
 }
@@ -498,32 +526,12 @@ pub async fn get_model_report_with_telemetry(
 ) -> Result<ModelReport, String> {
     let start = Instant::now();
 
-    let home_dir = get_home_dir_string(&options.home_dir)?;
-
-    let clients: Vec<String> = options.clients.clone().unwrap_or_else(|| {
-        let mut clients: Vec<String> = ClientId::ALL
-            .iter()
-            .map(|c| c.as_str().to_string())
-            .collect();
-        clients.push("synthetic".to_string());
-        clients
-    });
-
     let pricing = load_pricing_for_local_parse().await;
-    let all_messages = parse_all_messages_with_pricing_with_env_strategy(
-        &home_dir,
-        &clients,
+    let filtered = load_report_messages(
+        &options,
         pricing.as_deref(),
-        options.use_env_roots,
-        &options.scanner_settings,
-    );
-    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
         telemetry_store_path.as_deref(),
-        all_messages,
-        &clients,
-    );
-
-    let filtered = filter_messages_for_report(all_messages, &options);
+    )?;
     let entries = aggregate_model_usage_entries(filtered, &options.group_by);
 
     let total_input: i64 = entries.iter().map(|e| e.input).sum();
@@ -567,32 +575,12 @@ pub async fn get_monthly_report_with_telemetry(
 ) -> Result<MonthlyReport, String> {
     let start = Instant::now();
 
-    let home_dir = get_home_dir_string(&options.home_dir)?;
-
-    let clients: Vec<String> = options.clients.clone().unwrap_or_else(|| {
-        let mut clients: Vec<String> = ClientId::ALL
-            .iter()
-            .map(|c| c.as_str().to_string())
-            .collect();
-        clients.push("synthetic".to_string());
-        clients
-    });
-
     let pricing = load_pricing_for_local_parse().await;
-    let all_messages = parse_all_messages_with_pricing_with_env_strategy(
-        &home_dir,
-        &clients,
+    let filtered = load_report_messages(
+        &options,
         pricing.as_deref(),
-        options.use_env_roots,
-        &options.scanner_settings,
-    );
-    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
         telemetry_store_path.as_deref(),
-        all_messages,
-        &clients,
-    );
-
-    let filtered = filter_messages_for_report(all_messages, &options);
+    )?;
 
     let mut month_map: HashMap<String, MonthAggregator> = HashMap::new();
 
@@ -672,32 +660,12 @@ pub async fn get_hourly_report_with_telemetry(
 
     let start = Instant::now();
 
-    let home_dir = get_home_dir_string(&options.home_dir)?;
-
-    let clients: Vec<String> = options.clients.clone().unwrap_or_else(|| {
-        let mut clients: Vec<String> = ClientId::ALL
-            .iter()
-            .map(|c| c.as_str().to_string())
-            .collect();
-        clients.push("synthetic".to_string());
-        clients
-    });
-
     let pricing = load_pricing_for_local_parse().await;
-    let all_messages = parse_all_messages_with_pricing_with_env_strategy(
-        &home_dir,
-        &clients,
+    let filtered = load_report_messages(
+        &options,
         pricing.as_deref(),
-        options.use_env_roots,
-        &options.scanner_settings,
-    );
-    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
         telemetry_store_path.as_deref(),
-        all_messages,
-        &clients,
-    );
-
-    let filtered = filter_messages_for_report(all_messages, &options);
+    )?;
 
     let mut hour_map: HashMap<String, HourAggregator> = HashMap::new();
 
@@ -777,31 +745,7 @@ pub async fn get_time_metrics_report_with_telemetry(
 ) -> Result<TimeMetricsReport, String> {
     let start = Instant::now();
 
-    let home_dir = get_home_dir_string(&options.home_dir)?;
-
-    let clients: Vec<String> = options.clients.clone().unwrap_or_else(|| {
-        let mut clients: Vec<String> = ClientId::ALL
-            .iter()
-            .map(|c| c.as_str().to_string())
-            .collect();
-        clients.push("synthetic".to_string());
-        clients
-    });
-
-    let all_messages = parse_all_messages_with_pricing_with_env_strategy(
-        &home_dir,
-        &clients,
-        None,
-        options.use_env_roots,
-        &options.scanner_settings,
-    );
-    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
-        telemetry_store_path.as_deref(),
-        all_messages,
-        &clients,
-    );
-
-    let filtered = filter_messages_for_report(all_messages, &options);
+    let filtered = load_report_messages(&options, None, telemetry_store_path.as_deref())?;
 
     let intervals = sessionize::sessionize(&filtered, sessionize::DEFAULT_IDLE_GAP_MS);
     let metrics = sessionize::compute_time_metrics(&intervals, sessionize::DEFAULT_IDLE_GAP_MS);
@@ -832,4 +776,139 @@ fn filter_messages_for_report(
     }
 
     filtered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Local, TimeZone, Utc};
+    use std::path::Path;
+
+    fn report_options(home: &Path) -> ReportOptions {
+        ReportOptions {
+            home_dir: Some(home.to_string_lossy().into_owned()),
+            use_env_roots: false,
+            ..ReportOptions::default()
+        }
+    }
+
+    fn write_opencode_message(home: &Path, filename: &str, message_id: &str, timestamp_ms: i64) {
+        let message_dir = home.join(".local/share/opencode/storage/message/project-1");
+        std::fs::create_dir_all(&message_dir).unwrap();
+        let payload = serde_json::json!({
+            "id": message_id,
+            "sessionID": format!("session-{message_id}"),
+            "role": "assistant",
+            "modelID": "gpt-5",
+            "providerID": "openai",
+            "cost": 0.25,
+            "tokens": {
+                "input": 10,
+                "output": 5,
+                "reasoning": 0,
+                "cache": { "read": 2, "write": 1 }
+            },
+            "time": { "created": timestamp_ms }
+        });
+        std::fs::write(
+            message_dir.join(filename),
+            serde_json::to_vec(&payload).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn timestamp_ms(year: i32, month: u32, day: u32) -> i64 {
+        Utc.with_ymd_and_hms(year, month, day, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis()
+    }
+
+    fn local_date(timestamp_ms: i64) -> String {
+        Local
+            .timestamp_millis_opt(timestamp_ms)
+            .single()
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
+    fn filter_for_date(options: &mut ReportOptions, date: &str) {
+        options.year = Some(date[..4].to_string());
+        options.since = Some(date.to_string());
+        options.until = Some(date.to_string());
+    }
+
+    #[test]
+    fn load_report_messages_preserves_default_and_explicit_clients() {
+        let home = tempfile::TempDir::new().unwrap();
+        write_opencode_message(
+            home.path(),
+            "msg-default.json",
+            "msg-default",
+            timestamp_ms(2025, 7, 1),
+        );
+
+        let default_options = report_options(home.path());
+        let default_messages = load_report_messages(&default_options, None, None).unwrap();
+
+        let mut explicit_all_options = default_options.clone();
+        let mut explicit_clients: Vec<String> = ClientId::ALL
+            .iter()
+            .map(|client| client.as_str().to_string())
+            .collect();
+        explicit_clients.push("synthetic".to_string());
+        explicit_all_options.clients = Some(explicit_clients);
+        let explicit_all_messages =
+            load_report_messages(&explicit_all_options, None, None).unwrap();
+
+        assert_eq!(default_messages, explicit_all_messages);
+        assert_eq!(default_messages.len(), 1);
+        assert_eq!(default_messages[0].client, "opencode");
+
+        let mut explicit_codex_options = default_options;
+        explicit_codex_options.clients = Some(vec!["codex".to_string()]);
+        assert!(load_report_messages(&explicit_codex_options, None, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn load_report_messages_reconciles_telemetry_before_filtering() {
+        let home = tempfile::TempDir::new().unwrap();
+        let older_timestamp = timestamp_ms(2024, 6, 15);
+        let newer_timestamp = timestamp_ms(2025, 7, 15);
+        let older_date = local_date(older_timestamp);
+        let newer_date = local_date(newer_timestamp);
+        write_opencode_message(home.path(), "msg-older.json", "msg-older", older_timestamp);
+        write_opencode_message(home.path(), "msg-newer.json", "msg-newer", newer_timestamp);
+
+        let telemetry_store_path = home.path().join("telemetry.sqlite");
+        let mut newer_options = report_options(home.path());
+        newer_options.clients = Some(vec!["opencode".to_string()]);
+        filter_for_date(&mut newer_options, &newer_date);
+
+        let newer_messages =
+            load_report_messages(&newer_options, None, Some(telemetry_store_path.as_path()))
+                .unwrap();
+        assert_eq!(newer_messages.len(), 1);
+        assert_eq!(newer_messages[0].session_id, "session-msg-newer");
+
+        std::fs::remove_dir_all(home.path().join(".local/share/opencode/storage/message")).unwrap();
+
+        let mut older_options = report_options(home.path());
+        older_options.clients = Some(vec!["opencode".to_string()]);
+        filter_for_date(&mut older_options, &older_date);
+
+        assert!(load_report_messages(&older_options, None, None)
+            .unwrap()
+            .is_empty());
+
+        let older_messages =
+            load_report_messages(&older_options, None, Some(telemetry_store_path.as_path()))
+                .unwrap();
+        assert_eq!(older_messages.len(), 1);
+        assert_eq!(older_messages[0].session_id, "session-msg-older");
+        assert_eq!(older_messages[0].date, older_date);
+    }
 }

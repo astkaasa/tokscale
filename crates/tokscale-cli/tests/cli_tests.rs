@@ -1174,6 +1174,27 @@ fn test_models_default_missing_cursor_cache_does_not_emit_setup_warning_json() {
 }
 
 #[test]
+fn test_models_default_clients_include_local_cursor_history() {
+    let tmp = create_empty_fixture_dir();
+    write_cursor_usage_cache(tmp.path());
+
+    let output = cmd_with_home(tmp.path())
+        .args(["models", "--json", "--no-spinner"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        json["entries"]
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|entry| entry["client"] == "cursor")),
+        "default reports should retain local Cursor history: {json}"
+    );
+    assert_cursor_report_has_no_remote_control_guidance(&json);
+}
+
+#[test]
 fn test_models_cursor_explicit_existing_cache_reads_local_usage_json() {
     let tmp = create_empty_fixture_dir();
     write_cursor_usage_cache(tmp.path());

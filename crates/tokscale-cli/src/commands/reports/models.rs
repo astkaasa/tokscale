@@ -1,6 +1,6 @@
 use super::{
-    emit_client_diagnostics, model_usage_includes_client, resolve_effective_home_dir,
-    use_env_roots, ModelsReportArgs, TABLE_PRESET,
+    build_report_options, emit_client_diagnostics, model_usage_includes_client,
+    resolve_effective_home_dir, ModelsReportArgs, TABLE_PRESET,
 };
 use crate::claude_diagnostics;
 use crate::date_filter::get_date_range_label;
@@ -17,7 +17,7 @@ use std::io::{self, IsTerminal, Write};
 pub fn run_models_report(args: ModelsReportArgs) -> Result<()> {
     use std::time::Instant;
     use tokio::runtime::Runtime;
-    use tokscale_core::{get_model_report_with_telemetry, GroupBy, ReportOptions};
+    use tokscale_core::{get_model_report_with_telemetry, GroupBy};
 
     let ModelsReportArgs {
         json,
@@ -45,25 +45,13 @@ pub fn run_models_report(args: ModelsReportArgs) -> Result<()> {
         Some(LightSpinner::start("Scanning session data..."))
     };
     let setup_warnings = setup_warnings_for_report(&home_dir, &clients);
-    let use_env_roots = use_env_roots(&home_dir);
     let start = Instant::now();
     let rt = Runtime::new()?;
     let report = rt
         .block_on(async {
-            get_model_report_with_telemetry(
-                ReportOptions {
-                    home_dir: home_dir.clone(),
-                    use_env_roots,
-                    clients: clients.clone(),
-                    since: since.clone(),
-                    until: until.clone(),
-                    year: year.clone(),
-                    group_by: group_by.clone(),
-                    scanner_settings: tui::settings::load_scanner_settings_for_home(&home_dir),
-                },
-                crate::paths::telemetry_store_path_for_home_override(&home_dir),
-            )
-            .await
+            let (options, telemetry_store_path) =
+                build_report_options(&home_dir, &clients, &since, &until, &year, group_by.clone());
+            get_model_report_with_telemetry(options, telemetry_store_path).await
         })
         .map_err(|e| anyhow::anyhow!(e))?;
 
