@@ -1,11 +1,9 @@
-use std::collections::HashSet;
-
 use anyhow::Result;
 use chrono::{NaiveDateTime, Utc};
 use tokscale_core::pulse::store as pulse_store;
 use tokscale_core::{ClientId, GroupBy};
 
-use crate::client_filter::ClientFilter;
+use crate::client_filter::ResolvedClientSelection;
 use crate::date_filter::get_date_range_label;
 use crate::report_support::{
     emit_setup_warnings, setup_warnings_for_report, PricingCacheOnlyGuard,
@@ -49,19 +47,19 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
 
     let date_range = get_date_range_label(today, week, month, &since, &until, &year);
     let date_range = date_range.unwrap_or_else(|| "All time".to_string());
-    let (enabled_filters, enabled_clients, include_synthetic) = resolve_loader_clients(&clients);
+    let selection = ResolvedClientSelection::from_configured(clients.as_deref());
     let setup_warnings = setup_warnings_for_report(&None, &clients);
 
     let report_scope = CacheReportScope::new(since.clone(), until.clone(), year.clone());
-    let data = match fresh_cached_data(load_cache(&enabled_filters, &group_by, &report_scope)) {
+    let data = match fresh_cached_data(load_cache(&selection.filters, &group_by, &report_scope)) {
         Some(data) => data,
         None => scan_usage_data(
             since.clone(),
             until.clone(),
             year.clone(),
-            &enabled_clients,
+            &selection.scan_clients,
             &group_by,
-            include_synthetic,
+            selection.include_synthetic,
             no_spinner,
         )?,
     };
@@ -161,54 +159,9 @@ fn scan_usage_data(
     Ok(data)
 }
 
-fn resolve_loader_clients(
-    clients: &Option<Vec<String>>,
-) -> (HashSet<ClientFilter>, Vec<ClientId>, bool) {
-    let filters: HashSet<ClientFilter> = clients
-        .as_ref()
-        .map(|configured| {
-            configured
-                .iter()
-                .filter_map(|client| ClientFilter::from_filter_str(client))
-                .collect()
-        })
-        .unwrap_or_else(ClientFilter::default_set);
-
-    let include_synthetic = filters
-        .iter()
-        .any(|filter| matches!(filter, ClientFilter::Synthetic));
-    let enabled_clients = filters
-        .iter()
-        .copied()
-        .filter_map(ClientFilter::to_client_id)
-        .collect();
-
-    (filters, enabled_clients, include_synthetic)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn loader_clients_default_to_real_clients() {
-        let (filters, clients, include_synthetic) = resolve_loader_clients(&None);
-
-        assert!(!filters.is_empty());
-        assert!(!clients.is_empty());
-        assert!(!include_synthetic);
-    }
-
-    #[test]
-    fn loader_clients_preserve_synthetic_flag() {
-        let (filters, clients, include_synthetic) =
-            resolve_loader_clients(&Some(vec!["codex".to_string(), "synthetic".to_string()]));
-
-        assert!(filters.contains(&ClientFilter::Codex));
-        assert!(filters.contains(&ClientFilter::Synthetic));
-        assert_eq!(clients, vec![ClientId::Codex]);
-        assert!(include_synthetic);
-    }
 
     #[test]
     fn pulse_markdown_matches_cli_line_termination() {

@@ -26,7 +26,6 @@ pub(crate) use data::{DataLoader, UsageData};
 pub(crate) use event::{Event, EventHandler};
 pub(crate) use themes::{Theme, ThemePreference};
 
-use std::collections::HashSet;
 use std::io;
 use std::sync::mpsc;
 use std::sync::mpsc::TryRecvError;
@@ -49,9 +48,8 @@ use crossterm::{
     },
 };
 use ratatui::prelude::*;
-use tokscale_core::ClientId;
 
-use crate::ClientFilter;
+use crate::client_filter::ResolvedClientSelection;
 
 fn decide_initial_data(
     load_result: CacheResult,
@@ -139,19 +137,9 @@ pub fn run(
         initial_timeline_granularity,
     };
 
-    // Build the unified filter set used by the cache key, the App
-    // constructor, and the background loader. We mirror the same
-    // resolution rules App::new_with_cached_data uses so the cache
-    // lookup and the in-app state always agree. Drift between them
-    // makes every launch a stale-cache hit instead of a fresh one.
-    let enabled_clients: HashSet<ClientFilter> = if let Some(ref cli_clients) = clients {
-        cli_clients
-            .iter()
-            .filter_map(|s| ClientFilter::from_filter_str(&s.to_lowercase()))
-            .collect()
-    } else {
-        ClientFilter::default_set()
-    };
+    // Resolve once so the cache key, provenance, and initial background
+    // scan all use the same filter set and stable scanner ordering.
+    let selection = ResolvedClientSelection::from_configured(clients.as_deref());
 
     // Single file read: load cache and check freshness in one pass.
     // The key MUST be `cache::TUI_DEFAULT_GROUP_BY` so TUI cache readers
@@ -161,12 +149,12 @@ pub fn run(
     let initial_group_by = TUI_DEFAULT_GROUP_BY;
     let initial_report_scope = background_cache_scope(&since, &until, &year);
     let requested_provenance = PulseDataProvenance::from_scan_scope(
-        &enabled_clients,
+        &selection.filters,
         &initial_group_by,
         &initial_report_scope,
     );
     let (cache_result, cache_observed_at) =
-        load_cache_with_observed_at(&enabled_clients, &initial_group_by, &initial_report_scope);
+        load_cache_with_observed_at(&selection.filters, &initial_group_by, &initial_report_scope);
     let (cached_data, needs_background_load, cached_data_provenance, cache_observed_at) =
         decide_initial_data(cache_result, cache_observed_at, requested_provenance);
 
@@ -216,19 +204,12 @@ pub fn run(
         app.set_background_loading(true);
 
         let tx = bg_tx.clone();
-        // Project the filter set into the (clients, include_synthetic)
-        // pair the loader still consumes. Keeping the projection here
-        // (instead of inside DataLoader) avoids touching tokscale-core's
-        // public API in this PR.
-        let bg_clients: Vec<ClientId> = enabled_clients
-            .iter()
-            .filter_map(|f| f.to_client_id())
-            .collect();
-        let bg_include_synthetic = enabled_clients.contains(&ClientFilter::Synthetic);
+        let bg_clients = selection.scan_clients.clone();
+        let bg_include_synthetic = selection.include_synthetic;
         let bg_since = since.clone();
         let bg_until = until.clone();
         let bg_year = year.clone();
-        let bg_enabled_clients = enabled_clients.clone();
+        let bg_enabled_clients = selection.filters.clone();
         let bg_group_by = app.group_by.borrow().clone();
         let bg_report_scope = background_cache_scope(&since, &until, &year);
 

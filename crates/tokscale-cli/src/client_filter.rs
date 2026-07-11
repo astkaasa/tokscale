@@ -1,5 +1,6 @@
 use crate::tui;
 use clap::{Args, ValueEnum};
+use std::collections::HashSet;
 
 /// Client identifiers exposed via `--client`.
 ///
@@ -186,6 +187,48 @@ impl ClientFilter {
             .copied()
             .filter(|f| !matches!(f, Self::Synthetic))
             .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedClientSelection {
+    pub(crate) filters: HashSet<ClientFilter>,
+    pub(crate) scan_clients: Vec<tokscale_core::ClientId>,
+    pub(crate) include_synthetic: bool,
+}
+
+impl ResolvedClientSelection {
+    pub(crate) fn from_configured(configured: Option<&[String]>) -> Self {
+        let filters = match configured {
+            None => ClientFilter::default_set(),
+            Some(configured) => configured
+                .iter()
+                .filter_map(|raw| {
+                    ClientFilter::value_variants()
+                        .iter()
+                        .copied()
+                        .find(|filter| filter.as_filter_str().eq_ignore_ascii_case(raw))
+                })
+                .collect(),
+        };
+
+        Self::from_filters(filters)
+    }
+
+    pub(crate) fn from_filters(filters: HashSet<ClientFilter>) -> Self {
+        let scan_clients = ClientFilter::value_variants()
+            .iter()
+            .copied()
+            .filter(|filter| filters.contains(filter))
+            .filter_map(ClientFilter::to_client_id)
+            .collect();
+        let include_synthetic = filters.contains(&ClientFilter::Synthetic);
+
+        Self {
+            filters,
+            scan_clients,
+            include_synthetic,
+        }
     }
 }
 
@@ -515,6 +558,89 @@ mod tests {
             }
         }
         assert_eq!(default.len(), ClientFilter::value_variants().len() - 1);
+    }
+
+    #[test]
+    fn resolved_client_selection_defaults_to_all_real_clients() {
+        let selection = ResolvedClientSelection::from_configured(None);
+
+        assert_eq!(selection.filters, ClientFilter::default_set());
+        assert_eq!(
+            selection.scan_clients,
+            tokscale_core::ClientId::ALL.to_vec()
+        );
+        assert!(!selection.include_synthetic);
+    }
+
+    #[test]
+    fn resolved_client_selection_supports_explicit_synthetic() {
+        let configured = vec!["synthetic".to_string()];
+        let selection = ResolvedClientSelection::from_configured(Some(&configured));
+
+        assert_eq!(selection.filters, HashSet::from([ClientFilter::Synthetic]));
+        assert!(selection.scan_clients.is_empty());
+        assert!(selection.include_synthetic);
+    }
+
+    #[test]
+    fn resolved_client_selection_parses_case_insensitively_and_drops_unknowns() {
+        let configured = vec![
+            "CoDeX".to_string(),
+            "not-a-client".to_string(),
+            "OPENCODE".to_string(),
+        ];
+        let selection = ResolvedClientSelection::from_configured(Some(&configured));
+
+        assert_eq!(
+            selection.filters,
+            HashSet::from([ClientFilter::Opencode, ClientFilter::Codex])
+        );
+        assert_eq!(
+            selection.scan_clients,
+            vec![
+                tokscale_core::ClientId::OpenCode,
+                tokscale_core::ClientId::Codex,
+            ]
+        );
+        assert!(!selection.include_synthetic);
+    }
+
+    #[test]
+    fn resolved_client_selection_keeps_some_empty_and_all_unknown_empty() {
+        let empty = Vec::new();
+        let empty_selection = ResolvedClientSelection::from_configured(Some(&empty));
+        assert!(empty_selection.filters.is_empty());
+        assert!(empty_selection.scan_clients.is_empty());
+        assert!(!empty_selection.include_synthetic);
+
+        let unknown = vec!["not-real".to_string(), "also-fake".to_string()];
+        let unknown_selection = ResolvedClientSelection::from_configured(Some(&unknown));
+        assert!(unknown_selection.filters.is_empty());
+        assert!(unknown_selection.scan_clients.is_empty());
+        assert!(!unknown_selection.include_synthetic);
+    }
+
+    #[test]
+    fn resolved_client_selection_uses_stable_canonical_scan_order() {
+        let filters = HashSet::from([
+            ClientFilter::Gjc,
+            ClientFilter::Kilocode,
+            ClientFilter::Claude,
+            ClientFilter::Opencode,
+        ]);
+        let selection = ResolvedClientSelection::from_filters(filters.clone());
+
+        assert_eq!(selection.filters, filters);
+        assert_eq!(
+            selection.scan_clients,
+            vec![
+                tokscale_core::ClientId::OpenCode,
+                tokscale_core::ClientId::Claude,
+                tokscale_core::ClientId::KiloCode,
+                tokscale_core::ClientId::Gjc,
+            ]
+        );
+        assert!(!selection.include_synthetic);
     }
 
     #[test]

@@ -1,5 +1,5 @@
-use crate::client_filter::resolve_default_tui_filter_set;
-use crate::{tui, ClientFilter};
+use crate::client_filter::{resolve_default_tui_filter_set, ResolvedClientSelection};
+use crate::tui;
 
 pub(crate) fn resolve_should_write_cache(
     cli_write: bool,
@@ -15,16 +15,11 @@ pub(crate) fn resolve_should_write_cache(
     settings.light.write_cache
 }
 
-fn resolve_light_cache_filter_set(
-    clients: &Option<Vec<String>>,
-) -> std::collections::HashSet<ClientFilter> {
-    if let Some(clients) = clients {
-        clients
-            .iter()
-            .filter_map(|client| ClientFilter::from_filter_str(client))
-            .collect()
+fn resolve_light_cache_selection(clients: &Option<Vec<String>>) -> ResolvedClientSelection {
+    if clients.is_some() {
+        ResolvedClientSelection::from_configured(clients.as_deref())
     } else {
-        resolve_default_tui_filter_set()
+        ResolvedClientSelection::from_filters(resolve_default_tui_filter_set())
     }
 }
 
@@ -49,12 +44,7 @@ pub(crate) fn write(
         return;
     }
 
-    let enabled_set = resolve_light_cache_filter_set(clients);
-    let scan_clients: Vec<tokscale_core::ClientId> = enabled_set
-        .iter()
-        .filter_map(|filter| filter.to_client_id())
-        .collect();
-    let include_synthetic = enabled_set.contains(&ClientFilter::Synthetic);
+    let selection = resolve_light_cache_selection(clients);
 
     // Cache writes are best-effort: the report has already been flushed
     // to stdout by the time we reach here, so a scan failure from the
@@ -62,8 +52,12 @@ pub(crate) fn write(
     // user-visible report into a non-zero exit code.
     let loader = DataLoader::with_filters(since.clone(), until.clone(), year.clone());
     let report_scope = CacheReportScope::new(since.clone(), until.clone(), year.clone());
-    if let Ok(data) = loader.load(&scan_clients, group_by, include_synthetic) {
-        save_cached_data(&data, &enabled_set, group_by, &report_scope);
+    if let Ok(data) = loader.load(
+        &selection.scan_clients,
+        group_by,
+        selection.include_synthetic,
+    ) {
+        save_cached_data(&data, &selection.filters, group_by, &report_scope);
     }
 }
 

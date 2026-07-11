@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -7,7 +7,7 @@ use anyhow::Result;
 use chrono::Utc;
 use ratatui::style::Color;
 
-use crate::client_filter::ClientFilter;
+use crate::client_filter::ResolvedClientSelection;
 use crate::commands::usage::{
     LoadedSubscriptionCache, UsageCacheIdentity, UsageFetchDiagnostic, UsageFetchDiagnosticKind,
     UsageFetchDiagnosticSeverity, UsageOutput,
@@ -190,22 +190,8 @@ impl App {
         let theme_preference = config.theme.unwrap_or(settings.ui_theme);
         let theme = Theme::for_current_terminal_with_preference(theme_preference);
 
-        let enabled_clients: HashSet<ClientFilter> = if let Some(ref cli_clients) = config.clients {
-            // CLI-provided filter list. Each entry is the canonical
-            // lowercase id (`opencode`, `claude`, ..., `synthetic`).
-            // Unknown ids are dropped silently; the CLI parser already
-            // validated against `ClientFilter` so this lookup should be
-            // total in practice.
-            cli_clients
-                .iter()
-                .filter_map(|s| ClientFilter::from_filter_str(&s.to_lowercase()))
-                .collect()
-        } else {
-            // No filter → use the canonical default set (every real
-            // client, Synthetic opt-in only). This must stay in sync
-            // with the cache key used by no-filter TUI launches.
-            ClientFilter::default_set()
-        };
+        let enabled_clients =
+            ResolvedClientSelection::from_configured(config.clients.as_deref()).filters;
 
         let auto_refresh_interval = if config.refresh > 0 {
             Duration::from_secs(config.refresh)
