@@ -6,8 +6,9 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokscale_core::telemetry::{
-    EventCost, EventIdentity, ObservedTelemetryEvent, SourceDescriptor, SourceObservation,
-    TelemetryEventInput, TelemetrySourceKind, TelemetrySourceStatus, TelemetryStore,
+    CheckedIngest, EventCost, EventIdentity, ObservedTelemetryEvent, SourceDescriptor,
+    SourceObservation, TelemetryEventInput, TelemetrySourceHealth, TelemetrySourceKind,
+    TelemetrySourceStatus, TelemetrySourceTotals, TelemetryStore,
 };
 use tokscale_core::{TokenBreakdown, UnifiedMessage};
 
@@ -42,6 +43,20 @@ struct Candidate {
     resolution: CursorAccountResolution,
     digest: String,
     selected: bool,
+}
+
+#[derive(Debug)]
+struct PreparedCursorSource {
+    source: SourceDescriptor,
+    observation: SourceObservation,
+    expected_totals: Option<TelemetrySourceTotals>,
+}
+
+#[derive(Debug)]
+struct PreparedCursorMigration {
+    sources: Vec<PreparedCursorSource>,
+    archived_files: usize,
+    attention_files: usize,
 }
 
 #[derive(Debug, Default)]
@@ -86,6 +101,7 @@ fn default_migration_is_current(
         }
         Err(_) => return false,
     };
+
     let manifest_dir = archive_root.join("manifests");
     let manifests = match fs::read_dir(manifest_dir) {
         Ok(entries) => entries
@@ -128,9 +144,9 @@ fn default_migration_is_current(
             .flatten()
             .is_some_and(|health| {
                 let expected_status = if manifest.rejected_rows == 0 {
-                    tokscale_core::telemetry::TelemetrySourceStatus::Ready
+                    TelemetrySourceStatus::Ready
                 } else {
-                    tokscale_core::telemetry::TelemetrySourceStatus::Error
+                    TelemetrySourceStatus::Error
                 };
                 let issue_is_current = manifest.rejected_rows == 0
                     || health.issue_code.as_deref() == Some(CURSOR_ARCHIVE_REJECTED_ROWS_ISSUE);
@@ -142,6 +158,34 @@ fn default_migration_is_current(
                     && health.parser_version == CURSOR_ARCHIVE_PARSER_VERSION
             })
     })
+}
+
+fn cursor_source_health_matches(
+    health: &TelemetrySourceHealth,
+    status: TelemetrySourceStatus,
+    issue_code: Option<&str>,
+    expected_events: usize,
+) -> bool {
+    health.status == status
+        && health.source_kind == TelemetrySourceKind::ArchiveImport
+        && health.client == "cursor"
+        && health.parser_id == "cursor-csv"
+        && health.parser_version == CURSOR_ARCHIVE_PARSER_VERSION
+        && health.issue_code.as_deref() == issue_code
+        && health.observed_events == expected_events
+        && health.present_events == expected_events
+        && health.missing_events == 0
+}
+
+fn cursor_source_totals_match(
+    stored: &TelemetrySourceTotals,
+    expected: &TelemetrySourceTotals,
+) -> bool {
+    stored.event_count == expected.event_count
+        && stored.tokens == expected.tokens
+        && stored.min_occurred_at_ms == expected.min_occurred_at_ms
+        && stored.max_occurred_at_ms == expected.max_occurred_at_ms
+        && (stored.cost - expected.cost).abs() <= 1e-9
 }
 
 pub(crate) fn run_default_cursor_migration(json: bool) -> Result<()> {
@@ -192,116 +236,12 @@ fn migrate_cursor_history(
     let store = TelemetryStore::open(ledger_path.to_path_buf())
         .context("could not open durable telemetry for Cursor import")?;
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let run = store
-        .start_run(CURSOR_ARCHIVE_PARSER_VERSION, now_ms)
-        .context("could not start Cursor archive import")?;
-
-    let mut archived_files = 0;
-    let mut imported_events = 0;
-    let mut attention_files = 0;
-    let import_result = (|| -> Result<()> {
-        for candidate in &candidates {
-            let mut request = CursorArchiveRequest::new(
-                &candidate.path,
-                &candidate.account_key,
-                candidate.resolution,
-            );
-            request.selected_for_import = candidate.selected;
-            let archived = archive_cursor_csv(archive_root, request)
-                .context("could not archive Cursor CSV")?;
-            archived_files += 1;
-
-            if !archived.manifest.selected_for_import {
-                attention_files += 1;
-                continue;
-            }
-
-            let source = cursor_archive_source(&archived.manifest);
-            if archived.manifest.rejected_rows > 0 {
-                attention_files += 1;
-                store
-                    .commit_source(
-                        &run,
-                        &source,
-                        SourceObservation::Failed {
-                            issue_code: CURSOR_ARCHIVE_REJECTED_ROWS_ISSUE.to_string(),
-                        },
-                        now_ms,
-                    )
-                    .context("could not record rejected Cursor archive rows")?;
-                let health = store
-                    .source_health(&source.source_id)
-                    .context("could not verify rejected Cursor archive health")?
-                    .context("rejected Cursor archive source health is missing")?;
-                if health.status != TelemetrySourceStatus::Error
-                    || health.source_kind != TelemetrySourceKind::ArchiveImport
-                    || health.client != "cursor"
-                    || health.parser_id != "cursor-csv"
-                    || health.parser_version != CURSOR_ARCHIVE_PARSER_VERSION
-                    || health.issue_code.as_deref() != Some(CURSOR_ARCHIVE_REJECTED_ROWS_ISSUE)
-                {
-                    bail!("rejected Cursor archive source health mismatch");
-                }
-                continue;
-            }
-
-            let messages = tokscale_core::sessions::cursor::parse_cursor_file_for_account(
-                &archived.object_path,
-                &archived.manifest.account_key,
-            );
-            if messages.len() as u64 != archived.manifest.accepted_rows {
-                bail!("Cursor archive parser count changed after archival");
-            }
-            let expected = totals_for_messages(&messages);
-            let events = messages
-                .iter()
-                .map(cursor_observation)
-                .collect::<Result<Vec<_>>>()?;
-            let summary = store
-                .commit_source(&run, &source, SourceObservation::Complete(events), now_ms)
-                .context("could not import Cursor archive")?;
-            if summary.unique_events != messages.len() {
-                bail!("Cursor archive identity collision detected");
-            }
-            let stored = store
-                .source_totals(&source.source_id)
-                .context("could not verify Cursor archive import")?
-                .context("Cursor archive source totals are missing")?;
-            if stored.event_count != expected.event_count
-                || stored.tokens != expected.tokens
-                || stored.min_occurred_at_ms != expected.min_occurred_at_ms
-                || stored.max_occurred_at_ms != expected.max_occurred_at_ms
-                || (stored.cost - expected.cost).abs() > 1e-9
-            {
-                bail!("Cursor archive import parity mismatch");
-            }
-            let health = store
-                .source_health(&source.source_id)
-                .context("could not verify Cursor archive source health")?
-                .context("Cursor archive source health is missing")?;
-            if health.status != TelemetrySourceStatus::Ready
-                || health.source_kind != TelemetrySourceKind::ArchiveImport
-                || health.client != "cursor"
-                || health.parser_id != "cursor-csv"
-                || health.parser_version != CURSOR_ARCHIVE_PARSER_VERSION
-                || health.issue_code.is_some()
-                || health.observed_events != expected.event_count
-                || health.present_events != expected.event_count
-                || health.missing_events != 0
-            {
-                bail!("Cursor archive source health mismatch");
-            }
-            imported_events += stored.event_count;
-        }
-        Ok(())
-    })();
-
-    let finish_result = store.finish_run(&run, now_ms);
-    import_result?;
-    finish_result.context("could not finish Cursor archive import")?;
-    store
-        .verify_integrity()
-        .context("Cursor archive import failed SQLite integrity verification")?;
+    let PreparedCursorMigration {
+        sources,
+        archived_files,
+        attention_files,
+    } = prepare_cursor_migration(&candidates, archive_root)?;
+    let imported_events = ingest_prepared_cursor_sources(&store, sources, now_ms)?;
 
     Ok(CursorMigrationSummary {
         status: if attention_files == 0 {
@@ -313,6 +253,140 @@ fn migrate_cursor_history(
         imported_events,
         attention_files,
     })
+}
+
+fn prepare_cursor_migration(
+    candidates: &[Candidate],
+    archive_root: &Path,
+) -> Result<PreparedCursorMigration> {
+    let mut prepared = PreparedCursorMigration {
+        sources: Vec::new(),
+        archived_files: 0,
+        attention_files: 0,
+    };
+
+    for candidate in candidates {
+        let mut request = CursorArchiveRequest::new(
+            &candidate.path,
+            &candidate.account_key,
+            candidate.resolution,
+        );
+        request.selected_for_import = candidate.selected;
+        let archived =
+            archive_cursor_csv(archive_root, request).context("could not archive Cursor CSV")?;
+        prepared.archived_files += 1;
+
+        if !archived.manifest.selected_for_import {
+            prepared.attention_files += 1;
+            continue;
+        }
+
+        let source = cursor_archive_source(&archived.manifest);
+        if archived.manifest.rejected_rows > 0 {
+            prepared.attention_files += 1;
+            prepared.sources.push(PreparedCursorSource {
+                source,
+                observation: SourceObservation::Failed {
+                    issue_code: CURSOR_ARCHIVE_REJECTED_ROWS_ISSUE.to_string(),
+                },
+                expected_totals: None,
+            });
+            continue;
+        }
+
+        let messages = tokscale_core::sessions::cursor::parse_cursor_file_for_account(
+            &archived.object_path,
+            &archived.manifest.account_key,
+        );
+        if messages.len() as u64 != archived.manifest.accepted_rows {
+            bail!("Cursor archive parser count changed after archival");
+        }
+        let expected_totals = totals_for_messages(&messages);
+        let events = messages
+            .iter()
+            .map(cursor_observation)
+            .collect::<Result<Vec<_>>>()?;
+        prepared.sources.push(PreparedCursorSource {
+            source,
+            observation: SourceObservation::Complete(events),
+            expected_totals: Some(expected_totals),
+        });
+    }
+
+    Ok(prepared)
+}
+
+fn ingest_prepared_cursor_sources(
+    store: &TelemetryStore,
+    sources: Vec<PreparedCursorSource>,
+    now_ms: i64,
+) -> Result<usize> {
+    let imported_events =
+        store.ingest_checked(CURSOR_ARCHIVE_PARSER_VERSION, now_ms, now_ms, |context| {
+            let mut imported_events = 0;
+            for prepared in sources {
+                let commit_context = if prepared.expected_totals.is_some() {
+                    "could not import Cursor archive"
+                } else {
+                    "could not record rejected Cursor archive rows"
+                };
+                let summary = context
+                    .commit_source(&prepared.source, prepared.observation, now_ms)
+                    .context(commit_context)?;
+
+                let Some(expected) = prepared.expected_totals else {
+                    let stored = context
+                        .source_totals(&prepared.source.source_id)
+                        .context("could not verify rejected Cursor archive totals")?
+                        .context("rejected Cursor archive source totals are missing")?;
+                    let health = context
+                        .source_health(&prepared.source.source_id)
+                        .context("could not verify rejected Cursor archive health")?
+                        .context("rejected Cursor archive source health is missing")?;
+                    if stored.event_count != 0
+                        || !cursor_source_health_matches(
+                            &health,
+                            TelemetrySourceStatus::Error,
+                            Some(CURSOR_ARCHIVE_REJECTED_ROWS_ISSUE),
+                            0,
+                        )
+                    {
+                        bail!("rejected Cursor archive source state mismatch");
+                    }
+                    continue;
+                };
+
+                if summary.unique_events != expected.event_count {
+                    bail!("Cursor archive identity collision detected");
+                }
+                let stored = context
+                    .source_totals(&prepared.source.source_id)
+                    .context("could not verify Cursor archive import")?
+                    .context("Cursor archive source totals are missing")?;
+                if !cursor_source_totals_match(&stored, &expected) {
+                    bail!("Cursor archive import parity mismatch");
+                }
+                let health = context
+                    .source_health(&prepared.source.source_id)
+                    .context("could not verify Cursor archive source health")?
+                    .context("Cursor archive source health is missing")?;
+                if !cursor_source_health_matches(
+                    &health,
+                    TelemetrySourceStatus::Ready,
+                    None,
+                    expected.event_count,
+                ) {
+                    bail!("Cursor archive source health mismatch");
+                }
+                imported_events += stored.event_count;
+            }
+
+            Ok(CheckedIngest::Commit(imported_events))
+        })?;
+    store
+        .verify_integrity()
+        .context("Cursor archive import failed SQLite integrity verification")?;
+    Ok(imported_events)
 }
 
 fn discover_candidates(
@@ -696,6 +770,90 @@ mod tests {
         assert!(!default_migration_is_current(
             &cache, &archive, &ledger, None
         ));
+    }
+
+    #[test]
+    fn failed_checked_ingest_does_not_pollute_existing_ledger() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cache = temp.path().join("cursor-cache");
+        fs::create_dir_all(&cache).unwrap();
+        let csv_path = cache.join("usage.csv");
+        fs::write(&csv_path, CSV).unwrap();
+        let archive = temp.path().join("archive/cursor");
+        let ledger = temp.path().join("data/telemetry.sqlite");
+        migrate_cursor_history(&cache, &archive, &ledger, None).unwrap();
+
+        let store = TelemetryStore::open(&ledger).unwrap();
+        let messages_before = store
+            .load_messages(&tokscale_core::telemetry::TelemetryQuery::all_history())
+            .unwrap();
+        let health_before = store.all_source_health().unwrap();
+
+        let first_messages = tokscale_core::sessions::cursor::parse_cursor_file_for_account(
+            &csv_path,
+            "rollback-first",
+        );
+        let first_events = first_messages
+            .iter()
+            .map(cursor_observation)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let first_source_id = "cursor-archive:rollback-first";
+        let first = PreparedCursorSource {
+            source: SourceDescriptor {
+                source_id: first_source_id.to_string(),
+                source_kind: TelemetrySourceKind::ArchiveImport,
+                client: "cursor".to_string(),
+                source_ref: "rollback-first".to_string(),
+                source_location: None,
+                parser_id: "cursor-csv".to_string(),
+                parser_version: CURSOR_ARCHIVE_PARSER_VERSION.to_string(),
+                authoritative: true,
+            },
+            observation: SourceObservation::Complete(first_events),
+            expected_totals: Some(totals_for_messages(&first_messages)),
+        };
+
+        let second_messages = tokscale_core::sessions::cursor::parse_cursor_file_for_account(
+            &csv_path,
+            "rollback-second",
+        );
+        let second_events = second_messages
+            .iter()
+            .map(cursor_observation)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let mut wrong_totals = totals_for_messages(&second_messages);
+        wrong_totals.tokens.input += 1;
+        let second_source_id = "cursor-archive:rollback-second";
+        let second = PreparedCursorSource {
+            source: SourceDescriptor {
+                source_id: second_source_id.to_string(),
+                source_kind: TelemetrySourceKind::ArchiveImport,
+                client: "cursor".to_string(),
+                source_ref: "rollback-second".to_string(),
+                source_location: None,
+                parser_id: "cursor-csv".to_string(),
+                parser_version: CURSOR_ARCHIVE_PARSER_VERSION.to_string(),
+                authoritative: true,
+            },
+            observation: SourceObservation::Complete(second_events),
+            expected_totals: Some(wrong_totals),
+        };
+
+        let error = ingest_prepared_cursor_sources(&store, vec![first, second], 9_999).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Cursor archive import parity mismatch"));
+        assert_eq!(
+            store
+                .load_messages(&tokscale_core::telemetry::TelemetryQuery::all_history())
+                .unwrap(),
+            messages_before
+        );
+        assert_eq!(store.all_source_health().unwrap(), health_before);
+        assert!(store.source_health(first_source_id).unwrap().is_none());
+        assert!(store.source_health(second_source_id).unwrap().is_none());
     }
 
     #[test]

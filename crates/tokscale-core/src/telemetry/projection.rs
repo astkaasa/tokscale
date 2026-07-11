@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EventCost, EventIdentity, ObservedTelemetryEvent, SourceDescriptor, SourceObservation,
-    TelemetryError, TelemetryEventInput, TelemetrySourceKind, TelemetryStore,
+    CheckedIngest, EventCost, EventIdentity, ObservedTelemetryEvent, SourceDescriptor,
+    SourceObservation, TelemetryError, TelemetryEventInput, TelemetrySourceKind, TelemetryStore,
 };
 use crate::sessions::UnifiedMessage;
 
@@ -49,6 +49,7 @@ pub fn reconcile_legacy_messages(
     observed_at_ms: i64,
 ) -> Result<TelemetryReconcileResult, TelemetryError> {
     let mut fallback = Vec::new();
+    let mut projected_fallback = Vec::new();
     let mut sources = BTreeMap::<String, ProjectedSource>::new();
 
     for message in current_messages {
@@ -83,57 +84,72 @@ pub fn reconcile_legacy_messages(
         source
             .events
             .insert(event_key, ObservedTelemetryEvent::new(input));
+        projected_fallback.push(message);
     }
 
     let parity = if sources.is_empty() {
         TelemetryParityStatus::NoEligibleEvents
     } else {
-        let run = store.start_run(LEGACY_PROJECTION_VERSION, observed_at_ms)?;
-        let mut projected = Vec::new();
-        let ingest_result = (|| {
-            for source in sources.values() {
-                let events = source.events.values().cloned().collect::<Vec<_>>();
-                projected.extend(events.iter().map(|observed| observed.event.clone()));
-                store.commit_source(
-                    &run,
-                    &source.descriptor,
-                    SourceObservation::Complete(events),
-                    observed_at_ms,
-                )?;
-            }
-            Ok::<_, TelemetryError>(())
-        })();
+        store.ingest_checked(
+            LEGACY_PROJECTION_VERSION,
+            observed_at_ms,
+            observed_at_ms,
+            |context| {
+                let mut matched = true;
+                for source in sources.values() {
+                    let events = source.events.values().cloned().collect::<Vec<_>>();
+                    let projected = events
+                        .iter()
+                        .map(|observed| observed.event.clone())
+                        .collect::<Vec<_>>();
+                    context.commit_source(
+                        &source.descriptor,
+                        SourceObservation::Complete(events),
+                        observed_at_ms,
+                    )?;
+                    matched &= context.projected_source_matches(&source.descriptor, &projected)?;
+                }
 
-        // A completed marker is still useful when a source commit failed: each
-        // source commit is independently atomic and prior history stays valid.
-        let finish_result = store.finish_run(&run, observed_at_ms);
-        ingest_result?;
-        finish_result?;
-
-        if store.projected_events_match(&projected)? {
-            TelemetryParityStatus::Matched
-        } else {
-            TelemetryParityStatus::Mismatch
-        }
+                let outcome = if matched {
+                    CheckedIngest::Commit(TelemetryParityStatus::Matched)
+                } else {
+                    CheckedIngest::Rollback(TelemetryParityStatus::Mismatch)
+                };
+                Ok::<_, TelemetryError>(outcome)
+            },
+        )?
     };
+
+    if parity == TelemetryParityStatus::Mismatch {
+        fallback.extend(projected_fallback);
+        sort_messages(&mut fallback);
+        return Ok(TelemetryReconcileResult {
+            messages: fallback,
+            parity,
+        });
+    }
 
     let requested = requested_clients.iter().map(String::as_str).collect();
     let mut history = store.load_messages(&super::TelemetryQuery::all_history())?;
     history.retain(|message| matches_requested(message, &requested));
     remove_durable_fallback_duplicates(&history, &mut fallback);
     history.extend(fallback);
-    history.sort_unstable_by(|left, right| {
+    sort_messages(&mut history);
+
+    Ok(TelemetryReconcileResult {
+        messages: history,
+        parity,
+    })
+}
+
+fn sort_messages(messages: &mut [UnifiedMessage]) {
+    messages.sort_unstable_by(|left, right| {
         left.timestamp
             .cmp(&right.timestamp)
             .then_with(|| left.client.cmp(&right.client))
             .then_with(|| left.session_id.cmp(&right.session_id))
             .then_with(|| left.model_id.cmp(&right.model_id))
     });
-
-    Ok(TelemetryReconcileResult {
-        messages: history,
-        parity,
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -351,6 +367,20 @@ mod tests {
         (temp, store)
     }
 
+    fn ledger_counts(connection: &rusqlite::Connection) -> (i64, i64, i64, i64) {
+        connection
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM telemetry_ingest_runs),
+                    (SELECT COUNT(*) FROM telemetry_sources),
+                    (SELECT COUNT(*) FROM telemetry_events),
+                    (SELECT COUNT(*) FROM telemetry_event_sources)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap()
+    }
+
     fn message(client: &str, dedup_key: Option<&str>, timestamp: i64) -> UnifiedMessage {
         UnifiedMessage::new_with_dedup(
             client,
@@ -408,6 +438,88 @@ mod tests {
 
         assert_eq!(result.messages.len(), 1);
         assert_eq!(result.messages[0].tokens.input, 42);
+    }
+
+    #[test]
+    fn parity_mismatch_rolls_back_the_entire_projection_ingest() {
+        let (_temp, store) = store();
+        reconcile_legacy_messages(
+            &store,
+            vec![message("opencode", Some("message-1"), 100)],
+            &[],
+            1_000,
+        )
+        .unwrap();
+
+        let history_before = store
+            .load_messages(&super::super::TelemetryQuery::all_history())
+            .unwrap();
+        let connection = rusqlite::Connection::open(store.path()).unwrap();
+        let counts_before = ledger_counts(&connection);
+        connection
+            .execute_batch(
+                "CREATE TRIGGER remove_projected_codex_mapping
+                 AFTER INSERT ON telemetry_event_sources
+                 WHEN NEW.source_id = 'legacy-projection:codex'
+                 BEGIN
+                     DELETE FROM telemetry_event_sources
+                     WHERE event_id = NEW.event_id AND source_id = NEW.source_id;
+                 END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut corrected_history = message("opencode", Some("message-1"), 100);
+        corrected_history.tokens.input = 42;
+        let current_messages = vec![
+            corrected_history,
+            message("codex", Some("codex:event-2"), 200),
+        ];
+        let result =
+            reconcile_legacy_messages(&store, current_messages.clone(), &[], 2_000).unwrap();
+
+        assert_eq!(result.parity, TelemetryParityStatus::Mismatch);
+        assert_eq!(result.messages, current_messages);
+
+        let history_after = store
+            .load_messages(&super::super::TelemetryQuery::all_history())
+            .unwrap();
+        assert_eq!(history_after, history_before);
+
+        let connection = rusqlite::Connection::open(store.path()).unwrap();
+        let counts_after = ledger_counts(&connection);
+        assert_eq!(counts_after, counts_before);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM telemetry_ingest_runs WHERE started_at_ms = 2000",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM telemetry_sources
+                     WHERE source_id = 'legacy-projection:codex'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM telemetry_events WHERE client = 'codex'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

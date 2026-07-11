@@ -160,6 +160,13 @@ pub struct IngestRun {
     pub parser_set_version: String,
 }
 
+/// Controls whether a checked ingest is committed or deliberately rolled back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckedIngest<T> {
+    Commit(T),
+    Rollback(T),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestSummary {
@@ -280,6 +287,56 @@ pub struct TelemetryStore {
     path: PathBuf,
 }
 
+pub struct TelemetryIngestContext<'a> {
+    connection: &'a Connection,
+    run: IngestRun,
+}
+
+impl TelemetryIngestContext<'_> {
+    pub fn commit_source(
+        &self,
+        source: &SourceDescriptor,
+        observation: SourceObservation,
+        observed_at_ms: i64,
+    ) -> Result<IngestSummary, TelemetryError> {
+        source.validate()?;
+        validate_observation(&observation)?;
+        commit_source_on_connection(
+            self.connection,
+            &self.run,
+            source,
+            observation,
+            observed_at_ms,
+        )
+    }
+
+    pub fn source_health(
+        &self,
+        source_id: &str,
+    ) -> Result<Option<TelemetrySourceHealth>, TelemetryError> {
+        source_health_on_connection(self.connection, source_id)
+    }
+
+    pub fn source_totals(
+        &self,
+        source_id: &str,
+    ) -> Result<Option<TelemetrySourceTotals>, TelemetryError> {
+        source_totals_on_connection(self.connection, source_id)
+    }
+
+    pub fn verify_integrity(&self) -> Result<(), TelemetryError> {
+        verify_integrity_on_connection(self.connection)
+    }
+
+    pub(crate) fn projected_source_matches(
+        &self,
+        source: &SourceDescriptor,
+        events: &[super::TelemetryEventInput],
+    ) -> Result<bool, TelemetryError> {
+        projected_source_matches_on_connection(self.connection, self.run.run_id, source, events)
+    }
+}
+
 impl TelemetryStore {
     pub fn open_default() -> Result<Self, TelemetryError> {
         Self::open(crate::paths::get_config_dir().join("data/telemetry.sqlite"))
@@ -305,46 +362,7 @@ impl TelemetryStore {
         connection
             .busy_timeout(Duration::from_millis(DEFAULT_BUSY_TIMEOUT_MS))
             .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
-
-        {
-            let mut statement = connection
-                .prepare("PRAGMA integrity_check")
-                .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
-            let mut rows = statement
-                .query([])
-                .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
-            let mut saw_ok = false;
-            while let Some(row) = rows
-                .next()
-                .map_err(|_| TelemetryError::IntegrityVerificationFailed)?
-            {
-                let result = row
-                    .get::<_, String>(0)
-                    .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
-                if result != "ok" {
-                    return Err(TelemetryError::IntegrityCheckFailed);
-                }
-                saw_ok = true;
-            }
-            if !saw_ok {
-                return Err(TelemetryError::IntegrityCheckFailed);
-            }
-        }
-
-        let mut statement = connection
-            .prepare("PRAGMA foreign_key_check")
-            .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
-        let mut rows = statement
-            .query([])
-            .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
-        if rows
-            .next()
-            .map_err(|_| TelemetryError::IntegrityVerificationFailed)?
-            .is_some()
-        {
-            return Err(TelemetryError::ForeignKeyCheckFailed);
-        }
-        Ok(())
+        verify_integrity_on_connection(&connection)
     }
 
     pub fn start_run(
@@ -352,37 +370,61 @@ impl TelemetryStore {
         parser_set_version: &str,
         started_at_ms: i64,
     ) -> Result<IngestRun, TelemetryError> {
-        let parser_set_version = parser_set_version.trim();
-        if parser_set_version.is_empty() {
-            return Err(TelemetryError::InvalidSource("parser_set_version"));
-        }
-
+        let parser_set_version = validated_parser_set_version(parser_set_version)?;
         let connection = self.ready_connection()?;
-        connection.execute(
-            "INSERT INTO telemetry_ingest_runs (
-                started_at_ms, finished_at_ms, status, parser_set_version
-             ) VALUES (?1, NULL, 'running', ?2)",
-            params![started_at_ms, parser_set_version],
-        )?;
-        Ok(IngestRun {
-            run_id: connection.last_insert_rowid(),
-            started_at_ms,
-            parser_set_version: parser_set_version.to_string(),
-        })
+        start_run_on_connection(&connection, parser_set_version, started_at_ms)
     }
 
     pub fn finish_run(&self, run: &IngestRun, finished_at_ms: i64) -> Result<(), TelemetryError> {
         let connection = self.ready_connection()?;
-        let changed = connection.execute(
-            "UPDATE telemetry_ingest_runs
-             SET status = 'complete', finished_at_ms = ?2
-             WHERE run_id = ?1 AND status = 'running'",
-            params![run.run_id, finished_at_ms],
-        )?;
-        if changed == 0 {
-            return run_state_error(&connection, run.run_id);
+        finish_run_on_connection(&connection, run, finished_at_ms)
+    }
+
+    pub fn ingest_checked<T, E, F>(
+        &self,
+        parser_set_version: &str,
+        started_at_ms: i64,
+        finished_at_ms: i64,
+        operation: F,
+    ) -> Result<T, E>
+    where
+        E: From<TelemetryError>,
+        F: FnOnce(&TelemetryIngestContext<'_>) -> Result<CheckedIngest<T>, E>,
+    {
+        let parser_set_version =
+            validated_parser_set_version(parser_set_version).map_err(E::from)?;
+        let mut connection = self.ready_connection().map_err(E::from)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(TelemetryError::from)
+            .map_err(E::from)?;
+        let run = start_run_on_connection(&transaction, parser_set_version, started_at_ms)
+            .map_err(E::from)?;
+        let outcome = {
+            let context = TelemetryIngestContext {
+                connection: &transaction,
+                run: run.clone(),
+            };
+            operation(&context)?
+        };
+
+        match outcome {
+            CheckedIngest::Commit(value) => {
+                finish_run_on_connection(&transaction, &run, finished_at_ms).map_err(E::from)?;
+                transaction
+                    .commit()
+                    .map_err(TelemetryError::from)
+                    .map_err(E::from)?;
+                Ok(value)
+            }
+            CheckedIngest::Rollback(value) => {
+                transaction
+                    .rollback()
+                    .map_err(TelemetryError::from)
+                    .map_err(E::from)?;
+                Ok(value)
+            }
         }
-        Ok(())
     }
 
     pub fn commit_source(
@@ -394,36 +436,10 @@ impl TelemetryStore {
     ) -> Result<IngestSummary, TelemetryError> {
         source.validate()?;
         validate_observation(&observation)?;
-
         let mut connection = self.ready_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure_active_run(&transaction, run.run_id)?;
-
-        let latest_attempt = transaction
-            .query_row(
-                "SELECT last_attempt_run_id FROM telemetry_sources WHERE source_id = ?1",
-                [&source.source_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        if latest_attempt.is_some_and(|latest| latest > run.run_id) {
-            transaction.commit()?;
-            return Ok(IngestSummary {
-                superseded: true,
-                ..IngestSummary::default()
-            });
-        }
-
-        upsert_source_attempt(&transaction, run.run_id, source)?;
-        let summary = match observation {
-            SourceObservation::Complete(events) => {
-                commit_complete_source(&transaction, run.run_id, source, events, observed_at_ms)?
-            }
-            SourceObservation::Missing => commit_missing_source(&transaction, run.run_id, source)?,
-            SourceObservation::Failed { issue_code } => {
-                commit_failed_source(&transaction, run.run_id, source, &issue_code)?
-            }
-        };
+        let summary =
+            commit_source_on_connection(&transaction, run, source, observation, observed_at_ms)?;
         transaction.commit()?;
         Ok(summary)
     }
@@ -499,11 +515,7 @@ impl TelemetryStore {
         source_id: &str,
     ) -> Result<Option<TelemetrySourceHealth>, TelemetryError> {
         let connection = self.ready_connection()?;
-        let query = format!("{SOURCE_HEALTH_SELECT} WHERE s.source_id = ?1");
-        let stored = connection
-            .query_row(&query, [source_id], StoredTelemetrySourceHealth::from_row)
-            .optional()?;
-        stored.map(StoredTelemetrySourceHealth::decode).transpose()
+        source_health_on_connection(&connection, source_id)
     }
 
     pub fn all_source_health(&self) -> Result<Vec<TelemetrySourceHealth>, TelemetryError> {
@@ -524,129 +536,7 @@ impl TelemetryStore {
         source_id: &str,
     ) -> Result<Option<TelemetrySourceTotals>, TelemetryError> {
         let connection = self.ready_connection()?;
-        let source_exists = connection
-            .query_row(
-                "SELECT 1 FROM telemetry_sources WHERE source_id = ?1",
-                [source_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !source_exists {
-            return Ok(None);
-        }
-
-        let totals = connection.query_row(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(e.input_tokens), 0),
-                    COALESCE(SUM(e.output_tokens), 0),
-                    COALESCE(SUM(e.cache_read_tokens), 0),
-                    COALESCE(SUM(e.cache_write_tokens), 0),
-                    COALESCE(SUM(e.reasoning_tokens), 0),
-                    COALESCE(SUM(e.cost_amount), 0.0),
-                    MIN(e.occurred_at_ms), MAX(e.occurred_at_ms)
-             FROM telemetry_event_sources es
-             JOIN telemetry_events e ON e.event_id = es.event_id
-             WHERE es.source_id = ?1 AND es.state = 'present'",
-            [source_id],
-            |row| {
-                Ok(TelemetrySourceTotals {
-                    event_count: non_negative_usize(row.get(0)?),
-                    tokens: TokenBreakdown {
-                        input: row.get(1)?,
-                        output: row.get(2)?,
-                        cache_read: row.get(3)?,
-                        cache_write: row.get(4)?,
-                        reasoning: row.get(5)?,
-                    },
-                    cost: row.get(6)?,
-                    min_occurred_at_ms: row.get(7)?,
-                    max_occurred_at_ms: row.get(8)?,
-                })
-            },
-        )?;
-        Ok(Some(totals))
-    }
-
-    pub(crate) fn projected_events_match(
-        &self,
-        events: &[super::TelemetryEventInput],
-    ) -> Result<bool, TelemetryError> {
-        #[derive(PartialEq)]
-        struct StoredProjection {
-            client: String,
-            provider_id: String,
-            model_id: String,
-            session_id: String,
-            workspace_key: Option<String>,
-            workspace_label: Option<String>,
-            occurred_at_ms: i64,
-            input_tokens: i64,
-            output_tokens: i64,
-            cache_read_tokens: i64,
-            cache_write_tokens: i64,
-            reasoning_tokens: i64,
-            duration_ms: Option<i64>,
-            message_count: i32,
-            agent: Option<String>,
-            is_turn_start: bool,
-        }
-
-        let connection = self.ready_connection()?;
-        let mut statement = connection.prepare_cached(
-            "SELECT client, provider_id, model_id, session_id, workspace_key,
-                    workspace_label, occurred_at_ms, input_tokens, output_tokens,
-                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
-                    duration_ms, message_count, agent, is_turn_start
-             FROM telemetry_events WHERE event_id = ?1",
-        )?;
-
-        for event in events {
-            let stored = statement
-                .query_row([event_id(&event.identity)], |row| {
-                    Ok(StoredProjection {
-                        client: row.get(0)?,
-                        provider_id: row.get(1)?,
-                        model_id: row.get(2)?,
-                        session_id: row.get(3)?,
-                        workspace_key: row.get(4)?,
-                        workspace_label: row.get(5)?,
-                        occurred_at_ms: row.get(6)?,
-                        input_tokens: row.get(7)?,
-                        output_tokens: row.get(8)?,
-                        cache_read_tokens: row.get(9)?,
-                        cache_write_tokens: row.get(10)?,
-                        reasoning_tokens: row.get(11)?,
-                        duration_ms: row.get(12)?,
-                        message_count: row.get(13)?,
-                        agent: row.get(14)?,
-                        is_turn_start: row.get::<_, i64>(15)? != 0,
-                    })
-                })
-                .optional()?;
-            let expected = StoredProjection {
-                client: event.client.clone(),
-                provider_id: event.provider_id.clone(),
-                model_id: event.model_id.clone(),
-                session_id: event.session_id.clone(),
-                workspace_key: event.workspace_key.clone(),
-                workspace_label: event.workspace_label.clone(),
-                occurred_at_ms: event.occurred_at_ms,
-                input_tokens: event.tokens.input,
-                output_tokens: event.tokens.output,
-                cache_read_tokens: event.tokens.cache_read,
-                cache_write_tokens: event.tokens.cache_write,
-                reasoning_tokens: event.tokens.reasoning,
-                duration_ms: event.duration_ms,
-                message_count: event.message_count,
-                agent: event.agent.clone(),
-                is_turn_start: event.is_turn_start,
-            };
-            if stored.as_ref() != Some(&expected) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        source_totals_on_connection(&connection, source_id)
     }
 
     fn ready_connection(&self) -> Result<Connection, TelemetryError> {
@@ -669,6 +559,310 @@ impl TelemetryStore {
         crate::fs_atomic::repair_private_file(&self.path);
         Ok(connection)
     }
+}
+
+fn start_run_on_connection(
+    connection: &Connection,
+    parser_set_version: &str,
+    started_at_ms: i64,
+) -> Result<IngestRun, TelemetryError> {
+    connection.execute(
+        "INSERT INTO telemetry_ingest_runs (
+            started_at_ms, finished_at_ms, status, parser_set_version
+         ) VALUES (?1, NULL, 'running', ?2)",
+        params![started_at_ms, parser_set_version],
+    )?;
+    Ok(IngestRun {
+        run_id: connection.last_insert_rowid(),
+        started_at_ms,
+        parser_set_version: parser_set_version.to_string(),
+    })
+}
+
+fn finish_run_on_connection(
+    connection: &Connection,
+    run: &IngestRun,
+    finished_at_ms: i64,
+) -> Result<(), TelemetryError> {
+    let changed = connection.execute(
+        "UPDATE telemetry_ingest_runs
+         SET status = 'complete', finished_at_ms = ?2
+         WHERE run_id = ?1 AND status = 'running'",
+        params![run.run_id, finished_at_ms],
+    )?;
+    if changed == 0 {
+        return run_state_error(connection, run.run_id);
+    }
+    Ok(())
+}
+
+fn commit_source_on_connection(
+    connection: &Connection,
+    run: &IngestRun,
+    source: &SourceDescriptor,
+    observation: SourceObservation,
+    observed_at_ms: i64,
+) -> Result<IngestSummary, TelemetryError> {
+    ensure_active_run(connection, run.run_id)?;
+
+    let latest_attempt = connection
+        .query_row(
+            "SELECT last_attempt_run_id FROM telemetry_sources WHERE source_id = ?1",
+            [&source.source_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if latest_attempt.is_some_and(|latest| latest > run.run_id) {
+        return Ok(IngestSummary {
+            superseded: true,
+            ..IngestSummary::default()
+        });
+    }
+
+    upsert_source_attempt(connection, run.run_id, source)?;
+    match observation {
+        SourceObservation::Complete(events) => {
+            commit_complete_source(connection, run.run_id, source, events, observed_at_ms)
+        }
+        SourceObservation::Missing => commit_missing_source(connection, run.run_id, source),
+        SourceObservation::Failed { issue_code } => {
+            commit_failed_source(connection, run.run_id, source, &issue_code)
+        }
+    }
+}
+
+fn validated_parser_set_version(value: &str) -> Result<&str, TelemetryError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(TelemetryError::InvalidSource("parser_set_version"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn source_health_on_connection(
+    connection: &Connection,
+    source_id: &str,
+) -> Result<Option<TelemetrySourceHealth>, TelemetryError> {
+    let query = format!("{SOURCE_HEALTH_SELECT} WHERE s.source_id = ?1");
+    let stored = connection
+        .query_row(&query, [source_id], StoredTelemetrySourceHealth::from_row)
+        .optional()?;
+    stored.map(StoredTelemetrySourceHealth::decode).transpose()
+}
+
+fn source_totals_on_connection(
+    connection: &Connection,
+    source_id: &str,
+) -> Result<Option<TelemetrySourceTotals>, TelemetryError> {
+    let source_exists = connection
+        .query_row(
+            "SELECT 1 FROM telemetry_sources WHERE source_id = ?1",
+            [source_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !source_exists {
+        return Ok(None);
+    }
+
+    let totals = connection.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(e.input_tokens), 0),
+                COALESCE(SUM(e.output_tokens), 0),
+                COALESCE(SUM(e.cache_read_tokens), 0),
+                COALESCE(SUM(e.cache_write_tokens), 0),
+                COALESCE(SUM(e.reasoning_tokens), 0),
+                COALESCE(SUM(e.cost_amount), 0.0),
+                MIN(e.occurred_at_ms), MAX(e.occurred_at_ms)
+         FROM telemetry_event_sources es
+         JOIN telemetry_events e ON e.event_id = es.event_id
+         WHERE es.source_id = ?1 AND es.state = 'present'",
+        [source_id],
+        |row| {
+            Ok(TelemetrySourceTotals {
+                event_count: non_negative_usize(row.get(0)?),
+                tokens: TokenBreakdown {
+                    input: row.get(1)?,
+                    output: row.get(2)?,
+                    cache_read: row.get(3)?,
+                    cache_write: row.get(4)?,
+                    reasoning: row.get(5)?,
+                },
+                cost: row.get(6)?,
+                min_occurred_at_ms: row.get(7)?,
+                max_occurred_at_ms: row.get(8)?,
+            })
+        },
+    )?;
+    Ok(Some(totals))
+}
+
+fn verify_integrity_on_connection(connection: &Connection) -> Result<(), TelemetryError> {
+    {
+        let mut statement = connection
+            .prepare("PRAGMA integrity_check")
+            .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
+        let mut rows = statement
+            .query([])
+            .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
+        let mut saw_ok = false;
+        while let Some(row) = rows
+            .next()
+            .map_err(|_| TelemetryError::IntegrityVerificationFailed)?
+        {
+            let result = row
+                .get::<_, String>(0)
+                .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
+            if result != "ok" {
+                return Err(TelemetryError::IntegrityCheckFailed);
+            }
+            saw_ok = true;
+        }
+        if !saw_ok {
+            return Err(TelemetryError::IntegrityCheckFailed);
+        }
+    }
+
+    let mut statement = connection
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
+    let mut rows = statement
+        .query([])
+        .map_err(|_| TelemetryError::IntegrityVerificationFailed)?;
+    if rows
+        .next()
+        .map_err(|_| TelemetryError::IntegrityVerificationFailed)?
+        .is_some()
+    {
+        return Err(TelemetryError::ForeignKeyCheckFailed);
+    }
+    Ok(())
+}
+
+fn projected_events_match_on_connection(
+    connection: &Connection,
+    events: &[super::TelemetryEventInput],
+) -> Result<bool, TelemetryError> {
+    #[derive(PartialEq)]
+    struct StoredProjection {
+        client: String,
+        provider_id: String,
+        model_id: String,
+        session_id: String,
+        workspace_key: Option<String>,
+        workspace_label: Option<String>,
+        occurred_at_ms: i64,
+        input_tokens: i64,
+        output_tokens: i64,
+        cache_read_tokens: i64,
+        cache_write_tokens: i64,
+        reasoning_tokens: i64,
+        duration_ms: Option<i64>,
+        message_count: i32,
+        agent: Option<String>,
+        is_turn_start: bool,
+    }
+
+    let mut statement = connection.prepare_cached(
+        "SELECT client, provider_id, model_id, session_id, workspace_key,
+                workspace_label, occurred_at_ms, input_tokens, output_tokens,
+                cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                duration_ms, message_count, agent, is_turn_start
+         FROM telemetry_events WHERE event_id = ?1",
+    )?;
+
+    for event in events {
+        let stored = statement
+            .query_row([event_id(&event.identity)], |row| {
+                Ok(StoredProjection {
+                    client: row.get(0)?,
+                    provider_id: row.get(1)?,
+                    model_id: row.get(2)?,
+                    session_id: row.get(3)?,
+                    workspace_key: row.get(4)?,
+                    workspace_label: row.get(5)?,
+                    occurred_at_ms: row.get(6)?,
+                    input_tokens: row.get(7)?,
+                    output_tokens: row.get(8)?,
+                    cache_read_tokens: row.get(9)?,
+                    cache_write_tokens: row.get(10)?,
+                    reasoning_tokens: row.get(11)?,
+                    duration_ms: row.get(12)?,
+                    message_count: row.get(13)?,
+                    agent: row.get(14)?,
+                    is_turn_start: row.get::<_, i64>(15)? != 0,
+                })
+            })
+            .optional()?;
+        let expected = StoredProjection {
+            client: event.client.clone(),
+            provider_id: event.provider_id.clone(),
+            model_id: event.model_id.clone(),
+            session_id: event.session_id.clone(),
+            workspace_key: event.workspace_key.clone(),
+            workspace_label: event.workspace_label.clone(),
+            occurred_at_ms: event.occurred_at_ms,
+            input_tokens: event.tokens.input,
+            output_tokens: event.tokens.output,
+            cache_read_tokens: event.tokens.cache_read,
+            cache_write_tokens: event.tokens.cache_write,
+            reasoning_tokens: event.tokens.reasoning,
+            duration_ms: event.duration_ms,
+            message_count: event.message_count,
+            agent: event.agent.clone(),
+            is_turn_start: event.is_turn_start,
+        };
+        if stored.as_ref() != Some(&expected) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn projected_source_matches_on_connection(
+    connection: &Connection,
+    run_id: i64,
+    source: &SourceDescriptor,
+    events: &[super::TelemetryEventInput],
+) -> Result<bool, TelemetryError> {
+    if !projected_events_match_on_connection(connection, events)? {
+        return Ok(false);
+    }
+
+    let Some(health) = source_health_on_connection(connection, &source.source_id)? else {
+        return Ok(false);
+    };
+    if health.source_kind != source.source_kind
+        || health.client != source.client
+        || health.parser_id != source.parser_id
+        || health.parser_version != source.parser_version
+        || health.status != TelemetrySourceStatus::Ready
+        || health.observed_events != events.len()
+        || health.last_attempt_run_id != run_id
+        || health.last_success_run_id != Some(run_id)
+        || health.issue_code.is_some()
+    {
+        return Ok(false);
+    }
+
+    let mut statement = connection.prepare_cached(
+        "SELECT state FROM telemetry_event_sources
+         WHERE event_id = ?1 AND source_id = ?2",
+    )?;
+    for event in events {
+        let state = statement
+            .query_row(
+                params![event_id(&event.identity), source.source_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if state.as_deref() != Some("present") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn validate_observation(observation: &SourceObservation) -> Result<(), TelemetryError> {
@@ -1150,6 +1344,43 @@ mod tests {
         store.start_run("test-set-v1", started_at_ms).unwrap()
     }
 
+    fn ledger_counts(store: &TelemetryStore) -> (i64, i64, i64, i64) {
+        let connection = Connection::open(store.path()).unwrap();
+        let runs = connection
+            .query_row("SELECT COUNT(*) FROM telemetry_ingest_runs", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let sources = connection
+            .query_row("SELECT COUNT(*) FROM telemetry_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let events = connection
+            .query_row("SELECT COUNT(*) FROM telemetry_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mappings = connection
+            .query_row("SELECT COUNT(*) FROM telemetry_event_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        (runs, sources, events, mappings)
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum CheckedTestError {
+        Telemetry,
+        Operation,
+    }
+
+    impl From<TelemetryError> for CheckedTestError {
+        fn from(_: TelemetryError) -> Self {
+            Self::Telemetry
+        }
+    }
+
     #[test]
     fn empty_database_initializes_and_reopens() {
         let (temp, store) = store();
@@ -1203,6 +1434,188 @@ mod tests {
         let (_temp, store) = store();
 
         store.verify_integrity().unwrap();
+    }
+
+    #[test]
+    fn checked_ingest_commits_data_and_completes_run() {
+        let (_temp, store) = store();
+
+        let summary = store
+            .ingest_checked::<_, TelemetryError, _>("test-set-v2", 10, 20, |context| {
+                let summary = context.commit_source(
+                    &source("source-a"),
+                    SourceObservation::Complete(vec![event(
+                        EventIdentity::native("opencode", "session-1", "message-1"),
+                        10,
+                        EventCost::reported(1.25, "USD"),
+                    )]),
+                    15,
+                )?;
+                Ok(CheckedIngest::Commit(summary))
+            })
+            .unwrap();
+
+        assert_eq!(summary.unique_events, 1);
+        assert_eq!(ledger_counts(&store), (1, 1, 1, 1));
+        let connection = Connection::open(store.path()).unwrap();
+        let run = connection
+            .query_row(
+                "SELECT started_at_ms, finished_at_ms, status, parser_set_version
+                 FROM telemetry_ingest_runs",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(run, (10, Some(20), "complete".into(), "test-set-v2".into()));
+    }
+
+    #[test]
+    fn checked_ingest_explicit_rollback_leaves_no_rows() {
+        let (_temp, store) = store();
+
+        let result = store
+            .ingest_checked::<_, TelemetryError, _>("test-set-v2", 10, 20, |context| {
+                context.commit_source(
+                    &source("source-a"),
+                    SourceObservation::Complete(vec![event(
+                        EventIdentity::native("opencode", "session-1", "message-1"),
+                        10,
+                        EventCost::Unknown,
+                    )]),
+                    15,
+                )?;
+                Ok(CheckedIngest::Rollback("not accepted"))
+            })
+            .unwrap();
+
+        assert_eq!(result, "not accepted");
+        assert_eq!(ledger_counts(&store), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn checked_ingest_operation_error_rolls_back_and_preserves_history() {
+        let (_temp, store) = store();
+        let first_identity = EventIdentity::native("opencode", "session-1", "first");
+        let second_identity = EventIdentity::native("opencode", "session-1", "second");
+        let historical_run = run(&store, 1);
+        store
+            .commit_source(
+                &historical_run,
+                &source("source-a"),
+                SourceObservation::Complete(vec![
+                    event(first_identity.clone(), 10, EventCost::Unknown),
+                    event(second_identity, 20, EventCost::Unknown),
+                ]),
+                2,
+            )
+            .unwrap();
+        store.finish_run(&historical_run, 3).unwrap();
+        let counts_before = ledger_counts(&store);
+        let messages_before = store.load_messages(&TelemetryQuery::all_history()).unwrap();
+        let health_before = store.source_health("source-a").unwrap();
+
+        let result: Result<(), CheckedTestError> =
+            store.ingest_checked("test-set-v2", 10, 20, |context| {
+                context.commit_source(
+                    &source("source-a"),
+                    SourceObservation::Complete(vec![
+                        event(first_identity, 99, EventCost::Unknown),
+                        event(
+                            EventIdentity::native("opencode", "session-1", "third"),
+                            30,
+                            EventCost::Unknown,
+                        ),
+                    ]),
+                    15,
+                )?;
+                Err(CheckedTestError::Operation)
+            });
+
+        assert_eq!(result, Err(CheckedTestError::Operation));
+        assert_eq!(ledger_counts(&store), counts_before);
+        assert_eq!(
+            store.load_messages(&TelemetryQuery::all_history()).unwrap(),
+            messages_before
+        );
+        assert_eq!(store.source_health("source-a").unwrap(), health_before);
+    }
+
+    #[test]
+    fn checked_ingest_finish_error_rolls_back_all_rows() {
+        let (_temp, store) = store();
+        let connection = Connection::open(store.path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_checked_run_finish
+                 BEFORE UPDATE OF status ON telemetry_ingest_runs
+                 WHEN NEW.parser_set_version = 'test-set-failing'
+                      AND NEW.status = 'complete'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'forced finish failure');
+                 END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let result =
+            store.ingest_checked::<_, TelemetryError, _>("test-set-failing", 10, 20, |context| {
+                context.commit_source(
+                    &source("source-a"),
+                    SourceObservation::Complete(vec![event(
+                        EventIdentity::native("opencode", "session-1", "message-1"),
+                        10,
+                        EventCost::Unknown,
+                    )]),
+                    15,
+                )?;
+                Ok(CheckedIngest::Commit(()))
+            });
+
+        assert!(matches!(result, Err(TelemetryError::Sqlite(_))));
+        assert_eq!(ledger_counts(&store), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn checked_ingest_validation_reads_uncommitted_state() {
+        let (_temp, store) = store();
+        let observed = event(
+            EventIdentity::native("opencode", "session-1", "message-1"),
+            25,
+            EventCost::reported(2.5, "USD"),
+        );
+        let projected = observed.event.clone();
+        let descriptor = source("source-a");
+
+        store
+            .ingest_checked::<_, TelemetryError, _>("test-set-v2", 10, 20, |context| {
+                context.commit_source(
+                    &descriptor,
+                    SourceObservation::Complete(vec![observed]),
+                    15,
+                )?;
+
+                let health = context.source_health("source-a")?.unwrap();
+                assert_eq!(health.status, TelemetrySourceStatus::Ready);
+                assert_eq!(health.present_events, 1);
+                let totals = context.source_totals("source-a")?.unwrap();
+                assert_eq!(totals.event_count, 1);
+                assert_eq!(totals.tokens.input, 25);
+                assert!((totals.cost - 2.5).abs() < 1e-9);
+                assert!(context.projected_source_matches(&descriptor, &[projected])?);
+                context.verify_integrity()?;
+
+                Ok(CheckedIngest::Rollback(()))
+            })
+            .unwrap();
+
+        assert_eq!(ledger_counts(&store), (0, 0, 0, 0));
     }
 
     #[test]
