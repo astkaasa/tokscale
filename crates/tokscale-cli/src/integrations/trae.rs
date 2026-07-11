@@ -1083,7 +1083,7 @@ pub mod sync {
     //! Trae usage sync: paginated pulls from the official API, persisted to a
     //! local cache with a manifest.
     //!
-    //! Mirrors the Antigravity (manifest + lock) and Cursor (HTTP API) patterns.
+    //! Uses a manifest and lock so cache replacement remains atomic.
     //!
     //! Trae IDE and Trae Solo share account usage data. The variant only
     //! controls where credentials are discovered; synced usage is stored once
