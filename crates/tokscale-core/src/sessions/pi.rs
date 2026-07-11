@@ -16,6 +16,7 @@ pub struct PiSessionHeader {
     #[serde(rename = "type")]
     pub entry_type: String,
     pub id: String,
+    pub timestamp: Option<String>,
     pub cwd: Option<String>,
 }
 
@@ -51,6 +52,30 @@ fn fallback_dedup_key(session_id: &str, assistant_ordinal: u64, entry_json: &str
     format!("pi:{session_id}:assistant:{assistant_ordinal}:{content_digest:x}")
 }
 
+fn parse_rfc3339_timestamp_ms(timestamp: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn session_filename_timestamp_ms(path: &Path) -> Option<i64> {
+    let stem = path.file_stem()?.to_str()?;
+    let (timestamp_prefix, session_suffix) = stem.split_once('_')?;
+    if session_suffix.is_empty() {
+        return None;
+    }
+
+    if timestamp_prefix.len() == 13 && timestamp_prefix.bytes().all(|byte| byte.is_ascii_digit()) {
+        let timestamp = timestamp_prefix.parse::<i64>().ok()?;
+        chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp)?;
+        return Some(timestamp);
+    }
+
+    chrono::NaiveDateTime::parse_from_str(timestamp_prefix, "%Y-%m-%dT%H-%M-%S-%3fZ")
+        .ok()
+        .map(|timestamp| timestamp.and_utc().timestamp_millis())
+}
+
 /// Parse a Pi JSONL session file
 pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
     let file = match std::fs::File::open(path) {
@@ -58,13 +83,15 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
         Err(_) => return Vec::new(),
     };
 
-    let fallback_timestamp = file_modified_timestamp_ms(path);
+    let live_timestamp = file_modified_timestamp_ms(path);
+    let filename_timestamp = session_filename_timestamp_ms(path);
 
     let reader = BufReader::new(file);
     let mut messages: Vec<UnifiedMessage> = Vec::with_capacity(64);
     let mut buffer = Vec::with_capacity(4096);
 
     let mut session_id: Option<String> = None;
+    let mut session_header_timestamp: Option<i64> = None;
     let mut workspace_key: Option<String> = None;
     let mut workspace_label: Option<String> = None;
     let mut assistant_ordinal = 0_u64;
@@ -90,6 +117,10 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
             if header.entry_type != "session" {
                 return Vec::new();
             }
+            session_header_timestamp = header
+                .timestamp
+                .as_deref()
+                .and_then(parse_rfc3339_timestamp_ms);
             session_id = Some(header.id);
             workspace_key = header.cwd.as_deref().and_then(normalize_workspace_key);
             workspace_label = workspace_key.as_deref().and_then(workspace_label_from_key);
@@ -133,17 +164,23 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
             None => continue,
         };
 
-        let timestamp = entry
+        let stable_timestamp = entry
             .timestamp
-            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
-            .map(|dt| dt.timestamp_millis())
-            .unwrap_or(fallback_timestamp);
+            .as_deref()
+            .and_then(parse_rfc3339_timestamp_ms)
+            .or(session_header_timestamp)
+            .or(filename_timestamp);
+        let timestamp = stable_timestamp.unwrap_or(live_timestamp);
         let session_id = session_id.clone().unwrap_or_else(|| "unknown".to_string());
-        let dedup_key = entry
-            .id
-            .filter(|id| !id.trim().is_empty())
-            .map(|id| format!("pi:{session_id}:{id}"))
-            .unwrap_or_else(|| fallback_dedup_key(&session_id, current_assistant_ordinal, trimmed));
+        let dedup_key = stable_timestamp.map(|_| {
+            entry
+                .id
+                .filter(|id| !id.trim().is_empty())
+                .map(|id| format!("pi:{session_id}:{id}"))
+                .unwrap_or_else(|| {
+                    fallback_dedup_key(&session_id, current_assistant_ordinal, trimmed)
+                })
+        });
 
         let mut unified = UnifiedMessage::new_with_dedup(
             "pi",
@@ -159,7 +196,7 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
                 reasoning: 0,
             },
             0.0,
-            Some(dedup_key),
+            dedup_key,
         );
         unified.set_workspace(workspace_key.clone(), workspace_label.clone());
         messages.push(unified);
@@ -178,6 +215,17 @@ mod tests {
 
     fn create_test_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file.flush().unwrap();
+        file
+    }
+
+    fn create_named_test_file(filename_prefix: &str, content: &str) -> NamedTempFile {
+        let mut file = tempfile::Builder::new()
+            .prefix(filename_prefix)
+            .suffix(".jsonl")
+            .tempfile()
+            .unwrap();
         file.write_all(content.as_bytes()).unwrap();
         file.flush().unwrap();
         file
@@ -210,12 +258,40 @@ mod tests {
         assert_eq!(messages[0].tokens.output, 50);
         assert_eq!(messages[0].tokens.cache_read, 10);
         assert_eq!(messages[0].tokens.cache_write, 5);
+        assert_eq!(messages[0].timestamp, 1_767_225_601_000);
         assert_eq!(
             messages[0].dedup_key.as_deref(),
             Some("pi:pi_ses_001:msg_001")
         );
         assert_eq!(messages[0].workspace_key, Some("/tmp".to_string()));
         assert_eq!(messages[0].workspace_label, Some("tmp".to_string()));
+    }
+
+    #[test]
+    fn test_session_header_timestamp_precedes_filename_timestamp() {
+        let content = r#"{"type":"session","id":"pi_ses_header","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp"}
+{"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
+        let file = create_named_test_file("1733011200000_pi_ses_header", content);
+        set_modified_time(&file, 1_700_000_000);
+
+        let messages = parse_pi_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].timestamp, 1_767_225_600_000);
+        assert!(messages[0].dedup_key.is_some());
+    }
+
+    #[test]
+    fn test_iso_session_filename_timestamp_precedes_mtime() {
+        let content = r#"{"type":"session","id":"pi_ses_filename","cwd":"/tmp"}
+{"type":"message","id":"msg_filename","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
+        let file = create_named_test_file("2026-06-03T13-16-11-105Z_pi_ses_filename", content);
+        set_modified_time(&file, 1_700_000_000);
+
+        let messages = parse_pi_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].timestamp, 1_780_492_571_105);
     }
 
     #[test]
@@ -264,10 +340,10 @@ not valid json
     }
 
     #[test]
-    fn test_missing_identity_is_stable_after_append_changes_file_mtime() {
+    fn test_filename_timestamp_and_fallback_identity_are_stable_after_append_changes_mtime() {
         let content = r#"{"type":"session","id":"pi_ses_fallback","cwd":"/tmp"}
 {"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
-        let mut file = create_test_file(content);
+        let mut file = create_named_test_file("1733011200000_pi_ses_fallback", content);
         set_modified_time(&file, 1_700_000_000);
 
         let before_append = parse_pi_file(file.path());
@@ -280,14 +356,43 @@ not valid json
 
         let after_append = parse_pi_file(file.path());
         assert_eq!(after_append.len(), 2);
-        assert_eq!(before_append[0].timestamp, 1_700_000_000_000);
-        assert_eq!(after_append[0].timestamp, 1_700_000_060_000);
+        assert_eq!(before_append[0].timestamp, 1_733_011_200_000);
+        assert_eq!(after_append[0].timestamp, 1_733_011_200_000);
+        assert!(before_append[0].dedup_key.is_some());
         assert_eq!(before_append[0].dedup_key, after_append[0].dedup_key);
     }
 
     #[test]
+    fn test_missing_stable_timestamp_and_entry_id_is_live_only() {
+        let content = r#"{"type":"session","id":"pi_ses_live","cwd":"/tmp"}
+{"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
+        let file = create_test_file(content);
+        set_modified_time(&file, 1_700_000_000);
+
+        let messages = parse_pi_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].timestamp, 1_700_000_000_000);
+        assert!(messages[0].dedup_key.is_none());
+    }
+
+    #[test]
+    fn test_entry_id_without_stable_timestamp_remains_live_only() {
+        let content = r#"{"type":"session","id":"pi_ses_live","cwd":"/tmp"}
+{"type":"message","id":"msg_live","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
+        let file = create_test_file(content);
+        set_modified_time(&file, 1_700_000_000);
+
+        let messages = parse_pi_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].timestamp, 1_700_000_000_000);
+        assert!(messages[0].dedup_key.is_none());
+    }
+
+    #[test]
     fn test_adjacent_missing_identity_messages_have_distinct_dedup_keys() {
-        let content = r#"{"type":"session","id":"pi_ses_adjacent","cwd":"/tmp"}
+        let content = r#"{"type":"session","id":"pi_ses_adjacent","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp"}
 {"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}
 {"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
         let file = create_test_file(content);
@@ -295,6 +400,7 @@ not valid json
         let messages = parse_pi_file(file.path());
 
         assert_eq!(messages.len(), 2);
+        assert!(messages.iter().all(|message| message.dedup_key.is_some()));
         assert_ne!(messages[0].dedup_key, messages[1].dedup_key);
     }
 }
