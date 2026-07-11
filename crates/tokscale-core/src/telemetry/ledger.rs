@@ -204,6 +204,67 @@ pub struct TelemetrySourceHealth {
     pub issue_code: Option<String>,
 }
 
+const SOURCE_HEALTH_SELECT: &str =
+    "SELECT s.source_id, s.source_kind, s.client, s.parser_id, s.parser_version,
+            s.status, s.observed_events, s.last_attempt_run_id,
+            s.last_success_run_id, s.issue_code,
+            (SELECT COUNT(*) FROM telemetry_event_sources es
+             WHERE es.source_id = s.source_id AND es.state = 'present'),
+            (SELECT COUNT(*) FROM telemetry_event_sources es
+             WHERE es.source_id = s.source_id AND es.state = 'missing')
+     FROM telemetry_sources s";
+
+struct StoredTelemetrySourceHealth {
+    source_id: String,
+    source_kind: String,
+    client: String,
+    parser_id: String,
+    parser_version: String,
+    status: String,
+    observed_events: i64,
+    last_attempt_run_id: i64,
+    last_success_run_id: Option<i64>,
+    issue_code: Option<String>,
+    present_events: i64,
+    missing_events: i64,
+}
+
+impl StoredTelemetrySourceHealth {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            source_id: row.get(0)?,
+            source_kind: row.get(1)?,
+            client: row.get(2)?,
+            parser_id: row.get(3)?,
+            parser_version: row.get(4)?,
+            status: row.get(5)?,
+            observed_events: row.get(6)?,
+            last_attempt_run_id: row.get(7)?,
+            last_success_run_id: row.get(8)?,
+            issue_code: row.get(9)?,
+            present_events: row.get(10)?,
+            missing_events: row.get(11)?,
+        })
+    }
+
+    fn decode(self) -> Result<TelemetrySourceHealth, TelemetryError> {
+        Ok(TelemetrySourceHealth {
+            source_id: self.source_id,
+            source_kind: TelemetrySourceKind::from_stored(self.source_kind)?,
+            client: self.client,
+            parser_id: self.parser_id,
+            parser_version: self.parser_version,
+            status: TelemetrySourceStatus::from_stored(self.status)?,
+            observed_events: non_negative_usize(self.observed_events),
+            present_events: non_negative_usize(self.present_events),
+            missing_events: non_negative_usize(self.missing_events),
+            last_attempt_run_id: self.last_attempt_run_id,
+            last_success_run_id: self.last_success_run_id,
+            issue_code: self.issue_code,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetrySourceTotals {
@@ -438,87 +499,24 @@ impl TelemetryStore {
         source_id: &str,
     ) -> Result<Option<TelemetrySourceHealth>, TelemetryError> {
         let connection = self.ready_connection()?;
+        let query = format!("{SOURCE_HEALTH_SELECT} WHERE s.source_id = ?1");
         let stored = connection
-            .query_row(
-                "SELECT source_id, source_kind, client, parser_id, parser_version,
-                        status, observed_events, last_attempt_run_id,
-                        last_success_run_id, issue_code,
-                        (SELECT COUNT(*) FROM telemetry_event_sources es
-                         WHERE es.source_id = s.source_id AND es.state = 'present'),
-                        (SELECT COUNT(*) FROM telemetry_event_sources es
-                         WHERE es.source_id = s.source_id AND es.state = 'missing')
-                 FROM telemetry_sources s WHERE source_id = ?1",
-                [source_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, i64>(6)?,
-                        row.get::<_, i64>(7)?,
-                        row.get::<_, Option<i64>>(8)?,
-                        row.get::<_, Option<String>>(9)?,
-                        row.get::<_, i64>(10)?,
-                        row.get::<_, i64>(11)?,
-                    ))
-                },
-            )
+            .query_row(&query, [source_id], StoredTelemetrySourceHealth::from_row)
             .optional()?;
-
-        let Some((
-            source_id,
-            source_kind,
-            client,
-            parser_id,
-            parser_version,
-            status,
-            observed_events,
-            last_attempt_run_id,
-            last_success_run_id,
-            issue_code,
-            present_events,
-            missing_events,
-        )) = stored
-        else {
-            return Ok(None);
-        };
-
-        Ok(Some(TelemetrySourceHealth {
-            source_id,
-            source_kind: TelemetrySourceKind::from_stored(source_kind)?,
-            client,
-            parser_id,
-            parser_version,
-            status: TelemetrySourceStatus::from_stored(status)?,
-            observed_events: non_negative_usize(observed_events),
-            present_events: non_negative_usize(present_events),
-            missing_events: non_negative_usize(missing_events),
-            last_attempt_run_id,
-            last_success_run_id,
-            issue_code,
-        }))
+        stored.map(StoredTelemetrySourceHealth::decode).transpose()
     }
 
     pub fn all_source_health(&self) -> Result<Vec<TelemetrySourceHealth>, TelemetryError> {
         let connection = self.ready_connection()?;
-        let source_ids = {
-            let mut statement =
-                connection.prepare("SELECT source_id FROM telemetry_sources ORDER BY source_id")?;
-            let source_ids = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            source_ids
-        };
-        source_ids
-            .iter()
-            .map(|source_id| {
-                self.source_health(source_id)?
-                    .ok_or_else(|| TelemetryError::Sqlite(rusqlite::Error::QueryReturnedNoRows))
-            })
-            .collect()
+        let query = format!("{SOURCE_HEALTH_SELECT} ORDER BY s.source_id");
+        let mut statement = connection.prepare(&query)?;
+        let rows = statement.query_map([], StoredTelemetrySourceHealth::from_row)?;
+        rows.map(|stored| {
+            stored
+                .map_err(Into::into)
+                .and_then(|stored| stored.decode())
+        })
+        .collect()
     }
 
     pub fn source_totals(
@@ -1618,6 +1616,128 @@ mod tests {
         assert!((totals.cost - 4.0).abs() < 1e-9);
         assert_eq!(store.all_source_health().unwrap().len(), 1);
         assert!(store.source_totals("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn source_health_inventory_matches_individual_queries_and_is_stably_sorted() {
+        let (_temp, store) = store();
+
+        let ready_first = EventIdentity::native("opencode", "session-1", "ready-1");
+        let ready_run = run(&store, 10);
+        store
+            .commit_source(
+                &ready_run,
+                &source("source-z-ready"),
+                SourceObservation::Complete(vec![
+                    event(ready_first.clone(), 10, EventCost::Unknown),
+                    event(
+                        EventIdentity::native("opencode", "session-1", "ready-2"),
+                        20,
+                        EventCost::Unknown,
+                    ),
+                ]),
+                10,
+            )
+            .unwrap();
+        let ready_refresh = run(&store, 20);
+        store
+            .commit_source(
+                &ready_refresh,
+                &source("source-z-ready"),
+                SourceObservation::Complete(vec![event(ready_first, 10, EventCost::Unknown)]),
+                20,
+            )
+            .unwrap();
+
+        let error_seed = run(&store, 30);
+        store
+            .commit_source(
+                &error_seed,
+                &source("source-m-error"),
+                SourceObservation::Complete(vec![event(
+                    EventIdentity::native("opencode", "session-1", "error-1"),
+                    30,
+                    EventCost::Unknown,
+                )]),
+                30,
+            )
+            .unwrap();
+        let error_run = run(&store, 40);
+        store
+            .commit_source(
+                &error_run,
+                &source("source-m-error"),
+                SourceObservation::Failed {
+                    issue_code: "source_busy".into(),
+                },
+                40,
+            )
+            .unwrap();
+
+        let missing_seed = run(&store, 50);
+        store
+            .commit_source(
+                &missing_seed,
+                &source("source-a-missing"),
+                SourceObservation::Complete(vec![
+                    event(
+                        EventIdentity::native("opencode", "session-1", "missing-1"),
+                        40,
+                        EventCost::Unknown,
+                    ),
+                    event(
+                        EventIdentity::native("opencode", "session-1", "missing-2"),
+                        50,
+                        EventCost::Unknown,
+                    ),
+                ]),
+                50,
+            )
+            .unwrap();
+        let missing_run = run(&store, 60);
+        store
+            .commit_source(
+                &missing_run,
+                &source("source-a-missing"),
+                SourceObservation::Missing,
+                60,
+            )
+            .unwrap();
+
+        let inventory = store.all_source_health().unwrap();
+        assert_eq!(
+            inventory
+                .iter()
+                .map(|health| health.source_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["source-a-missing", "source-m-error", "source-z-ready"]
+        );
+        assert_eq!(
+            inventory
+                .iter()
+                .map(|health| {
+                    (
+                        health.source_id.as_str(),
+                        health.status,
+                        health.present_events,
+                        health.missing_events,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("source-a-missing", TelemetrySourceStatus::Missing, 0, 2),
+                ("source-m-error", TelemetrySourceStatus::Error, 1, 0),
+                ("source-z-ready", TelemetrySourceStatus::Ready, 1, 1),
+            ]
+        );
+        for inventory_health in &inventory {
+            let individual_health = store
+                .source_health(&inventory_health.source_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(inventory_health, &individual_health);
+        }
+        assert_eq!(store.all_source_health().unwrap(), inventory);
     }
 
     #[test]
