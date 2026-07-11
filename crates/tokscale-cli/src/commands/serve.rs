@@ -8,7 +8,7 @@ use tokscale_core::{ClientId, GroupBy};
 use crate::client_filter::ClientFilter;
 use crate::date_filter::get_date_range_label;
 use crate::report_support::{
-    emit_cursor_setup_warnings, setup_warnings_for_report, PricingCacheOnlyGuard,
+    emit_setup_warnings, setup_warnings_for_report, PricingCacheOnlyGuard,
 };
 use crate::spinner::LightSpinner;
 use crate::tui::{load_cache, CacheReportScope, CacheResult, DataLoader, UsageData};
@@ -50,7 +50,7 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
     let date_range = get_date_range_label(today, week, month, &since, &until, &year);
     let date_range = date_range.unwrap_or_else(|| "All time".to_string());
     let (enabled_filters, enabled_clients, include_synthetic) = resolve_loader_clients(&clients);
-    let cursor_setup_warnings = setup_warnings_for_report(&None, &clients);
+    let setup_warnings = setup_warnings_for_report(&None, &clients);
 
     let report_scope = CacheReportScope::new(since.clone(), until.clone(), year.clone());
     let data = match fresh_cached_data(load_cache(&enabled_filters, &group_by, &report_scope)) {
@@ -66,7 +66,7 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
         )?,
     };
 
-    emit_cursor_setup_warnings(&cursor_setup_warnings);
+    emit_setup_warnings(&setup_warnings);
 
     let render_options = OverviewRenderOptions::new(
         clients,

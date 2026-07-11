@@ -6,6 +6,7 @@ use super::utils::file_modified_timestamp_ms;
 use super::{normalize_workspace_key, workspace_label_from_key, UnifiedMessage};
 use crate::TokenBreakdown;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -23,6 +24,7 @@ pub struct PiSessionHeader {
 pub struct PiSessionEntry {
     #[serde(rename = "type")]
     pub entry_type: String,
+    pub id: Option<String>,
     pub timestamp: Option<String>,
     pub message: Option<PiMessage>,
 }
@@ -44,6 +46,11 @@ pub struct PiUsage {
     pub cache_write: Option<i64>,
 }
 
+fn fallback_dedup_key(session_id: &str, assistant_ordinal: u64, entry_json: &str) -> String {
+    let content_digest = Sha256::digest(entry_json.as_bytes());
+    format!("pi:{session_id}:assistant:{assistant_ordinal}:{content_digest:x}")
+}
+
 /// Parse a Pi JSONL session file
 pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
     let file = match std::fs::File::open(path) {
@@ -60,6 +67,7 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
     let mut session_id: Option<String> = None;
     let mut workspace_key: Option<String> = None;
     let mut workspace_label: Option<String> = None;
+    let mut assistant_ordinal = 0_u64;
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -107,6 +115,8 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
         if message.role.as_deref() != Some("assistant") {
             continue;
         }
+        let current_assistant_ordinal = assistant_ordinal;
+        assistant_ordinal = assistant_ordinal.saturating_add(1);
 
         let usage = match message.usage {
             Some(u) => u,
@@ -128,12 +138,18 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
             .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
             .map(|dt| dt.timestamp_millis())
             .unwrap_or(fallback_timestamp);
+        let session_id = session_id.clone().unwrap_or_else(|| "unknown".to_string());
+        let dedup_key = entry
+            .id
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| format!("pi:{session_id}:{id}"))
+            .unwrap_or_else(|| fallback_dedup_key(&session_id, current_assistant_ordinal, trimmed));
 
-        let mut unified = UnifiedMessage::new(
+        let mut unified = UnifiedMessage::new_with_dedup(
             "pi",
             model,
             provider,
-            session_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            session_id,
             timestamp,
             TokenBreakdown {
                 input: usage.input.unwrap_or(0).max(0),
@@ -143,6 +159,7 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
                 reasoning: 0,
             },
             0.0,
+            Some(dedup_key),
         );
         unified.set_workspace(workspace_key.clone(), workspace_label.clone());
         messages.push(unified);
@@ -154,7 +171,9 @@ pub fn parse_pi_file(path: &Path) -> Vec<UnifiedMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::FileTimes;
     use std::io::Write;
+    use std::time::{Duration, UNIX_EPOCH};
     use tempfile::NamedTempFile;
 
     fn create_test_file(content: &str) -> NamedTempFile {
@@ -162,6 +181,13 @@ mod tests {
         file.write_all(content.as_bytes()).unwrap();
         file.flush().unwrap();
         file
+    }
+
+    fn set_modified_time(file: &NamedTempFile, seconds_since_epoch: u64) {
+        let modified = UNIX_EPOCH + Duration::from_secs(seconds_since_epoch);
+        file.as_file()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
     }
 
     #[test]
@@ -184,6 +210,10 @@ mod tests {
         assert_eq!(messages[0].tokens.output, 50);
         assert_eq!(messages[0].tokens.cache_read, 10);
         assert_eq!(messages[0].tokens.cache_write, 5);
+        assert_eq!(
+            messages[0].dedup_key.as_deref(),
+            Some("pi:pi_ses_001:msg_001")
+        );
         assert_eq!(messages[0].workspace_key, Some("/tmp".to_string()));
         assert_eq!(messages[0].workspace_label, Some("tmp".to_string()));
     }
@@ -231,5 +261,40 @@ not valid json
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].model_id, "gpt-4o-mini");
         assert_eq!(messages[0].provider_id, "openai");
+    }
+
+    #[test]
+    fn test_missing_identity_is_stable_after_append_changes_file_mtime() {
+        let content = r#"{"type":"session","id":"pi_ses_fallback","cwd":"/tmp"}
+{"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
+        let mut file = create_test_file(content);
+        set_modified_time(&file, 1_700_000_000);
+
+        let before_append = parse_pi_file(file.path());
+        assert_eq!(before_append.len(), 1);
+
+        let appended = r#"{"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":20,"output":10,"cacheRead":0,"cacheWrite":0}}}"#;
+        write!(file, "\n{appended}").unwrap();
+        file.flush().unwrap();
+        set_modified_time(&file, 1_700_000_060);
+
+        let after_append = parse_pi_file(file.path());
+        assert_eq!(after_append.len(), 2);
+        assert_eq!(before_append[0].timestamp, 1_700_000_000_000);
+        assert_eq!(after_append[0].timestamp, 1_700_000_060_000);
+        assert_eq!(before_append[0].dedup_key, after_append[0].dedup_key);
+    }
+
+    #[test]
+    fn test_adjacent_missing_identity_messages_have_distinct_dedup_keys() {
+        let content = r#"{"type":"session","id":"pi_ses_adjacent","cwd":"/tmp"}
+{"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}
+{"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0}}}"#;
+        let file = create_test_file(content);
+
+        let messages = parse_pi_file(file.path());
+
+        assert_eq!(messages.len(), 2);
+        assert_ne!(messages[0].dedup_key, messages[1].dedup_key);
     }
 }

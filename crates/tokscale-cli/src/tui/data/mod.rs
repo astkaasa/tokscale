@@ -6,8 +6,8 @@ use tokio::runtime::{Handle, Runtime};
 
 use tokscale_core::sessions::UnifiedMessage;
 use tokscale_core::{
-    normalize_model_for_grouping, parse_local_unified_messages, sessions, ClientId, GroupBy,
-    LocalParseOptions, ModelPerformance,
+    normalize_model_for_grouping, parse_local_unified_messages_with_telemetry, sessions, ClientId,
+    GroupBy, LocalParseOptions, ModelPerformance,
 };
 
 /// Returns the scanner settings that `DataLoader` should use when building
@@ -288,18 +288,25 @@ impl DataLoader {
             year: self.year.clone(),
             scanner_settings: data_loader_scanner_settings(),
         };
+        let telemetry_store_path = Some(crate::paths::telemetry_store_path());
 
         let messages = if Handle::try_current().is_ok() {
             std::thread::scope(|s| {
                 s.spawn(|| {
                     let rt = Runtime::new().map_err(|e| e.to_string())?;
-                    rt.block_on(parse_local_unified_messages(opts))
+                    rt.block_on(parse_local_unified_messages_with_telemetry(
+                        opts,
+                        telemetry_store_path,
+                    ))
                 })
                 .join()
                 .unwrap_or_else(|_| Err("data loader thread panicked".to_string()))
             })
         } else {
-            Runtime::new()?.block_on(parse_local_unified_messages(opts))
+            Runtime::new()?.block_on(parse_local_unified_messages_with_telemetry(
+                opts,
+                telemetry_store_path,
+            ))
         }
         .map_err(anyhow::Error::msg)?;
 

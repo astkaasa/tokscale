@@ -2,6 +2,7 @@ mod claude_diagnostics;
 mod cli;
 mod client_filter;
 mod commands;
+mod cursor_migration;
 mod date_filter;
 mod integrations;
 mod paths;
@@ -14,8 +15,7 @@ mod web;
 use crate::cli::{Cli, Commands, PulseSubcommand};
 use crate::commands::reports::{ModelsReportArgs, PeriodReportArgs, TimeMetricsReportArgs};
 use crate::date_filter::{build_date_filter, build_date_filter_for_date, normalize_year_filter};
-use crate::integrations::{antigravity, cursor, trae, warp};
-use crate::report_support::auto_sync_cursor_before_tui;
+use crate::integrations::{antigravity, trae, warp};
 use anyhow::Result;
 use clap::Parser;
 use client_filter::build_client_filter;
@@ -27,6 +27,10 @@ use tui::{Tab, TimelineGranularity};
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let can_use_tui = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+
+    if cli.home.is_none() {
+        cursor_migration::migrate_default_cursor_history_best_effort();
+    }
 
     match cli.command {
         Some(Commands::Models {
@@ -71,7 +75,6 @@ fn main() -> Result<()> {
                 })
             } else {
                 ensure_home_supported_for_tui(&cli.home)?;
-                auto_sync_cursor_before_tui(&cli.home, &clients)?;
                 tui::run(
                     cli.refresh,
                     cli.debug,
@@ -115,7 +118,6 @@ fn main() -> Result<()> {
                 })
             } else {
                 ensure_home_supported_for_tui(&cli.home)?;
-                auto_sync_cursor_before_tui(&cli.home, &clients)?;
                 tui::run(
                     cli.refresh,
                     cli.debug,
@@ -159,7 +161,6 @@ fn main() -> Result<()> {
                 })
             } else {
                 ensure_home_supported_for_tui(&cli.home)?;
-                auto_sync_cursor_before_tui(&cli.home, &clients)?;
                 tui::run(
                     cli.refresh,
                     cli.debug,
@@ -191,7 +192,6 @@ fn main() -> Result<()> {
             let (since, until) = build_date_filter(today, week, month, date.since, date.until);
             let year = normalize_year_filter(today, week, month, date.year);
             let clients = build_client_filter(clients, &cli.home);
-            auto_sync_cursor_before_tui(&cli.home, &clients)?;
             tui::run(
                 cli.refresh,
                 cli.debug,
@@ -256,7 +256,11 @@ fn main() -> Result<()> {
         }
         Some(Commands::Cursor { subcommand }) => {
             reject_unsupported_home_override(&cli.home, "cursor")?;
-            cursor::run_cli_command(subcommand)
+            match subcommand {
+                crate::cli::CursorSubcommand::Import { json } => {
+                    cursor_migration::run_default_cursor_migration(json)
+                }
+            }
         }
         Some(Commands::Antigravity { subcommand }) => {
             reject_unsupported_home_override(&cli.home, "antigravity")?;
@@ -361,7 +365,6 @@ fn main() -> Result<()> {
                 })
             } else {
                 ensure_home_supported_for_tui(&cli.home)?;
-                auto_sync_cursor_before_tui(&cli.home, &clients)?;
                 tui::run(
                     cli.refresh,
                     cli.debug,

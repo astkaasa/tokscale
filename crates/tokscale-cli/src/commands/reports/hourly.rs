@@ -1,14 +1,10 @@
 use super::{use_env_roots, PeriodReportArgs, TABLE_PRESET};
-use crate::client_filter::client_filter_explicitly_requests_cursor;
 use crate::date_filter::get_date_range_label;
 use crate::report_format::{
     capitalize_client, dim_borders, format_cost_per_million, format_currency, format_model_name,
     format_tokens_with_commas,
 };
-use crate::report_support::{
-    auto_sync_cursor_for_local_report, emit_cursor_setup_warnings, emit_cursor_sync_warning,
-    has_cursor_usage_cache_for_report, setup_warnings_for_report,
-};
+use crate::report_support::{emit_setup_warnings, setup_warnings_for_report};
 use crate::spinner::LightSpinner;
 use crate::tui;
 use anyhow::Result;
@@ -17,7 +13,7 @@ use std::io::IsTerminal;
 pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
     use std::time::Instant;
     use tokio::runtime::Runtime;
-    use tokscale_core::{get_hourly_report, GroupBy, ReportOptions};
+    use tokscale_core::{get_hourly_report_with_telemetry, GroupBy, ReportOptions};
 
     let PeriodReportArgs {
         json,
@@ -35,30 +31,30 @@ pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
 
     let date_range = get_date_range_label(today, week, month, &since, &until, &year);
 
-    let had_cursor_cache = has_cursor_usage_cache_for_report(&home_dir);
-    let explicit_cursor_filter = client_filter_explicitly_requests_cursor(&clients);
     let spinner = if no_spinner {
         None
     } else {
         Some(LightSpinner::start("Scanning session data..."))
     };
-    let cursor_sync_result = auto_sync_cursor_for_local_report(&home_dir, &clients);
-    let cursor_setup_warnings = setup_warnings_for_report(&home_dir, &clients);
+    let setup_warnings = setup_warnings_for_report(&home_dir, &clients);
     let use_env_roots = use_env_roots(&home_dir);
     let start = Instant::now();
     let rt = Runtime::new()?;
     let report = rt
         .block_on(async {
-            get_hourly_report(ReportOptions {
-                home_dir: home_dir.clone(),
-                use_env_roots,
-                clients,
-                since,
-                until,
-                year,
-                group_by: GroupBy::default(),
-                scanner_settings: tui::settings::load_scanner_settings_for_home(&home_dir),
-            })
+            get_hourly_report_with_telemetry(
+                ReportOptions {
+                    home_dir: home_dir.clone(),
+                    use_env_roots,
+                    clients,
+                    since,
+                    until,
+                    year,
+                    group_by: GroupBy::default(),
+                    scanner_settings: tui::settings::load_scanner_settings_for_home(&home_dir),
+                },
+                crate::paths::telemetry_store_path_for_home_override(&home_dir),
+            )
             .await
         })
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -66,11 +62,6 @@ pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
     if let Some(spinner) = spinner {
         spinner.stop();
     }
-    emit_cursor_sync_warning(
-        cursor_sync_result.as_ref(),
-        had_cursor_cache,
-        explicit_cursor_filter,
-    );
 
     let processing_time_ms = start.elapsed().as_millis();
 
@@ -119,14 +110,14 @@ pub fn run_hourly_report(args: PeriodReportArgs) -> Result<()> {
                 .collect(),
             total_cost: report.total_cost,
             processing_time_ms: report.processing_time_ms,
-            warnings: cursor_setup_warnings,
+            warnings: setup_warnings,
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use comfy_table::{Cell, CellAlignment, Color, ContentArrangement, Table};
 
-        emit_cursor_setup_warnings(&cursor_setup_warnings);
+        emit_setup_warnings(&setup_warnings);
         let term_width = crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(120);

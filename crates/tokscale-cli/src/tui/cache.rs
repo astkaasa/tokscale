@@ -23,7 +23,7 @@ use super::data::{
 /// Cache staleness threshold: 5 minutes.
 const CACHE_STALE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
 const CACHE_FUTURE_TOLERANCE_MS: u64 = 60 * 1000;
-const CACHE_SCHEMA_VERSION: u32 = 10;
+const CACHE_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1019,7 +1019,7 @@ mod tests {
         fs::write(
             &cache_path,
             r#"{
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "timestamp": 9999999999999,
   "enabledClients": ["claude"],
   "groupBy": "model",
@@ -1088,6 +1088,7 @@ mod tests {
 
         let cache_path = cache_file().unwrap();
         let saved: CachedTUIData = serde_json::from_slice(&fs::read(&cache_path).unwrap()).unwrap();
+        assert_eq!(saved.schema_version, CACHE_SCHEMA_VERSION);
         assert_eq!(saved.report_scope, scope);
         assert!(matches!(
             load_cache(&clients, &GroupBy::Model, &scope),
@@ -1110,45 +1111,43 @@ mod tests {
 
     #[test]
     #[serial]
-    fn outdated_cache_schema_misses() {
+    fn pre_ledger_cache_schema_misses_while_current_schema_is_fresh() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
+        let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
         unsafe {
             env::set_var("HOME", temp_dir.path());
+            env::remove_var("TOKSCALE_CONFIG_DIR");
         }
 
-        let cache_path = cache_file().unwrap();
-        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        fs::write(
-            &cache_path,
-            r#"{
-  "schemaVersion": 8,
-  "timestamp": 9999999999999,
-  "enabledClients": ["claude"],
-  "groupBy": "model",
-  "data": {
-    "models": [],
-    "agents": [],
-    "daily": [],
-    "hourly": [],
-    "totalTokens": 0,
-    "totalCost": 0.0,
-    "currentStreak": 0,
-    "longestStreak": 0
-  }
-}"#,
-        )
-        .unwrap();
-
         let clients = make_filters(&[ClientFilter::Claude], false);
+        let scope = CacheReportScope::default();
+        save_cached_data(&UsageData::default(), &clients, &GroupBy::Model, &scope);
+
         assert!(matches!(
-            load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()),
+            load_cache(&clients, &GroupBy::Model, &scope),
+            CacheResult::Fresh(_)
+        ));
+
+        let cache_path = cache_file().unwrap();
+        let mut cached: serde_json::Value =
+            serde_json::from_slice(&fs::read(&cache_path).unwrap()).unwrap();
+        assert_eq!(cached["schemaVersion"], CACHE_SCHEMA_VERSION);
+        cached["schemaVersion"] = serde_json::json!(10);
+        fs::write(&cache_path, serde_json::to_vec(&cached).unwrap()).unwrap();
+
+        assert!(matches!(
+            load_cache(&clients, &GroupBy::Model, &scope),
             CacheResult::Miss
         ));
 
         match previous_home {
             Some(home) => unsafe { env::set_var("HOME", home) },
             None => unsafe { env::remove_var("HOME") },
+        }
+        match previous_override {
+            Some(value) => unsafe { env::set_var("TOKSCALE_CONFIG_DIR", value) },
+            None => unsafe { env::remove_var("TOKSCALE_CONFIG_DIR") },
         }
     }
 
@@ -1166,7 +1165,7 @@ mod tests {
         fs::write(
             &cache_path,
             r#"{
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "timestamp": 9999999999999,
   "enabledClients": ["claude"],
   "groupBy": "model",
@@ -1212,7 +1211,7 @@ mod tests {
         fs::write(
             &cache_path,
             r#"{
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "timestamp": 9999999999999,
   "enabledClients": ["claude", "cursor"],
   "groupBy": "model",
@@ -1339,7 +1338,7 @@ mod tests {
             &cache_path,
             format!(
                 r#"{{
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "timestamp": {old_timestamp},
   "enabledClients": ["claude"],
   "groupBy": "model",

@@ -2,7 +2,7 @@ use crate::clients::{ClientCounts, ClientId};
 use crate::sessions::UnifiedMessage;
 use crate::{
     get_home_dir_string, load_pricing_for_local_parse, normalize_model_for_grouping,
-    parse_all_messages_with_pricing_with_env_strategy, scanner, sessionize, sessions,
+    parse_all_messages_with_pricing_with_env_strategy, scanner, sessionize, sessions, telemetry,
     UNKNOWN_WORKSPACE_GROUP_KEY, UNKNOWN_WORKSPACE_LABEL,
 };
 use std::collections::{HashMap, HashSet};
@@ -488,6 +488,14 @@ fn positive_token_total(tokens: &TokenBreakdown) -> i64 {
 }
 
 pub async fn get_model_report(options: ReportOptions) -> Result<ModelReport, String> {
+    get_model_report_with_telemetry(options, None).await
+}
+
+#[doc(hidden)]
+pub async fn get_model_report_with_telemetry(
+    options: ReportOptions,
+    telemetry_store_path: Option<std::path::PathBuf>,
+) -> Result<ModelReport, String> {
     let start = Instant::now();
 
     let home_dir = get_home_dir_string(&options.home_dir)?;
@@ -508,6 +516,11 @@ pub async fn get_model_report(options: ReportOptions) -> Result<ModelReport, Str
         pricing.as_deref(),
         options.use_env_roots,
         &options.scanner_settings,
+    );
+    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
+        telemetry_store_path.as_deref(),
+        all_messages,
+        &clients,
     );
 
     let filtered = filter_messages_for_report(all_messages, &options);
@@ -544,6 +557,14 @@ struct MonthAggregator {
 }
 
 pub async fn get_monthly_report(options: ReportOptions) -> Result<MonthlyReport, String> {
+    get_monthly_report_with_telemetry(options, None).await
+}
+
+#[doc(hidden)]
+pub async fn get_monthly_report_with_telemetry(
+    options: ReportOptions,
+    telemetry_store_path: Option<std::path::PathBuf>,
+) -> Result<MonthlyReport, String> {
     let start = Instant::now();
 
     let home_dir = get_home_dir_string(&options.home_dir)?;
@@ -564,6 +585,11 @@ pub async fn get_monthly_report(options: ReportOptions) -> Result<MonthlyReport,
         pricing.as_deref(),
         options.use_env_roots,
         &options.scanner_settings,
+    );
+    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
+        telemetry_store_path.as_deref(),
+        all_messages,
+        &clients,
     );
 
     let filtered = filter_messages_for_report(all_messages, &options);
@@ -634,6 +660,14 @@ struct HourAggregator {
 /// Derives the hour slot from `UnifiedMessage.timestamp` (Unix ms).
 /// Falls back to date + "00:00" when timestamp is zero or missing.
 pub async fn get_hourly_report(options: ReportOptions) -> Result<HourlyReport, String> {
+    get_hourly_report_with_telemetry(options, None).await
+}
+
+#[doc(hidden)]
+pub async fn get_hourly_report_with_telemetry(
+    options: ReportOptions,
+    telemetry_store_path: Option<std::path::PathBuf>,
+) -> Result<HourlyReport, String> {
     use chrono::{Local, TimeZone};
 
     let start = Instant::now();
@@ -656,6 +690,11 @@ pub async fn get_hourly_report(options: ReportOptions) -> Result<HourlyReport, S
         pricing.as_deref(),
         options.use_env_roots,
         &options.scanner_settings,
+    );
+    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
+        telemetry_store_path.as_deref(),
+        all_messages,
+        &clients,
     );
 
     let filtered = filter_messages_for_report(all_messages, &options);
@@ -728,6 +767,14 @@ pub async fn get_hourly_report(options: ReportOptions) -> Result<HourlyReport, S
 }
 
 pub async fn get_time_metrics_report(options: ReportOptions) -> Result<TimeMetricsReport, String> {
+    get_time_metrics_report_with_telemetry(options, None).await
+}
+
+#[doc(hidden)]
+pub async fn get_time_metrics_report_with_telemetry(
+    options: ReportOptions,
+    telemetry_store_path: Option<std::path::PathBuf>,
+) -> Result<TimeMetricsReport, String> {
     let start = Instant::now();
 
     let home_dir = get_home_dir_string(&options.home_dir)?;
@@ -747,6 +794,11 @@ pub async fn get_time_metrics_report(options: ReportOptions) -> Result<TimeMetri
         None,
         options.use_env_roots,
         &options.scanner_settings,
+    );
+    let all_messages = telemetry::reconcile_legacy_messages_best_effort(
+        telemetry_store_path.as_deref(),
+        all_messages,
+        &clients,
     );
 
     let filtered = filter_messages_for_report(all_messages, &options);

@@ -467,7 +467,11 @@ pub fn fetch_all_report_with_intent(intent: UsageFetchIntent) -> UsageFetchRepor
 }
 
 fn fetch_all_report_with_codex(codex_fetch: fn() -> UsageFetchReport) -> UsageFetchReport {
-    let excluded = usage_provider_excludes();
+    let usage_settings = crate::tui::settings::load_usage_settings();
+    let effective_allowlist = effective_usage_provider_allowlist(
+        &usage_settings.enabled_providers,
+        &usage_settings.excluded_providers,
+    );
     let providers: Vec<UsageProvider> = vec![
         ("Claude", claude::has_credentials, fetch_claude),
         ("Codex", codex::has_credentials, codex_fetch),
@@ -479,10 +483,7 @@ fn fetch_all_report_with_codex(codex_fetch: fn() -> UsageFetchReport) -> UsageFe
         ("Warp/Oz", warp::has_credentials, fetch_warp),
     ];
 
-    let active: Vec<_> = providers
-        .into_iter()
-        .filter(|(provider, has, _)| !usage_provider_is_excluded(provider, &excluded) && has())
-        .collect();
+    let active = credentialed_usage_providers(providers, &effective_allowlist);
 
     if active.is_empty() {
         return UsageFetchReport::default();
@@ -511,16 +512,33 @@ fn fetch_all_report_with_codex(codex_fetch: fn() -> UsageFetchReport) -> UsageFe
     })
 }
 
-fn usage_provider_excludes() -> HashSet<String> {
-    crate::tui::settings::load_excluded_usage_providers()
+fn credentialed_usage_providers(
+    providers: Vec<UsageProvider>,
+    effective_allowlist: &HashSet<String>,
+) -> Vec<UsageProvider> {
+    let enabled = providers
         .into_iter()
-        .map(|provider| usage_provider_key(&provider))
-        .filter(|provider| !provider.is_empty())
+        .filter(|(provider, _, _)| effective_allowlist.contains(&usage_provider_key(provider)))
+        .collect::<Vec<_>>();
+
+    enabled
+        .into_iter()
+        .filter(|(_, has_credentials, _)| has_credentials())
         .collect()
 }
 
-fn usage_provider_is_excluded(provider: &str, excluded: &HashSet<String>) -> bool {
-    excluded.contains(&usage_provider_key(provider))
+fn effective_usage_provider_allowlist(enabled: &[String], excluded: &[String]) -> HashSet<String> {
+    let excluded = excluded
+        .iter()
+        .map(|provider| usage_provider_key(provider))
+        .filter(|provider| !provider.is_empty())
+        .collect::<HashSet<_>>();
+
+    enabled
+        .iter()
+        .map(|provider| usage_provider_key(provider))
+        .filter(|provider| !provider.is_empty() && !excluded.contains(provider))
+        .collect()
 }
 
 fn usage_provider_key(provider: &str) -> String {
@@ -632,7 +650,22 @@ pub fn run(json: bool, _light: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+
+    fn credentials_available() -> bool {
+        true
+    }
+
+    fn credentials_unavailable() -> bool {
+        false
+    }
+
+    fn credentials_must_not_be_probed() -> bool {
+        panic!("disabled provider credentials were probed")
+    }
+
+    fn fetch_must_not_run() -> UsageFetchReport {
+        panic!("provider fetch ran during selection test")
+    }
 
     fn cache_output() -> UsageOutput {
         UsageOutput {
@@ -668,15 +701,81 @@ mod tests {
     }
 
     #[test]
-    fn usage_provider_exclude_matches_display_names_lossily() {
-        let excluded = ["copilot", "warp oz"]
-            .into_iter()
-            .map(usage_provider_key)
-            .collect::<HashSet<_>>();
+    fn usage_provider_allowlist_normalizes_names_and_applies_legacy_excludes() {
+        let enabled = vec![
+            "  cOdEx  ".to_string(),
+            "WARP / OZ".to_string(),
+            "Copilot".to_string(),
+        ];
+        let excluded = vec!["  coPILOT ".to_string()];
 
-        assert!(usage_provider_is_excluded("Copilot", &excluded));
-        assert!(usage_provider_is_excluded("Warp/Oz", &excluded));
-        assert!(!usage_provider_is_excluded("Codex", &excluded));
+        let effective = effective_usage_provider_allowlist(&enabled, &excluded);
+
+        assert!(effective.contains(&usage_provider_key("Codex")));
+        assert!(effective.contains(&usage_provider_key("Warp/Oz")));
+        assert!(!effective.contains(&usage_provider_key("Copilot")));
+    }
+
+    #[test]
+    fn default_usage_provider_policy_only_probes_codex() {
+        let settings = crate::tui::settings::UsageSettings::default();
+        let effective = effective_usage_provider_allowlist(
+            &settings.enabled_providers,
+            &settings.excluded_providers,
+        );
+        let providers: Vec<UsageProvider> = vec![
+            ("Codex", credentials_available, fetch_must_not_run),
+            ("Claude", credentials_must_not_be_probed, fetch_must_not_run),
+            (
+                "Copilot",
+                credentials_must_not_be_probed,
+                fetch_must_not_run,
+            ),
+        ];
+
+        let selected = credentialed_usage_providers(providers, &effective);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].0, "Codex");
+    }
+
+    #[test]
+    fn usage_provider_selection_only_probes_effective_allowlist() {
+        let enabled = vec![
+            "Codex".to_string(),
+            "Copilot".to_string(),
+            "Amp".to_string(),
+        ];
+        let excluded = vec![" copilot ".to_string()];
+        let effective = effective_usage_provider_allowlist(&enabled, &excluded);
+        let providers: Vec<UsageProvider> = vec![
+            ("Codex", credentials_available, fetch_must_not_run),
+            (
+                "Copilot",
+                credentials_must_not_be_probed,
+                fetch_must_not_run,
+            ),
+            ("Claude", credentials_must_not_be_probed, fetch_must_not_run),
+            ("Amp", credentials_unavailable, fetch_must_not_run),
+        ];
+
+        let selected = credentialed_usage_providers(providers, &effective);
+        let selected_names = selected
+            .into_iter()
+            .map(|(provider, _, _)| provider)
+            .collect::<Vec<_>>();
+
+        assert_eq!(selected_names, vec!["Codex"]);
+    }
+
+    #[test]
+    fn empty_usage_provider_allowlist_skips_all_credential_probes() {
+        let effective = effective_usage_provider_allowlist(&[], &[]);
+        let providers: Vec<UsageProvider> = vec![
+            ("Codex", credentials_must_not_be_probed, fetch_must_not_run),
+            ("Claude", credentials_must_not_be_probed, fetch_must_not_run),
+        ];
+
+        assert!(credentialed_usage_providers(providers, &effective).is_empty());
     }
 
     #[test]

@@ -7,6 +7,7 @@ These notes document the current local-first TUI direction. They are product and
 - [navigation.md](navigation.md): top-level workspaces, Today mode, and drilldown navigation.
 - [overview.md](overview.md): Overview dashboard layout and interaction constraints.
 - [drilldown.md](drilldown.md): model and period detail pages.
+- [local-telemetry-ledger.md](local-telemetry-ledger.md): durable multi-agent history, source classes, migration, and remote-provider boundaries.
 - [provider-colors.md](provider-colors.md): provider identity colors and terminal compatibility.
 - [mouse-selection.md](mouse-selection.md): mouse capture and native terminal text selection.
 

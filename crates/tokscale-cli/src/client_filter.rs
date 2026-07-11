@@ -312,18 +312,6 @@ pub(crate) fn resolve_default_tui_filter_set_with(
     }
 }
 
-pub(crate) fn client_filter_includes_cursor(clients: &Option<Vec<String>>) -> bool {
-    clients
-        .as_ref()
-        .is_none_or(|sources| sources.iter().any(|source| source == "cursor"))
-}
-
-pub(crate) fn client_filter_explicitly_requests_cursor(clients: &Option<Vec<String>>) -> bool {
-    clients
-        .as_ref()
-        .is_some_and(|sources| sources.iter().any(|source| source == "cursor"))
-}
-
 pub(crate) fn client_filter_explicitly_requests_warp(clients: &Option<Vec<String>>) -> bool {
     clients
         .as_ref()

@@ -565,7 +565,11 @@ fn write_codex_token_session(dir: &Path, name: &str, model: &str, input: i64, ou
 fn write_cursor_usage_cache(base: &Path) {
     let cache_dir = base.join(".config/tokscale/cursor-cache");
     fs::create_dir_all(&cache_dir).unwrap();
-    fs::write(cache_dir.join("usage.csv"), "Date,Model\n").unwrap();
+    fs::write(
+        cache_dir.join("usage.csv"),
+        "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you\n2025-02-01,gpt-4o,10,5,0,15,30,$0.10,$0.10\n",
+    )
+    .unwrap();
 }
 
 fn write_cursor_credentials(base: &Path) {
@@ -1057,37 +1061,38 @@ fn test_models_with_client_filter_multiple() {
         .success();
 }
 
-fn assert_cursor_setup_warning(json: &serde_json::Value) {
-    let warnings = json["warnings"]
-        .as_array()
-        .expect("explicit Cursor report should expose setup warnings");
+fn assert_cursor_report_has_no_remote_control_guidance(json: &serde_json::Value) {
+    let warnings = json.get("warnings").and_then(serde_json::Value::as_array);
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.as_str().is_some_and(|text| text
-                .contains("tokscale cursor login")
-                && text.contains("tokscale cursor sync --json")
-                && text.contains("cursor-cache/usage*.csv")
-                && text.contains("Tokscale does not parse local `~/.cursor`"))),
-        "warnings did not explain Cursor setup: {warnings:?}"
+        warnings.is_none_or(Vec::is_empty),
+        "local-only Cursor reports should not emit remote setup warnings: {warnings:?}"
     );
+    let serialized = json.to_string();
+    assert!(!serialized.contains("tokscale cursor login"));
+    assert!(!serialized.contains("tokscale cursor sync"));
 }
 
 #[test]
-fn test_models_cursor_explicit_missing_cache_reports_setup_warning_json() {
-    let tmp = create_empty_fixture_dir();
-    let output = cmd_with_home(tmp.path())
-        .args(["models", "--json", "--client", "cursor", "--no-spinner"])
-        .output()
-        .unwrap();
+fn test_cursor_reports_missing_local_cache_do_not_reintroduce_remote_setup() {
+    for command in ["models", "monthly", "hourly", "time-metrics"] {
+        let tmp = create_empty_fixture_dir();
+        let output = cmd_with_home(tmp.path())
+            .args([command, "--json", "--client", "cursor", "--no-spinner"])
+            .output()
+            .unwrap();
 
-    assert!(output.status.success());
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_cursor_setup_warning(&json);
+        assert!(
+            output.status.success(),
+            "{command} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_cursor_report_has_no_remote_control_guidance(&json);
+    }
 }
 
 #[test]
-fn test_models_cursor_explicit_local_cursor_state_still_reports_setup_warning_json() {
+fn test_models_cursor_explicit_local_cursor_transcript_is_not_inferred() {
     let tmp = create_empty_fixture_dir();
     fs::create_dir_all(
         tmp.path()
@@ -1108,38 +1113,14 @@ fn test_models_cursor_explicit_local_cursor_state_still_reports_setup_warning_js
 
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_cursor_setup_warning(&json);
+    assert!(json["entries"].as_array().is_some_and(Vec::is_empty));
+    assert_cursor_report_has_no_remote_control_guidance(&json);
 }
 
 #[test]
-fn test_monthly_cursor_explicit_missing_cache_reports_setup_warning_json() {
+fn test_models_cursor_explicit_home_override_reads_fixture_cache() {
     let tmp = create_empty_fixture_dir();
-    let output = cmd_with_home(tmp.path())
-        .args(["monthly", "--json", "--client", "cursor", "--no-spinner"])
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_cursor_setup_warning(&json);
-}
-
-#[test]
-fn test_hourly_cursor_explicit_missing_cache_reports_setup_warning_json() {
-    let tmp = create_empty_fixture_dir();
-    let output = cmd_with_home(tmp.path())
-        .args(["hourly", "--json", "--client", "cursor", "--no-spinner"])
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_cursor_setup_warning(&json);
-}
-
-#[test]
-fn test_models_cursor_explicit_home_override_reports_fixture_cache_path() {
-    let tmp = create_empty_fixture_dir();
+    write_cursor_usage_cache(tmp.path());
     let output = cmd_with_home(tmp.path())
         .args([
             "--home",
@@ -1155,34 +1136,23 @@ fn test_models_cursor_explicit_home_override_reports_fixture_cache_path() {
 
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let warnings = json["warnings"]
-        .as_array()
-        .expect("explicit Cursor --home report should expose setup warnings");
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.as_str().is_some_and(|text| text
-                .contains(tmp.path().to_str().unwrap())
-                && text.contains("tokscale cursor login")
-                && text.contains("tokscale cursor sync --json")
-                && text.contains("cursor-cache/usage*.csv"))),
-        "warnings did not explain Cursor --home setup: {warnings:?}"
+        json["entries"]
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|entry| entry["client"] == "cursor")),
+        "explicit --home should read its local Cursor CSV: {json}"
     );
+    assert_cursor_report_has_no_remote_control_guidance(&json);
 }
 
 #[test]
-fn test_models_cursor_explicit_missing_cache_reports_setup_warning_text() {
+fn test_models_cursor_explicit_missing_cache_text_is_quiet() {
     let tmp = create_empty_fixture_dir();
     cmd_with_home(tmp.path())
         .args(["models", "--client", "cursor", "--no-spinner"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("Cursor usage requires"))
-        .stderr(predicate::str::contains("tokscale cursor login"))
-        .stderr(predicate::str::contains("tokscale cursor sync --json"))
-        .stderr(predicate::str::contains(
-            "Tokscale does not parse local `~/.cursor`",
-        ));
+        .stderr(predicate::str::contains("tokscale cursor").not());
 }
 
 #[test]
@@ -1204,7 +1174,7 @@ fn test_models_default_missing_cursor_cache_does_not_emit_setup_warning_json() {
 }
 
 #[test]
-fn test_models_cursor_explicit_existing_cache_suppresses_setup_warning_json() {
+fn test_models_cursor_explicit_existing_cache_reads_local_usage_json() {
     let tmp = create_empty_fixture_dir();
     write_cursor_usage_cache(tmp.path());
 
@@ -1216,15 +1186,16 @@ fn test_models_cursor_explicit_existing_cache_suppresses_setup_warning_json() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(
-        json.get("warnings")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(Vec::is_empty),
-        "existing Cursor cache should suppress setup warnings"
+        json["entries"]
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|entry| entry["client"] == "cursor")),
+        "existing Cursor cache should contribute local usage: {json}"
     );
+    assert_cursor_report_has_no_remote_control_guidance(&json);
 }
 
 #[test]
-fn test_models_cursor_logged_in_missing_cache_suggests_sync_only_json() {
+fn test_models_cursor_legacy_credentials_do_not_trigger_remote_control() {
     let tmp = create_empty_fixture_dir();
     write_cursor_credentials(tmp.path());
 
@@ -1242,36 +1213,7 @@ fn test_models_cursor_logged_in_missing_cache_suggests_sync_only_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let warnings = json["warnings"].as_array().unwrap();
-    let warning = warnings[0].as_str().unwrap();
-    assert!(warning.contains("tokscale cursor sync --json"));
-    assert!(
-        !warning.contains("tokscale cursor login"),
-        "logged-in users with no cache should be told to sync, not log in again: {warning}"
-    );
-}
-
-#[test]
-fn test_time_metrics_cursor_explicit_missing_cache_reports_setup_warning_json() {
-    let tmp = create_empty_fixture_dir();
-    let output = cmd_with_home(tmp.path())
-        .args([
-            "time-metrics",
-            "--json",
-            "--client",
-            "cursor",
-            "--no-spinner",
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_cursor_setup_warning(&json);
+    assert_cursor_report_has_no_remote_control_guidance(&json);
 }
 
 #[test]

@@ -16,6 +16,7 @@ mod reports;
 pub mod scanner;
 pub mod sessionize;
 pub mod sessions;
+pub mod telemetry;
 
 pub use aggregator::*;
 pub use clients::{ClientCounts, ClientDef, ClientId, PathRoot};
@@ -26,7 +27,8 @@ pub(crate) use local_parse::{
 };
 pub use local_parse::{
     get_home_dir_string, parse_local_clients, parse_local_unified_messages,
-    parse_local_unified_messages_with_pricing, parsed_to_unified,
+    parse_local_unified_messages_with_pricing, parse_local_unified_messages_with_telemetry,
+    parsed_to_unified,
 };
 pub(crate) use local_parse::{
     load_pricing_for_local_parse, parse_all_messages_with_pricing_with_env_strategy,

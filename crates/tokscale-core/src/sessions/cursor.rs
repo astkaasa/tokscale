@@ -11,6 +11,8 @@
 
 use super::UnifiedMessage;
 use crate::{provider_identity, TokenBreakdown};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::Path;
 
 fn account_id_from_cursor_cache_path(path: &Path) -> String {
@@ -20,7 +22,9 @@ fn account_id_from_cursor_cache_path(path: &Path) -> String {
         .unwrap_or("usage.csv");
 
     if file_name == "usage.csv" {
-        return "active".to_string();
+        // The active cache has no durable account id once Cursor credentials
+        // are removed. Keep the same explicit scope used by archive imports.
+        return "legacy-active".to_string();
     }
 
     if let Some(stem) = file_name
@@ -75,6 +79,15 @@ fn parse_cost(cost_str: &str) -> f64 {
 /// - New: Date,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
 /// - Old: Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you
 pub fn parse_cursor_file(path: &Path) -> Vec<UnifiedMessage> {
+    let account_id = account_id_from_cursor_cache_path(path);
+    parse_cursor_file_for_account(path, &account_id)
+}
+
+/// Parse a Cursor usage CSV with an explicit stable account key.
+///
+/// Archive imports use this entry point because content-addressed object names
+/// cannot safely carry account identity.
+pub fn parse_cursor_file_for_account(path: &Path, account_key: &str) -> Vec<UnifiedMessage> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return vec![],
@@ -118,7 +131,12 @@ pub fn parse_cursor_file(path: &Path) -> Vec<UnifiedMessage> {
         (1, 2, 3, 4, 5, 7)
     };
 
-    let account_id = account_id_from_cursor_cache_path(path);
+    let account_id = if account_key.trim().is_empty() {
+        "unknown"
+    } else {
+        account_key.trim()
+    };
+    let mut row_occurrences = HashMap::<String, u32>::new();
 
     for line in lines {
         if line.trim().is_empty() {
@@ -175,7 +193,12 @@ pub fn parse_cursor_file(path: &Path) -> Vec<UnifiedMessage> {
         // Input tokens = input_without_cache_write
         let input = input_without_cache_write;
 
-        messages.push(UnifiedMessage::new(
+        let row_digest = cursor_row_digest(account_id, line);
+        let occurrence = row_occurrences.entry(row_digest.clone()).or_default();
+        let dedup_key = format!("cursor:{account_id}:{row_digest}:{}", *occurrence);
+        *occurrence = occurrence.saturating_add(1);
+
+        messages.push(UnifiedMessage::new_with_dedup(
             "cursor",
             model,
             infer_provider(model),
@@ -189,10 +212,20 @@ pub fn parse_cursor_file(path: &Path) -> Vec<UnifiedMessage> {
                 reasoning: 0,
             },
             cost.max(0.0),
+            Some(dedup_key),
         ));
     }
 
     messages
+}
+
+fn cursor_row_digest(account_key: &str, line: &str) -> String {
+    let mut hasher = Sha256::new();
+    for value in ["tokscale-cursor-row-v1", account_key, line] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 /// Simple CSV line parser that handles quoted fields
@@ -396,5 +429,56 @@ mod tests {
         // Third message: "-" cost should be 0 (Errored, No Charge)
         assert_eq!(messages[2].model_id, "composer-2");
         assert_eq!(messages[2].cost, 0.0);
+    }
+
+    #[test]
+    fn explicit_account_key_keeps_row_identity_stable_across_file_names() {
+        let csv = "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you
+2025-02-01,gpt-4o,10,5,0,15,30,$0.10,$0.10";
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let first = temp_dir.path().join("usage.csv");
+        let second = temp_dir.path().join("content-addressed-object.csv");
+        std::fs::write(&first, csv).unwrap();
+        std::fs::write(&second, csv).unwrap();
+
+        let first_messages = parse_cursor_file_for_account(&first, "account-stable");
+        let second_messages = parse_cursor_file_for_account(&second, "account-stable");
+
+        assert_eq!(first_messages.len(), 1);
+        assert_eq!(first_messages[0].dedup_key, second_messages[0].dedup_key);
+        assert_eq!(first_messages[0].session_id, second_messages[0].session_id);
+    }
+
+    #[test]
+    fn account_key_domains_identical_cursor_rows() {
+        let csv = "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you
+2025-02-01,gpt-4o,10,5,0,15,30,$0.10,$0.10";
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("usage.csv");
+        std::fs::write(&path, csv).unwrap();
+
+        let first = parse_cursor_file_for_account(&path, "account-a");
+        let second = parse_cursor_file_for_account(&path, "account-b");
+
+        assert_ne!(first[0].dedup_key, second[0].dedup_key);
+        assert_ne!(first[0].session_id, second[0].session_id);
+    }
+
+    #[test]
+    fn duplicate_identical_rows_get_distinct_stable_occurrences() {
+        let csv = "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you
+2025-02-01,gpt-4o,10,5,0,15,30,$0.10,$0.10
+2025-02-01,gpt-4o,10,5,0,15,30,$0.10,$0.10";
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("usage.csv");
+        std::fs::write(&path, csv).unwrap();
+
+        let first = parse_cursor_file_for_account(&path, "account-a");
+        let second = parse_cursor_file_for_account(&path, "account-a");
+
+        assert_eq!(first.len(), 2);
+        assert_ne!(first[0].dedup_key, first[1].dedup_key);
+        assert_eq!(first[0].dedup_key, second[0].dedup_key);
+        assert_eq!(first[1].dedup_key, second[1].dedup_key);
     }
 }

@@ -229,7 +229,7 @@ pub(crate) enum Commands {
         #[arg(long, global = true, help = "Disable Pulse spinner")]
         no_spinner: bool,
     },
-    #[command(about = "Cursor API cache integration commands")]
+    #[command(about = "Archive and import local Cursor history")]
     Cursor {
         #[command(subcommand)]
         subcommand: CursorSubcommand,
@@ -272,39 +272,10 @@ pub(crate) enum PulseSubcommand {
 
 #[derive(Subcommand)]
 pub(crate) enum CursorSubcommand {
-    #[command(about = "Login to Cursor with a browser session token")]
-    Login {
-        #[arg(long, help = "Label for this Cursor account (e.g., work, personal)")]
-        name: Option<String>,
-    },
-    #[command(about = "Logout from a Cursor account")]
-    Logout {
-        #[arg(long, help = "Account label or id")]
-        name: Option<String>,
-        #[arg(long, help = "Logout from all Cursor accounts")]
-        all: bool,
-        #[arg(long, help = "Also delete cached Cursor usage")]
-        purge_cache: bool,
-    },
-    #[command(about = "Check Cursor authentication status")]
-    Status {
-        #[arg(long, help = "Account label or id")]
-        name: Option<String>,
-    },
-    #[command(about = "List saved Cursor accounts")]
-    Accounts {
+    #[command(about = "Archive and import existing local Cursor usage CSV files")]
+    Import {
         #[arg(long, help = "Output as JSON")]
         json: bool,
-    },
-    #[command(about = "Sync Cursor API usage into cursor-cache/usage*.csv")]
-    Sync {
-        #[arg(long, help = "Output as JSON")]
-        json: bool,
-    },
-    #[command(about = "Switch active Cursor account")]
-    Switch {
-        #[arg(help = "Account label or id")]
-        name: String,
     },
 }
 
@@ -484,9 +455,16 @@ mod tests {
     }
 
     #[test]
-    fn clap_accepts_cursor_sync_command() {
-        assert!(Cli::try_parse_from(["tokscale", "cursor", "sync"]).is_ok());
-        assert!(Cli::try_parse_from(["tokscale", "cursor", "sync", "--json"]).is_ok());
+    fn clap_accepts_cursor_import_command() {
+        assert!(Cli::try_parse_from(["tokscale", "cursor", "import"]).is_ok());
+        assert!(Cli::try_parse_from(["tokscale", "cursor", "import", "--json"]).is_ok());
+    }
+
+    #[test]
+    fn clap_rejects_removed_cursor_control_commands() {
+        for command in ["login", "logout", "status", "accounts", "sync", "switch"] {
+            assert!(Cli::try_parse_from(["tokscale", "cursor", command]).is_err());
+        }
     }
 
     #[test]

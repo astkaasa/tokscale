@@ -1095,6 +1095,7 @@ fn parse_local_unified_messages_resolved(
     home_dir: &str,
     clients: &[String],
     pricing: Option<&pricing::PricingService>,
+    telemetry_store_path: Option<&Path>,
 ) -> Result<Vec<UnifiedMessage>, String> {
     let messages = parse_all_messages_with_pricing_with_env_strategy(
         home_dir,
@@ -1102,6 +1103,11 @@ fn parse_local_unified_messages_resolved(
         pricing,
         options.use_env_roots,
         &options.scanner_settings,
+    );
+    let messages = crate::telemetry::reconcile_legacy_messages_best_effort(
+        telemetry_store_path,
+        messages,
+        clients,
     );
     Ok(filter_unified_messages(messages, &options))
 }
@@ -1621,7 +1627,7 @@ pub async fn parse_local_unified_messages_with_pricing(
     pricing: Option<&pricing::PricingService>,
 ) -> Result<Vec<UnifiedMessage>, String> {
     let (home_dir, clients) = resolve_local_parse_request(&options)?;
-    parse_local_unified_messages_resolved(options, &home_dir, &clients, pricing)
+    parse_local_unified_messages_resolved(options, &home_dir, &clients, pricing, None)
 }
 
 pub async fn parse_local_unified_messages(
@@ -1629,7 +1635,23 @@ pub async fn parse_local_unified_messages(
 ) -> Result<Vec<UnifiedMessage>, String> {
     let (home_dir, clients) = resolve_local_parse_request(&options)?;
     let pricing = load_pricing_for_local_parse().await;
-    parse_local_unified_messages_resolved(options, &home_dir, &clients, pricing.as_deref())
+    parse_local_unified_messages_resolved(options, &home_dir, &clients, pricing.as_deref(), None)
+}
+
+#[doc(hidden)]
+pub async fn parse_local_unified_messages_with_telemetry(
+    options: LocalParseOptions,
+    telemetry_store_path: Option<PathBuf>,
+) -> Result<Vec<UnifiedMessage>, String> {
+    let (home_dir, clients) = resolve_local_parse_request(&options)?;
+    let pricing = load_pricing_for_local_parse().await;
+    parse_local_unified_messages_resolved(
+        options,
+        &home_dir,
+        &clients,
+        pricing.as_deref(),
+        telemetry_store_path.as_deref(),
+    )
 }
 
 pub(crate) fn unified_to_parsed(msg: &UnifiedMessage) -> ParsedMessage {

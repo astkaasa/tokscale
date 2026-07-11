@@ -2909,6 +2909,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokscale-core",
+ "tracing",
  "tracing-subscriber",
  "unicode-truncate 1.1.0",
  "unicode-width 0.2.0",

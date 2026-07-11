@@ -17,6 +17,8 @@ const DEFAULT_NATIVE_TIMEOUT_MS: u64 = 300_000;
 const MIN_NATIVE_TIMEOUT_MS: u64 = 5_000;
 const MAX_NATIVE_TIMEOUT_MS: u64 = 3_600_000;
 
+const DEFAULT_ENABLED_USAGE_PROVIDER: &str = "Codex";
+
 #[derive(Debug, Clone, Copy)]
 enum ExplicitHomeConfigLayout {
     UnixDotConfig,
@@ -43,16 +45,36 @@ pub struct LightSettings {
     pub write_cache: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSettings {
+    /// Remote subscription providers allowed to fetch quota/status data.
+    ///
+    /// This allowlist only gates remote Usage requests. Local parsers and
+    /// generic provider identity, pricing, and colors remain available even
+    /// when a provider is absent here. Provider matching is case-insensitive
+    /// and ignores whitespace and punctuation differences.
+    #[serde(
+        default = "default_enabled_usage_providers",
+        deserialize_with = "deserialize_usage_provider_array_lossy"
+    )]
+    pub enabled_providers: Vec<String>,
     /// Subscription providers to skip when fetching quota/status data.
     ///
-    /// Values are matched case-insensitively against provider display names
-    /// such as "Copilot" or "Warp/Oz". This is intentionally separate from
-    /// `defaultClients`, which filters local usage scanners.
-    #[serde(default, deserialize_with = "deserialize_string_array_lossy")]
+    /// This legacy denylist is applied after `enabledProviders` for backwards
+    /// compatibility. It is intentionally separate from `defaultClients`,
+    /// which filters local usage scanners.
+    #[serde(default, deserialize_with = "deserialize_usage_provider_array_lossy")]
     pub excluded_providers: Vec<String>,
+}
+
+impl Default for UsageSettings {
+    fn default() -> Self {
+        Self {
+            enabled_providers: default_enabled_usage_providers(),
+            excluded_providers: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +143,23 @@ where
         .collect())
 }
 
+fn deserialize_usage_provider_array_lossy<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_string_array_lossy(deserializer).map(|providers| {
+        providers
+            .into_iter()
+            .filter_map(|provider| normalize_usage_provider_name(&provider))
+            .collect()
+    })
+}
+
+fn normalize_usage_provider_name(provider: &str) -> Option<String> {
+    let normalized = provider.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!normalized.is_empty()).then_some(normalized)
+}
+
 fn deserialize_theme_preference_lossy<'de, D>(deserializer: D) -> Result<ThemePreference, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -142,6 +181,10 @@ fn default_auto_refresh_ms() -> u64 {
 
 fn default_native_timeout_ms() -> u64 {
     DEFAULT_NATIVE_TIMEOUT_MS
+}
+
+fn default_enabled_usage_providers() -> Vec<String> {
+    vec![DEFAULT_ENABLED_USAGE_PROVIDER.to_string()]
 }
 
 impl Default for Settings {
@@ -190,8 +233,8 @@ pub fn load_default_clients_for_home(home_dir: &Option<String>) -> Vec<String> {
     Settings::load_for_home_override(home_dir.as_deref().map(Path::new)).default_clients
 }
 
-pub fn load_excluded_usage_providers() -> Vec<String> {
-    Settings::load().usage.excluded_providers
+pub fn load_usage_settings() -> UsageSettings {
+    Settings::load().usage
 }
 
 impl Settings {
@@ -264,14 +307,14 @@ impl Settings {
 
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
-        let content = self.save_content_preserving_disk_env(&path)?;
+        let content = self.save_content_preserving_disk_fields(&path)?;
         tokscale_core::fs_atomic::atomic_write_private(&path, content.as_bytes())?;
         Ok(())
     }
 
-    fn save_content_preserving_disk_env(&self, path: &Path) -> Result<String> {
+    fn save_content_preserving_disk_fields(&self, path: &Path) -> Result<String> {
         let mut value = serde_json::to_value(self)?;
-        preserve_disk_env(&mut value, path);
+        preserve_disk_fields(&mut value, path);
         Ok(serde_json::to_string_pretty(&value)?)
     }
 
@@ -306,7 +349,7 @@ impl Settings {
     }
 }
 
-fn preserve_disk_env(value: &mut serde_json::Value, path: &Path) {
+fn preserve_disk_fields(value: &mut serde_json::Value, path: &Path) {
     let Ok(raw) = fs::read_to_string(path) else {
         return;
     };
@@ -326,43 +369,36 @@ fn preserve_disk_env(value: &mut serde_json::Value, path: &Path) {
         }
     }
 
-    preserve_disk_usage_excluded_providers(output, &disk);
+    preserve_disk_usage_provider_fields(output, &disk);
 }
 
-fn preserve_disk_usage_excluded_providers(
+fn preserve_disk_usage_provider_fields(
     output: &mut serde_json::Map<String, serde_json::Value>,
     disk: &serde_json::Value,
 ) {
-    let Some(disk_excluded) = disk
-        .get("usage")
-        .and_then(|usage| usage.get("excludedProviders"))
-        .and_then(|excluded| excluded.as_array())
-        .filter(|excluded| !excluded.is_empty())
-        .cloned()
-    else {
-        return;
-    };
-
-    let current_has_excluded = output
-        .get("usage")
-        .and_then(|usage| usage.get("excludedProviders"))
-        .and_then(|excluded| excluded.as_array())
-        .is_some_and(|excluded| !excluded.is_empty());
-    if current_has_excluded {
-        return;
-    }
-
     let usage = output
         .entry("usage")
         .or_insert_with(|| serde_json::json!({}));
     if !usage.is_object() {
         *usage = serde_json::json!({});
     }
-    if let Some(usage) = usage.as_object_mut() {
-        usage.insert(
-            "excludedProviders".to_string(),
-            serde_json::Value::Array(disk_excluded),
-        );
+    let Some(usage) = usage.as_object_mut() else {
+        return;
+    };
+    let disk_usage = disk.get("usage").and_then(serde_json::Value::as_object);
+
+    for field in ["enabledProviders", "excludedProviders"] {
+        match disk_usage
+            .and_then(|disk_usage| disk_usage.get(field))
+            .cloned()
+        {
+            Some(disk_value) => {
+                usage.insert(field.to_string(), disk_value);
+            }
+            None => {
+                usage.remove(field);
+            }
+        }
     }
 }
 
@@ -637,14 +673,53 @@ mod tests {
     }
 
     #[test]
+    fn settings_usage_enabled_providers_defaults_to_codex_when_missing() {
+        let missing_usage: Settings = serde_json::from_str(r#"{}"#).unwrap();
+        let missing_field: Settings = serde_json::from_str(r#"{"usage": {}}"#).unwrap();
+
+        assert_eq!(missing_usage.usage.enabled_providers, vec!["Codex"]);
+        assert_eq!(missing_field.usage.enabled_providers, vec!["Codex"]);
+    }
+
+    #[test]
+    fn settings_usage_enabled_providers_preserves_explicit_empty_list() {
+        let parsed: Settings =
+            serde_json::from_str(r#"{"usage": {"enabledProviders": []}}"#).unwrap();
+
+        assert!(parsed.usage.enabled_providers.is_empty());
+    }
+
+    #[test]
+    fn settings_usage_enabled_providers_deserializes_lossily_and_normalizes_whitespace() {
+        let parsed: Settings = serde_json::from_str(
+            r#"{
+                "usage": {
+                    "enabledProviders": ["  cOdEx  ", "Warp  /  Oz", 123, null, "  "]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed.usage.enabled_providers,
+            vec!["cOdEx".to_string(), "Warp / Oz".to_string()]
+        );
+    }
+
+    #[test]
     fn settings_usage_excluded_providers_round_trips() {
         let json = r#"{
             "usage": {
+                "enabledProviders": ["Codex", "Copilot"],
                 "excludedProviders": ["copilot", "Warp/Oz"]
             }
         }"#;
 
         let parsed: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed.usage.enabled_providers,
+            vec!["Codex".to_string(), "Copilot".to_string()]
+        );
         assert_eq!(
             parsed.usage.excluded_providers,
             vec!["copilot".to_string(), "Warp/Oz".to_string()]
@@ -652,6 +727,10 @@ mod tests {
 
         let serialized = serde_json::to_string(&parsed).unwrap();
         let round_trip: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            round_trip["usage"]["enabledProviders"],
+            serde_json::json!(["Codex", "Copilot"])
+        );
         assert_eq!(
             round_trip["usage"]["excludedProviders"],
             serde_json::json!(["copilot", "Warp/Oz"])
@@ -804,6 +883,97 @@ mod tests {
             saved["usage"]["excludedProviders"],
             serde_json::json!(["copilot"])
         );
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn settings_save_preserves_enabled_providers_edited_to_empty_after_load() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe {
+            std::env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+        }
+
+        let path = Settings::config_path().unwrap();
+        fs::write(
+            &path,
+            r#"{
+                "uiTheme": "dark",
+                "usage": {
+                    "enabledProviders": ["Codex", "Claude"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mut settings = Settings::load();
+        assert_eq!(settings.usage.enabled_providers, vec!["Codex", "Claude"]);
+
+        fs::write(
+            &path,
+            r#"{
+                "uiTheme": "dark",
+                "usage": {
+                    "enabledProviders": []
+                }
+            }"#,
+        )
+        .unwrap();
+
+        settings.ui_theme = ThemePreference::Light;
+        settings.save().unwrap();
+
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["uiTheme"], serde_json::json!("light"));
+        assert_eq!(saved["usage"]["enabledProviders"], serde_json::json!([]));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TOKSCALE_CONFIG_DIR", value),
+                None => std::env::remove_var("TOKSCALE_CONFIG_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn settings_save_keeps_legacy_excludes_without_writing_default_allowlist() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let previous = std::env::var_os("TOKSCALE_CONFIG_DIR");
+        unsafe {
+            std::env::set_var("TOKSCALE_CONFIG_DIR", temp.path());
+        }
+
+        let path = Settings::config_path().unwrap();
+        fs::write(
+            &path,
+            r#"{
+                "uiTheme": "dark",
+                "usage": {
+                    "excludedProviders": ["copilot"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mut settings = Settings::load();
+        assert_eq!(settings.usage.enabled_providers, vec!["Codex"]);
+        settings.ui_theme = ThemePreference::Light;
+        settings.save().unwrap();
+
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["usage"]["excludedProviders"],
+            serde_json::json!(["copilot"])
+        );
+        assert!(saved["usage"].get("enabledProviders").is_none());
 
         unsafe {
             match previous {
