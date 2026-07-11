@@ -82,7 +82,6 @@ impl App {
                 self.pulse_data_provenance.can_seed_global_snapshot(),
             ) {
                 Ok(()) => {
-                    self.pulse_ai_observed_at = self.pulse.ai_observed_at();
                     self.set_status(update.status);
                 }
                 Err(error) => {
@@ -98,16 +97,12 @@ impl App {
             return Ok(());
         }
 
-        let result = self.pulse.rebuild_snapshot(
+        self.pulse.rebuild_snapshot(
             &self.data,
             &self.subscription_usage,
             self.pulse_ai_observed_at,
             true,
-        );
-        if result.is_ok() {
-            self.pulse_ai_observed_at = self.pulse.ai_observed_at();
-        }
-        result
+        )
     }
 
     pub(crate) fn rebuild_pulse_snapshot_preserving_quota(&mut self) -> anyhow::Result<()> {
@@ -115,7 +110,7 @@ impl App {
             return Ok(());
         }
 
-        let result = self.pulse.rebuild_snapshot(
+        self.pulse.rebuild_snapshot(
             &self.data,
             &[],
             AiSourceObservedAt {
@@ -123,11 +118,7 @@ impl App {
                 quota: None,
             },
             true,
-        );
-        if result.is_ok() {
-            self.pulse_ai_observed_at = self.pulse.ai_observed_at();
-        }
-        result
+        )
     }
 
     pub fn is_codex_login_running(&self) -> bool {

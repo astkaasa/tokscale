@@ -20,25 +20,6 @@ pub(crate) struct AiSourceObservedAt {
     pub(crate) quota: Option<DateTime<Utc>>,
 }
 
-impl AiSourceObservedAt {
-    fn from_snapshot(snapshot: Option<&PulseSnapshotV1>) -> Self {
-        let observed_at = |source_id: &str| {
-            snapshot
-                .and_then(|snapshot| {
-                    snapshot
-                        .sources
-                        .iter()
-                        .find(|source| source.id == source_id)
-                })
-                .and_then(|source| source.observed_at)
-        };
-        Self {
-            local: observed_at("local-ai-usage"),
-            quota: observed_at("subscription-usage-cache"),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct PulseState {
     pub(crate) weread: WeReadState,
@@ -48,6 +29,8 @@ pub(crate) struct PulseState {
     weread_job: BackgroundJob<Result<WeReadSyncState, String>>,
     #[cfg(test)]
     snapshot_save_error: Option<String>,
+    #[cfg(test)]
+    next_durable_snapshot: Option<PulseSnapshotV1>,
 }
 
 #[derive(Debug)]
@@ -82,6 +65,8 @@ impl PulseState {
             weread_job: BackgroundJob::default(),
             #[cfg(test)]
             snapshot_save_error: None,
+            #[cfg(test)]
+            next_durable_snapshot: None,
         }
     }
 
@@ -95,6 +80,8 @@ impl PulseState {
             weread_job: BackgroundJob::default(),
             #[cfg(test)]
             snapshot_save_error: None,
+            #[cfg(test)]
+            next_durable_snapshot: None,
         }
     }
 
@@ -106,10 +93,6 @@ impl PulseState {
 
     pub(crate) fn is_fetching_weread(&self) -> bool {
         self.weread_job.is_running()
-    }
-
-    pub(crate) fn ai_observed_at(&self) -> AiSourceObservedAt {
-        AiSourceObservedAt::from_snapshot(self.snapshot.as_ref())
     }
 
     pub(crate) fn refresh_weread(&mut self, settings: &Settings) -> Option<&'static str> {
@@ -284,6 +267,9 @@ impl PulseState {
             if let Some(error) = &self.snapshot_save_error {
                 anyhow::bail!(error.clone());
             }
+            if let Some(durable) = self.next_durable_snapshot.take() {
+                self.snapshot = Some(durable);
+            }
         }
 
         self.durable_weread_revision = weread_revision(&self.weread_sync);
@@ -313,6 +299,11 @@ impl PulseState {
     #[cfg(test)]
     pub(crate) fn fail_snapshot_saves_for_test(&mut self, error: impl Into<String>) {
         self.snapshot_save_error = Some(error.into());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn supersede_next_snapshot_save_for_test(&mut self, durable: PulseSnapshotV1) {
+        self.next_durable_snapshot = Some(durable);
     }
 }
 
@@ -508,6 +499,14 @@ mod tests {
             .rebuild_snapshot(&UsageData::default(), &[], generations, false)
             .unwrap();
 
-        assert_eq!(pulse.ai_observed_at(), AiSourceObservedAt::default());
+        let snapshot = pulse.snapshot.as_ref().unwrap();
+        for source_id in ["local-ai-usage", "subscription-usage-cache"] {
+            let source = snapshot
+                .sources
+                .iter()
+                .find(|source| source.id == source_id)
+                .unwrap();
+            assert_eq!(source.observed_at, None, "source: {source_id}");
+        }
     }
 }

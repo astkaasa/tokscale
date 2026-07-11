@@ -9,7 +9,7 @@ use crate::report_support::{
     emit_setup_warnings, setup_warnings_for_report, PricingCacheOnlyGuard,
 };
 use crate::spinner::LightSpinner;
-use crate::tui::{load_cache, CacheReportScope, CacheResult, DataLoader, UsageData};
+use crate::tui::{load_cache, CacheReportScope, CacheResult, DataLoader, UsageObservation};
 use crate::web::overview::{
     build_overview_json, render_overview_html, render_overview_surface, OverviewRenderOptions,
 };
@@ -56,18 +56,20 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
     let setup_warnings = setup_warnings_for_report(&None, &clients);
 
     let report_scope = CacheReportScope::new(since.clone(), until.clone(), year.clone());
-    let data = match fresh_cached_data(load_cache(&selection.filters, &group_by, &report_scope)) {
-        Some(data) => data,
-        None => scan_usage_data(
-            since.clone(),
-            until.clone(),
-            year.clone(),
-            &selection.scan_clients,
-            &group_by,
-            selection.include_synthetic,
-            no_spinner,
-        )?,
-    };
+    let observation =
+        match fresh_cached_observation(load_cache(&selection.filters, &group_by, &report_scope)) {
+            Some(observation) => observation,
+            None => scan_usage_data(
+                since.clone(),
+                until.clone(),
+                year.clone(),
+                &selection.scan_clients,
+                &group_by,
+                selection.include_synthetic,
+                no_spinner,
+            )?,
+        };
+    let data = observation.data;
 
     emit_setup_warnings(&setup_warnings);
 
@@ -135,9 +137,9 @@ fn render_pulse_review_at(snapshot: &PulseSnapshotV1, now: DateTime<Utc>) -> Str
     render_weekly_review_at(&presentation, now)
 }
 
-fn fresh_cached_data(result: CacheResult) -> Option<UsageData> {
+fn fresh_cached_observation(result: CacheResult) -> Option<UsageObservation> {
     match result {
-        CacheResult::Fresh(data) => Some(data),
+        CacheResult::Fresh(observation) => Some(observation),
         CacheResult::Stale(_) | CacheResult::StaleSubset(_) | CacheResult::Miss => None,
     }
 }
@@ -150,7 +152,7 @@ fn scan_usage_data(
     group_by: &GroupBy,
     include_synthetic: bool,
     no_spinner: bool,
-) -> Result<UsageData> {
+) -> Result<UsageObservation> {
     let spinner = if no_spinner {
         None
     } else {
@@ -161,13 +163,13 @@ fn scan_usage_data(
 
     let _pricing_cache_only = PricingCacheOnlyGuard::enable();
     let loader = DataLoader::with_filters(since, until, year);
-    let data = loader.load(enabled_clients, group_by, include_synthetic)?;
+    let observation = loader.load(enabled_clients, group_by, include_synthetic)?;
 
     if let Some(spinner) = spinner {
         spinner.stop();
     }
 
-    Ok(data)
+    Ok(observation)
 }
 
 #[cfg(test)]
@@ -175,6 +177,8 @@ mod tests {
     use super::*;
     use tokscale_core::pulse::weread::WeReadSyncState;
     use tokscale_core::pulse::{AiQuotaMetric, AiQuotaSource, AiWorkInput, PulseFreshness};
+
+    use crate::tui::UsageData;
 
     #[test]
     fn pulse_http_exports_are_durable_and_markdown_is_byte_identical() {
@@ -236,18 +240,33 @@ mod tests {
     }
 
     #[test]
-    fn serve_cache_accepts_only_fresh_data() {
-        let fresh = UsageData {
-            total_tokens: 42,
-            ..UsageData::default()
+    fn serve_cache_accepts_only_fresh_observations() {
+        let observed_at = Utc::now();
+        let fresh = UsageObservation {
+            data: UsageData {
+                total_tokens: 42,
+                ..UsageData::default()
+            },
+            observed_at,
         };
+        let cached = fresh_cached_observation(CacheResult::Fresh(fresh)).unwrap();
 
-        assert_eq!(
-            fresh_cached_data(CacheResult::Fresh(fresh)).map(|data| data.total_tokens),
-            Some(42)
+        assert_eq!(cached.data.total_tokens, 42);
+        assert_eq!(cached.observed_at, observed_at);
+        assert!(
+            fresh_cached_observation(CacheResult::Stale(UsageObservation {
+                data: UsageData::default(),
+                observed_at,
+            }))
+            .is_none()
         );
-        assert!(fresh_cached_data(CacheResult::Stale(UsageData::default())).is_none());
-        assert!(fresh_cached_data(CacheResult::StaleSubset(UsageData::default())).is_none());
-        assert!(fresh_cached_data(CacheResult::Miss).is_none());
+        assert!(
+            fresh_cached_observation(CacheResult::StaleSubset(UsageObservation {
+                data: UsageData::default(),
+                observed_at,
+            }))
+            .is_none()
+        );
+        assert!(fresh_cached_observation(CacheResult::Miss).is_none());
     }
 }

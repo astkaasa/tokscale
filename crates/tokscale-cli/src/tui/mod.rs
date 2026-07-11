@@ -19,10 +19,9 @@ mod ui;
 
 pub(crate) use app::{App, PulseDataProvenance, Tab, TimelineGranularity, TuiConfig};
 pub(crate) use cache::{
-    load_cache, load_cache_with_observed_at, save_cached_data, CacheReportScope, CacheResult,
-    TUI_DEFAULT_GROUP_BY,
+    load_cache, save_cached_data, CacheReportScope, CacheResult, TUI_DEFAULT_GROUP_BY,
 };
-pub(crate) use data::{DataLoader, UsageData};
+pub(crate) use data::{DataLoader, UsageData, UsageObservation};
 pub(crate) use event::{Event, EventHandler};
 pub(crate) use themes::{Theme, ThemePreference};
 
@@ -53,33 +52,29 @@ use crate::client_filter::ResolvedClientSelection;
 
 fn decide_initial_data(
     load_result: CacheResult,
-    cache_observed_at: Option<chrono::DateTime<chrono::Utc>>,
     requested_provenance: PulseDataProvenance,
-) -> (
-    Option<UsageData>,
-    bool,
-    PulseDataProvenance,
-    Option<chrono::DateTime<chrono::Utc>>,
-) {
-    let (cached_data, provenance, observed_at) = match load_result {
-        CacheResult::Fresh(data) => (Some(data), requested_provenance, cache_observed_at),
-        CacheResult::Stale(data) => (Some(data), requested_provenance.as_stale(), None),
-        CacheResult::StaleSubset(data) => (Some(data), PulseDataProvenance::Unverified, None),
-        CacheResult::Miss => (None, PulseDataProvenance::Unverified, None),
+) -> (Option<UsageObservation>, bool, PulseDataProvenance) {
+    let (cached_observation, provenance) = match load_result {
+        CacheResult::Fresh(observation) => (Some(observation), requested_provenance),
+        CacheResult::Stale(observation) => (Some(observation), requested_provenance.as_stale()),
+        CacheResult::StaleSubset(observation) => {
+            (Some(observation), PulseDataProvenance::Unverified)
+        }
+        CacheResult::Miss => (None, PulseDataProvenance::Unverified),
     };
 
-    (cached_data, true, provenance, observed_at)
+    (cached_observation, true, provenance)
 }
 
 struct BackgroundLoadResult {
-    result: Result<UsageData>,
+    result: Result<UsageObservation>,
     provenance: PulseDataProvenance,
 }
 
 fn apply_background_load_result(app: &mut App, message: BackgroundLoadResult) {
     app.set_background_loading(false);
     match message.result {
-        Ok(data) => match app.update_data(data, message.provenance) {
+        Ok(observation) => match app.update_data(observation, message.provenance) {
             Ok(()) => app.set_status("Data loaded"),
             Err(error) => {
                 app.set_status(&format!("Pulse snapshot save failed: {error}"));
@@ -153,10 +148,9 @@ pub fn run(
         &initial_group_by,
         &initial_report_scope,
     );
-    let (cache_result, cache_observed_at) =
-        load_cache_with_observed_at(&selection.filters, &initial_group_by, &initial_report_scope);
-    let (cached_data, needs_background_load, cached_data_provenance, cache_observed_at) =
-        decide_initial_data(cache_result, cache_observed_at, requested_provenance);
+    let cache_result = load_cache(&selection.filters, &initial_group_by, &initial_report_scope);
+    let (cached_observation, needs_background_load, cached_data_provenance) =
+        decide_initial_data(cache_result, requested_provenance);
 
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -187,9 +181,8 @@ pub fn run(
 
     let mut app = match App::new_with_cached_data_and_provenance(
         config,
-        cached_data,
+        cached_observation,
         cached_data_provenance,
-        cache_observed_at,
     ) {
         Ok(a) => a,
         Err(e) => {
@@ -217,8 +210,13 @@ pub fn run(
             let loader = background_data_loader(bg_since, bg_until, bg_year);
             let result = loader.load(&bg_clients, &bg_group_by, bg_include_synthetic);
 
-            if let Ok(ref data) = result {
-                save_cached_data(data, &bg_enabled_clients, &bg_group_by, &bg_report_scope);
+            if let Ok(ref observation) = result {
+                save_cached_data(
+                    observation,
+                    &bg_enabled_clients,
+                    &bg_group_by,
+                    &bg_report_scope,
+                );
             }
 
             let _ = tx.send(BackgroundLoadResult {
@@ -333,8 +331,8 @@ fn run_loop_with_background(
             thread::spawn(move || {
                 let loader = background_data_loader(since, until, year);
                 let result = loader.load(&clients, &group_by, include_synthetic);
-                if let Ok(ref data) = result {
-                    save_cached_data(data, &enabled_clients, &group_by, &report_scope);
+                if let Ok(ref observation) = result {
+                    save_cached_data(observation, &enabled_clients, &group_by, &report_scope);
                 }
                 let _ = tx.send(BackgroundLoadResult { result, provenance });
             });
@@ -368,33 +366,49 @@ fn run_loop_with_background(
 mod tests {
     use super::*;
 
+    fn observation_at(observed_at: chrono::DateTime<chrono::Utc>) -> UsageObservation {
+        UsageObservation {
+            data: UsageData::default(),
+            observed_at,
+        }
+    }
+
     #[test]
     fn launches_with_stale_cache_renders_immediately() {
-        let (cached_data, needs_background_load, provenance, observed_at) = decide_initial_data(
-            CacheResult::Stale(UsageData::default()),
-            Some(chrono::Utc::now()),
+        let observed_at = chrono::Utc::now();
+        let (cached_observation, needs_background_load, provenance) = decide_initial_data(
+            CacheResult::Stale(observation_at(observed_at)),
             PulseDataProvenance::VerifiedDefaultScopeFresh,
         );
 
-        assert!(cached_data.is_some());
+        assert_eq!(
+            cached_observation
+                .as_ref()
+                .map(|observation| observation.observed_at),
+            Some(observed_at)
+        );
         assert!(needs_background_load);
         assert_eq!(provenance, PulseDataProvenance::VerifiedDefaultScopeStale);
-        assert_eq!(observed_at, None);
         assert!(!provenance.can_seed_global_snapshot());
     }
 
     #[test]
     fn strict_subset_cache_cannot_claim_global_pulse_provenance() {
-        let (cached_data, needs_background_load, provenance, observed_at) = decide_initial_data(
-            CacheResult::StaleSubset(UsageData::default()),
-            Some(chrono::Utc::now()),
+        let observed_at = chrono::Utc::now();
+        let (cached_observation, needs_background_load, provenance) = decide_initial_data(
+            CacheResult::StaleSubset(observation_at(observed_at)),
             PulseDataProvenance::VerifiedDefaultScopeFresh,
         );
 
-        assert!(cached_data.is_some());
+        assert_eq!(
+            cached_observation
+                .as_ref()
+                .map(|observation| observation.observed_at),
+            Some(observed_at)
+        );
         assert!(needs_background_load);
         assert_eq!(provenance, PulseDataProvenance::Unverified);
-        assert_eq!(observed_at, None);
+        assert!(!provenance.can_seed_global_snapshot());
     }
 
     #[test]
@@ -415,7 +429,7 @@ mod tests {
         apply_background_load_result(
             &mut app,
             BackgroundLoadResult {
-                result: Ok(UsageData::default()),
+                result: Ok(observation_at(chrono::Utc::now())),
                 provenance: PulseDataProvenance::VerifiedDefaultScopeFresh,
             },
         );
@@ -429,16 +443,14 @@ mod tests {
 
     #[test]
     fn miss_renders_empty_until_background_completes() {
-        let (cached_data, needs_background_load, provenance, observed_at) = decide_initial_data(
+        let (cached_observation, needs_background_load, provenance) = decide_initial_data(
             CacheResult::Miss,
-            None,
             PulseDataProvenance::VerifiedDefaultScopeFresh,
         );
 
-        assert!(cached_data.is_none());
+        assert!(cached_observation.is_none());
         assert!(needs_background_load);
         assert_eq!(provenance, PulseDataProvenance::Unverified);
-        assert_eq!(observed_at, None);
     }
 
     #[test]

@@ -52,12 +52,12 @@ pub(crate) fn write(
     // user-visible report into a non-zero exit code.
     let loader = DataLoader::with_filters(since.clone(), until.clone(), year.clone());
     let report_scope = CacheReportScope::new(since.clone(), until.clone(), year.clone());
-    if let Ok(data) = loader.load(
+    if let Ok(observation) = loader.load(
         &selection.scan_clients,
         group_by,
         selection.include_synthetic,
     ) {
-        save_cached_data(&data, &selection.filters, group_by, &report_scope);
+        save_cached_data(&observation, &selection.filters, group_by, &report_scope);
     }
 }
 

@@ -14,7 +14,7 @@ use crate::commands::usage::{
 };
 use crate::tui::background_job::{BackgroundJob, BackgroundJobPoll};
 use crate::tui::codex_login::{CodexLoginEvent, CodexLoginOutcome};
-use crate::tui::data::{DataLoader, UsageData};
+use crate::tui::data::{DataLoader, UsageData, UsageObservation};
 use crate::tui::drilldown_state::DrilldownView;
 use crate::tui::navigation::{ChartGranularity, Tab};
 use crate::tui::pulse_state::{AiSourceObservedAt, PulseState};
@@ -137,11 +137,14 @@ fn should_publish_quota_pulse(fresh_count: usize, partial: bool, cache_persisted
 impl App {
     #[cfg(test)]
     pub fn new_with_cached_data(config: TuiConfig, cached_data: Option<UsageData>) -> Result<Self> {
+        let cached_observation = cached_data.map(|data| UsageObservation {
+            data,
+            observed_at: Utc::now(),
+        });
         Self::build_with_cached_data(
             config,
-            cached_data,
+            cached_observation,
             PulseDataProvenance::Unverified,
-            None,
             true,
             None,
         )
@@ -149,18 +152,10 @@ impl App {
 
     pub(crate) fn new_with_cached_data_and_provenance(
         config: TuiConfig,
-        cached_data: Option<UsageData>,
+        cached_observation: Option<UsageObservation>,
         provenance: PulseDataProvenance,
-        cache_observed_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<Self> {
-        Self::build_with_cached_data(
-            config,
-            cached_data,
-            provenance,
-            cache_observed_at,
-            true,
-            None,
-        )
+        Self::build_with_cached_data(config, cached_observation, provenance, true, None)
     }
 
     pub(crate) fn new_surface_with_cached_data(
@@ -168,11 +163,14 @@ impl App {
         cached_data: Option<UsageData>,
         settings: Settings,
     ) -> Result<Self> {
+        let cached_observation = cached_data.map(|data| UsageObservation {
+            data,
+            observed_at: Utc::now(),
+        });
         Self::build_with_cached_data(
             config,
-            cached_data,
+            cached_observation,
             PulseDataProvenance::Unverified,
-            None,
             false,
             Some(settings),
         )
@@ -180,9 +178,8 @@ impl App {
 
     fn build_with_cached_data(
         config: TuiConfig,
-        cached_data: Option<UsageData>,
+        cached_observation: Option<UsageObservation>,
         pulse_data_provenance: PulseDataProvenance,
-        cached_ai_observed_at: Option<chrono::DateTime<Utc>>,
         fetch_on_entry: bool,
         settings_override: Option<Settings>,
     ) -> Result<Self> {
@@ -207,7 +204,10 @@ impl App {
 
         let data_loader = DataLoader::with_filters(config.since, config.until, config.year);
 
-        let data = cached_data.unwrap_or_default();
+        let (data, cached_ai_observed_at) = match cached_observation {
+            Some(observation) => (observation.data, Some(observation.observed_at)),
+            None => (UsageData::default(), None),
+        };
         let has_data = !data.models.is_empty()
             || !data.daily.is_empty()
             || !data.agents.is_empty()
@@ -332,11 +332,15 @@ impl App {
         // Don't set data.loading - let cached data remain visible during background refresh
     }
 
-    pub fn update_data(&mut self, data: UsageData, provenance: PulseDataProvenance) -> Result<()> {
+    pub fn update_data(
+        &mut self,
+        observation: UsageObservation,
+        provenance: PulseDataProvenance,
+    ) -> Result<()> {
+        let UsageObservation { data, observed_at } = observation;
         self.pulse_data_provenance = provenance;
-        self.pulse_ai_observed_at.local = provenance
-            .can_seed_global_snapshot()
-            .then(|| self.local_ai_cache_observed_at().unwrap_or_else(Utc::now));
+        self.pulse_ai_observed_at.local =
+            provenance.can_seed_global_snapshot().then_some(observed_at);
         let quota_degraded = !self.subscription_usage.is_empty()
             && quota_provenance_is_degraded(&self.usage_fetch_diagnostics);
         self.data = data;
@@ -566,28 +570,6 @@ impl App {
         self.poll_codex_login();
     }
 
-    fn local_ai_cache_observed_at(&self) -> Option<chrono::DateTime<Utc>> {
-        #[cfg(not(test))]
-        {
-            let enabled_clients = self.enabled_clients.borrow();
-            let group_by = self.group_by.borrow();
-            let report_scope = crate::tui::cache::CacheReportScope::new(
-                self.data_loader.since.clone(),
-                self.data_loader.until.clone(),
-                self.data_loader.year.clone(),
-            );
-            crate::tui::cache::load_cache_with_observed_at(
-                &enabled_clients,
-                &group_by,
-                &report_scope,
-            )
-            .1
-        }
-
-        #[cfg(test)]
-        None
-    }
-
     pub(crate) fn poll_codex_login(&mut self) {
         let mut events = Vec::new();
         let mut disconnected = false;
@@ -772,11 +754,23 @@ mod quota_resilience_tests {
             turn_count: 1,
         });
 
-        let result = app.update_data(data, PulseDataProvenance::VerifiedDefaultScopeFresh);
+        let observed_at = Utc::now() - chrono::Duration::seconds(5);
+        let result = app.update_data(
+            UsageObservation { data, observed_at },
+            PulseDataProvenance::VerifiedDefaultScopeFresh,
+        );
 
         assert!(result.is_ok());
         let snapshot = app.pulse.snapshot.as_ref().unwrap();
         assert_eq!(snapshot.ai.total_tokens, Some(42));
+        assert_eq!(
+            snapshot
+                .sources
+                .iter()
+                .find(|source| source.id == "local-ai-usage")
+                .and_then(|source| source.observed_at),
+            Some(observed_at)
+        );
         let quota = snapshot
             .sources
             .iter()

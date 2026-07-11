@@ -17,7 +17,7 @@ use crate::ClientFilter;
 
 use super::data::{
     AgentUsage, DailyModelInfo, DailySourceInfo, DailyUsage, HourlyModelInfo, HourlyUsage,
-    ModelUsage, TokenBreakdown, UsageData,
+    ModelUsage, TokenBreakdown, UsageData, UsageObservation,
 };
 
 /// Cache staleness threshold: 5 minutes.
@@ -547,14 +547,14 @@ fn normalize_cached_agent_name(agent: &str, clients: &str) -> String {
 /// to avoid double file I/O (previously is_cache_stale + load_cached_data both parsed the file).
 pub enum CacheResult {
     /// Cache exists, is fresh (within TTL), and clients match exactly
-    Fresh(UsageData),
+    Fresh(UsageObservation),
     /// Cache exists, clients match exactly, but needs background refresh
-    Stale(UsageData),
+    Stale(UsageObservation),
     /// Cache exists for a strict subset of the requested clients.
     ///
     /// This remains useful for immediate TUI rendering, but callers must not
     /// treat it as a complete data source for a global Pulse snapshot.
-    StaleSubset(UsageData),
+    StaleSubset(UsageObservation),
     /// Cache missing, unreadable, unparseable, or clients don't match
     Miss,
 }
@@ -581,20 +581,8 @@ pub fn load_cache(
     group_by: &GroupBy,
     report_scope: &CacheReportScope,
 ) -> CacheResult {
-    load_cache_with_observed_at(enabled_clients, group_by, report_scope).0
-}
-
-/// Load cached TUI data together with the time the cache was written.
-///
-/// Pulse uses this timestamp as the AI data generation. Using the cache read
-/// time would let an older cache appear newer each time the process starts.
-pub fn load_cache_with_observed_at(
-    enabled_clients: &HashSet<ClientFilter>,
-    group_by: &GroupBy,
-    report_scope: &CacheReportScope,
-) -> (CacheResult, Option<DateTime<Utc>>) {
     let Some(cache_path) = cache_file() else {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     };
     let cached: Option<CachedTUIData> = match File::open(&cache_path) {
         Ok(file) => {
@@ -605,10 +593,10 @@ pub fn load_cache_with_observed_at(
         Err(_) => None,
     };
     let Some(cached) = cached else {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     };
     if cached.schema_version != CACHE_SCHEMA_VERSION {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     }
     let cached_group_by = cached
         .group_by
@@ -616,11 +604,11 @@ pub fn load_cache_with_observed_at(
         .and_then(|value: &str| value.parse::<GroupBy>().ok());
 
     if cached_group_by.as_ref() != Some(group_by) {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     }
 
     if &cached.report_scope != report_scope {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     }
 
     let now = SystemTime::now()
@@ -628,39 +616,39 @@ pub fn load_cache_with_observed_at(
         .unwrap_or_default()
         .as_millis() as u64;
     if cached.timestamp > now.saturating_add(CACHE_FUTURE_TOLERANCE_MS) {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     }
 
     // Check how cached clients relate to enabled clients
     let client_match = check_client_match(enabled_clients, &cached.enabled_clients);
 
     if client_match == ClientMatch::Mismatch {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     }
     // Convert cached data to UsageData
     let data = match cached.data.try_into() {
         Ok(d) => d,
-        Err(_) => return (CacheResult::Miss, None),
+        Err(_) => return CacheResult::Miss,
     };
 
     let observed_at = i64::try_from(cached.timestamp)
         .ok()
         .and_then(DateTime::<Utc>::from_timestamp_millis);
     let Some(observed_at) = observed_at else {
-        return (CacheResult::Miss, None);
+        return CacheResult::Miss;
     };
+    let observation = UsageObservation { data, observed_at };
 
     if client_match == ClientMatch::Subset {
-        return (CacheResult::StaleSubset(data), Some(observed_at));
+        return CacheResult::StaleSubset(observation);
     }
 
     let cache_age = now.saturating_sub(cached.timestamp);
-    let result = if cache_age > CACHE_STALE_THRESHOLD_MS {
-        CacheResult::Stale(data)
+    if cache_age > CACHE_STALE_THRESHOLD_MS {
+        CacheResult::Stale(observation)
     } else {
-        CacheResult::Fresh(data)
-    };
-    (result, Some(observed_at))
+        CacheResult::Fresh(observation)
+    }
 }
 
 /// Determine how the cached client set relates to the currently enabled set.
@@ -697,7 +685,7 @@ fn check_client_match(
 /// The cache stores the same canonical client ids used by `ClientFilter`,
 /// including `synthetic`.
 pub fn save_cached_data(
-    data: &UsageData,
+    observation: &UsageObservation,
     enabled_clients: &HashSet<ClientFilter>,
     group_by: &GroupBy,
     report_scope: &CacheReportScope,
@@ -716,10 +704,9 @@ pub fn save_cached_data(
         }
     }
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let Ok(timestamp) = u64::try_from(observation.observed_at.timestamp_millis()) else {
+        return;
+    };
 
     let mut clients_vec: Vec<String> = enabled_clients
         .iter()
@@ -736,7 +723,7 @@ pub fn save_cached_data(
         enabled_clients: clients_vec,
         group_by: Some(group_by.to_string()),
         report_scope: report_scope.clone(),
-        data: data.into(),
+        data: (&observation.data).into(),
     };
 
     let content = match serde_json::to_vec(&cached) {
@@ -750,7 +737,6 @@ pub fn save_cached_data(
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::io::BufWriter;
     use std::time::{SystemTime, UNIX_EPOCH};
     use std::{env, fs};
     use tempfile::TempDir;
@@ -764,6 +750,26 @@ mod tests {
             set.insert(ClientFilter::Synthetic);
         }
         set
+    }
+
+    fn observation_at(data: UsageData, timestamp_millis: u64) -> UsageObservation {
+        UsageObservation {
+            data,
+            observed_at: DateTime::<Utc>::from_timestamp_millis(
+                i64::try_from(timestamp_millis).unwrap(),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn current_observation(data: UsageData) -> UsageObservation {
+        observation_at(
+            data,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        )
     }
 
     fn make_fixture_cache_current(path: &std::path::Path) {
@@ -912,7 +918,7 @@ mod tests {
         let cached_clients = make_filters(&[ClientFilter::Claude], false);
         let requested_clients = make_filters(&[ClientFilter::Claude, ClientFilter::Qwen], false);
         save_cached_data(
-            &UsageData::default(),
+            &current_observation(UsageData::default()),
             &cached_clients,
             &GroupBy::Model,
             &CacheReportScope::default(),
@@ -939,33 +945,41 @@ mod tests {
 
     #[test]
     #[serial]
-    fn load_cache_reports_original_write_time() {
+    fn cache_round_trip_preserves_fixed_millisecond_observation() {
         let temp_dir = TempDir::new().unwrap();
         let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
         unsafe { env::set_var("TOKSCALE_CONFIG_DIR", temp_dir.path()) };
 
         let clients = make_filters(&[ClientFilter::Claude], false);
         let scope = CacheReportScope::default();
-        save_cached_data(&UsageData::default(), &clients, &GroupBy::Model, &scope);
+        let timestamp = 1_735_689_600_123;
+        let data = UsageData {
+            total_tokens: 42,
+            total_cost: 1.25,
+            ..UsageData::default()
+        };
+        let observation = observation_at(data, timestamp);
+        save_cached_data(&observation, &clients, &GroupBy::Model, &scope);
 
         let path = cache_file().unwrap();
-        let mut cached: CachedTUIData =
+        let cached: CachedTUIData =
             serde_json::from_reader(BufReader::new(File::open(&path).unwrap())).unwrap();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-            - 60_000;
-        cached.timestamp = timestamp;
-        serde_json::to_writer(BufWriter::new(File::create(&path).unwrap()), &cached).unwrap();
+        assert_eq!(cached.schema_version, 11);
+        assert_eq!(cached.timestamp, timestamp);
+        assert_eq!(cached.data.total_tokens, 42);
 
-        let (result, observed_at) = load_cache_with_observed_at(&clients, &GroupBy::Model, &scope);
-
-        assert!(matches!(result, CacheResult::Fresh(_)));
-        assert_eq!(
-            observed_at.unwrap().timestamp_millis(),
-            i64::try_from(timestamp).unwrap()
-        );
+        match load_cache(&clients, &GroupBy::Model, &scope) {
+            CacheResult::Stale(loaded) => {
+                assert_eq!(loaded.data.total_tokens, 42);
+                assert_eq!(loaded.data.total_cost, 1.25);
+                assert_eq!(loaded.observed_at, observation.observed_at);
+                assert_eq!(loaded.observed_at.timestamp_subsec_nanos() % 1_000_000, 0);
+            }
+            other => panic!(
+                "expected stale fixed observation, got {}",
+                other_variant_name(&other)
+            ),
+        }
 
         match previous_override {
             Some(value) => unsafe { env::set_var("TOKSCALE_CONFIG_DIR", value) },
@@ -975,29 +989,121 @@ mod tests {
 
     #[test]
     #[serial]
-    fn load_cache_rejects_timestamp_far_in_the_future() {
+    fn load_cache_classifies_fresh_stale_subset_and_future_observations() {
         let temp_dir = TempDir::new().unwrap();
         let previous_override = env::var_os("TOKSCALE_CONFIG_DIR");
         unsafe { env::set_var("TOKSCALE_CONFIG_DIR", temp_dir.path()) };
 
         let clients = make_filters(&[ClientFilter::Claude], false);
+        let expanded_clients = make_filters(&[ClientFilter::Claude, ClientFilter::Qwen], false);
         let scope = CacheReportScope::default();
-        save_cached_data(&UsageData::default(), &clients, &GroupBy::Model, &scope);
-
-        let path = cache_file().unwrap();
-        let mut cached: CachedTUIData =
-            serde_json::from_reader(BufReader::new(File::open(&path).unwrap())).unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        cached.timestamp = now + CACHE_FUTURE_TOLERANCE_MS + 60_000;
-        serde_json::to_writer(BufWriter::new(File::create(&path).unwrap()), &cached).unwrap();
 
-        let (result, observed_at) = load_cache_with_observed_at(&clients, &GroupBy::Model, &scope);
+        let fresh_data = UsageData {
+            total_tokens: 11,
+            ..UsageData::default()
+        };
+        let fresh_timestamp = now - 1_000;
+        save_cached_data(
+            &observation_at(fresh_data, fresh_timestamp),
+            &clients,
+            &GroupBy::Model,
+            &scope,
+        );
+        match load_cache(&clients, &GroupBy::Model, &scope) {
+            CacheResult::Fresh(observation) => {
+                assert_eq!(observation.data.total_tokens, 11);
+                assert_eq!(
+                    observation.observed_at.timestamp_millis(),
+                    fresh_timestamp as i64
+                );
+            }
+            other => panic!("expected fresh, got {}", other_variant_name(&other)),
+        }
 
-        assert!(matches!(result, CacheResult::Miss));
-        assert_eq!(observed_at, None);
+        let stale_data = UsageData {
+            total_tokens: 22,
+            ..UsageData::default()
+        };
+        let stale_timestamp = now - CACHE_STALE_THRESHOLD_MS - 60_000;
+        save_cached_data(
+            &observation_at(stale_data, stale_timestamp),
+            &clients,
+            &GroupBy::Model,
+            &scope,
+        );
+        match load_cache(&clients, &GroupBy::Model, &scope) {
+            CacheResult::Stale(observation) => {
+                assert_eq!(observation.data.total_tokens, 22);
+                assert_eq!(
+                    observation.observed_at.timestamp_millis(),
+                    stale_timestamp as i64
+                );
+            }
+            other => panic!("expected stale, got {}", other_variant_name(&other)),
+        }
+
+        let subset_data = UsageData {
+            total_tokens: 33,
+            ..UsageData::default()
+        };
+        let subset_timestamp = now - 2_000;
+        save_cached_data(
+            &observation_at(subset_data, subset_timestamp),
+            &clients,
+            &GroupBy::Model,
+            &scope,
+        );
+        match load_cache(&expanded_clients, &GroupBy::Model, &scope) {
+            CacheResult::StaleSubset(observation) => {
+                assert_eq!(observation.data.total_tokens, 33);
+                assert_eq!(
+                    observation.observed_at.timestamp_millis(),
+                    subset_timestamp as i64
+                );
+            }
+            other => panic!("expected stale subset, got {}", other_variant_name(&other)),
+        }
+
+        let future_data = UsageData {
+            total_tokens: 44,
+            ..UsageData::default()
+        };
+        let tolerated_future_timestamp = now + CACHE_FUTURE_TOLERANCE_MS / 2;
+        save_cached_data(
+            &observation_at(future_data, tolerated_future_timestamp),
+            &clients,
+            &GroupBy::Model,
+            &scope,
+        );
+        match load_cache(&clients, &GroupBy::Model, &scope) {
+            CacheResult::Fresh(observation) => {
+                assert_eq!(observation.data.total_tokens, 44);
+                assert_eq!(
+                    observation.observed_at.timestamp_millis(),
+                    tolerated_future_timestamp as i64
+                );
+            }
+            other => panic!(
+                "expected tolerated future observation to be fresh, got {}",
+                other_variant_name(&other)
+            ),
+        }
+
+        let far_future_timestamp = now + CACHE_FUTURE_TOLERANCE_MS + 60_000;
+        save_cached_data(
+            &observation_at(UsageData::default(), far_future_timestamp),
+            &clients,
+            &GroupBy::Model,
+            &scope,
+        );
+        assert!(matches!(
+            load_cache(&clients, &GroupBy::Model, &scope),
+            CacheResult::Miss
+        ));
 
         match previous_override {
             Some(value) => unsafe { env::set_var("TOKSCALE_CONFIG_DIR", value) },
@@ -1084,7 +1190,12 @@ mod tests {
             Some("2026".to_string()),
         );
 
-        save_cached_data(&UsageData::default(), &clients, &GroupBy::Model, &scope);
+        save_cached_data(
+            &current_observation(UsageData::default()),
+            &clients,
+            &GroupBy::Model,
+            &scope,
+        );
 
         let cache_path = cache_file().unwrap();
         let saved: CachedTUIData = serde_json::from_slice(&fs::read(&cache_path).unwrap()).unwrap();
@@ -1122,7 +1233,12 @@ mod tests {
 
         let clients = make_filters(&[ClientFilter::Claude], false);
         let scope = CacheReportScope::default();
-        save_cached_data(&UsageData::default(), &clients, &GroupBy::Model, &scope);
+        save_cached_data(
+            &current_observation(UsageData::default()),
+            &clients,
+            &GroupBy::Model,
+            &scope,
+        );
 
         assert!(matches!(
             load_cache(&clients, &GroupBy::Model, &scope),
@@ -1298,9 +1414,12 @@ mod tests {
 
         let clients = make_filters(&[ClientFilter::Claude, ClientFilter::Cursor], false);
         match load_cache(&clients, &GroupBy::Model, &CacheReportScope::default()) {
-            CacheResult::Fresh(data) => {
-                assert_eq!(data.daily[0].source_breakdown.len(), 2);
-                let cursor = data.daily[0].source_breakdown.get("cursor").unwrap();
+            CacheResult::Fresh(observation) => {
+                assert_eq!(observation.data.daily[0].source_breakdown.len(), 2);
+                let cursor = observation.data.daily[0]
+                    .source_breakdown
+                    .get("cursor")
+                    .unwrap();
                 let model = cursor.models.get("claude-sonnet-4-5").unwrap();
                 assert_eq!(model.provider, "anthropic");
                 assert_eq!(model.tokens.total(), 30);
@@ -1360,7 +1479,7 @@ mod tests {
 
         let clients = make_filters(&[ClientFilter::Claude], false);
         save_cached_data(
-            &UsageData::default(),
+            &current_observation(UsageData::default()),
             &clients,
             &GroupBy::Model,
             &CacheReportScope::default(),
@@ -1422,7 +1541,7 @@ mod tests {
         fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         save_cached_data(
-            &UsageData::default(),
+            &current_observation(UsageData::default()),
             &clients,
             &GroupBy::Model,
             &CacheReportScope::default(),
@@ -1492,7 +1611,7 @@ mod tests {
 
         // Write with the canonical key.
         save_cached_data(
-            &UsageData::default(),
+            &current_observation(UsageData::default()),
             &enabled,
             &TUI_DEFAULT_GROUP_BY,
             &scope,
@@ -1539,7 +1658,12 @@ mod tests {
         let scope = CacheReportScope::default();
 
         // Pre-fix: writer used `GroupBy::default()`.
-        save_cached_data(&UsageData::default(), &enabled, &GroupBy::default(), &scope);
+        save_cached_data(
+            &current_observation(UsageData::default()),
+            &enabled,
+            &GroupBy::default(),
+            &scope,
+        );
 
         // Reader uses the canonical key. If `GroupBy::default()` and
         // `TUI_DEFAULT_GROUP_BY` ever coincide (e.g. someone changes

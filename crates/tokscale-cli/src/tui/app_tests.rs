@@ -10,6 +10,7 @@ use crate::commands::usage::{
 };
 use crate::tui::data::{
     DailyModelInfo, DailySourceInfo, DailyUsage, ModelUsage, TokenBreakdown, UsageData,
+    UsageObservation,
 };
 use crate::ClientFilter;
 use chrono::NaiveDate;
@@ -19,7 +20,16 @@ use ratatui::style::Color;
 use std::collections::BTreeMap;
 use std::env;
 use std::time::{Duration, Instant};
-use tokscale_core::pulse::weread::{WeReadNotesSummary, WeReadState, WeReadStatus};
+use tokscale_core::pulse::weread::{
+    WeReadNotesSummary, WeReadState, WeReadStatus, WeReadSyncState,
+};
+
+fn observation(data: UsageData) -> UsageObservation {
+    UsageObservation {
+        data,
+        observed_at: chrono::Utc::now(),
+    }
+}
 
 #[test]
 fn test_tab_workspaces() {
@@ -92,7 +102,7 @@ fn pulse_snapshot_persistence_waits_for_default_scope_data_load() {
 
     assert_eq!(app.pulse_data_provenance, PulseDataProvenance::Unverified);
     app.update_data(
-        UsageData::default(),
+        observation(UsageData::default()),
         PulseDataProvenance::VerifiedDefaultScopeFresh,
     )
     .unwrap();
@@ -122,14 +132,128 @@ fn fresh_cached_data_preserves_cache_generation_for_pulse() {
 
     let app = App::new_with_cached_data_and_provenance(
         config,
-        Some(data),
+        Some(UsageObservation { data, observed_at }),
         PulseDataProvenance::VerifiedDefaultScopeFresh,
-        Some(observed_at),
     )
     .unwrap();
 
     assert_eq!(app.pulse_ai_observed_at.local, Some(observed_at));
     assert_eq!(app.pulse_ai_observed_at.quota, None);
+}
+
+#[test]
+fn superseded_durable_snapshot_does_not_relabel_current_payload_generation() {
+    let config = TuiConfig {
+        theme: None,
+        refresh: 0,
+        clients: None,
+        since: None,
+        until: None,
+        year: None,
+        initial_tab: None,
+        initial_timeline_granularity: None,
+    };
+    let current_observed_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+    let durable_observed_at = current_observed_at + chrono::Duration::minutes(5);
+    let current_data = current_week_usage_data();
+    let expected_current = crate::commands::pulse::build_snapshot(
+        &current_data,
+        &[],
+        Some(current_observed_at),
+        None,
+        WeReadSyncState::default(),
+    );
+    let start = tokscale_core::pulse::weread::week_start_for(chrono::Local::now().date_naive());
+    let durable_data = UsageData {
+        daily: vec![daily_usage(
+            &start.to_string(),
+            9.0,
+            vec![("gpt-5", "openai", 9.0)],
+        )],
+        ..UsageData::default()
+    };
+    let durable = crate::commands::pulse::build_snapshot(
+        &durable_data,
+        &[],
+        Some(durable_observed_at),
+        None,
+        WeReadSyncState::default(),
+    );
+    let mut app = App::new_with_cached_data_and_provenance(
+        config,
+        None,
+        PulseDataProvenance::VerifiedDefaultScopeFresh,
+    )
+    .unwrap();
+    app.pulse
+        .supersede_next_snapshot_save_for_test(durable.clone());
+
+    app.update_data(
+        UsageObservation {
+            data: current_data,
+            observed_at: current_observed_at,
+        },
+        PulseDataProvenance::VerifiedDefaultScopeFresh,
+    )
+    .unwrap();
+
+    assert_eq!(
+        app.pulse.snapshot.as_ref().unwrap().snapshot_id,
+        durable.snapshot_id
+    );
+    assert_eq!(app.pulse_ai_observed_at.local, Some(current_observed_at));
+
+    app.rebuild_pulse_snapshot().unwrap();
+
+    assert_eq!(
+        app.pulse
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot
+                .sources
+                .iter()
+                .find(|source| source.id == "local-ai-usage"))
+            .and_then(|source| source.observed_at),
+        Some(current_observed_at)
+    );
+    assert_eq!(
+        app.pulse.snapshot.as_ref().unwrap().ai.total_tokens,
+        expected_current.ai.total_tokens
+    );
+}
+
+#[test]
+fn stale_and_subset_cached_observations_do_not_seed_pulse() {
+    for provenance in [
+        PulseDataProvenance::VerifiedDefaultScopeStale,
+        PulseDataProvenance::Unverified,
+    ] {
+        let config = TuiConfig {
+            theme: None,
+            refresh: 0,
+            clients: None,
+            since: None,
+            until: None,
+            year: None,
+            initial_tab: None,
+            initial_timeline_granularity: None,
+        };
+        let app = App::new_with_cached_data_and_provenance(
+            config,
+            Some(UsageObservation {
+                data: UsageData {
+                    total_tokens: 1,
+                    ..UsageData::default()
+                },
+                observed_at: chrono::Utc::now(),
+            }),
+            provenance,
+        )
+        .unwrap();
+
+        assert_eq!(app.pulse_ai_observed_at.local, None);
+        assert!(app.pulse.snapshot.is_none());
+    }
 }
 
 #[test]
@@ -140,7 +264,7 @@ fn local_data_refresh_does_not_advance_quota_generation() {
     app.pulse_ai_observed_at.quota = Some(quota_observed_at);
 
     app.update_data(
-        current_week_usage_data(),
+        observation(current_week_usage_data()),
         PulseDataProvenance::VerifiedDefaultScopeFresh,
     )
     .unwrap();
@@ -163,8 +287,11 @@ fn filtered_tui_data_cannot_persist_as_global_pulse_snapshot() {
     };
     let mut app = App::new_with_cached_data(config, None).unwrap();
 
-    app.update_data(UsageData::default(), PulseDataProvenance::Unverified)
-        .unwrap();
+    app.update_data(
+        observation(UsageData::default()),
+        PulseDataProvenance::Unverified,
+    )
+    .unwrap();
     assert_eq!(app.pulse_data_provenance, PulseDataProvenance::Unverified);
 }
 
@@ -186,7 +313,8 @@ fn completed_scan_keeps_provenance_captured_before_filter_change() {
         .borrow_mut()
         .remove(&ClientFilter::Claude);
 
-    app.update_data(UsageData::default(), captured).unwrap();
+    app.update_data(observation(UsageData::default()), captured)
+        .unwrap();
 
     assert_eq!(app.pulse_data_provenance, captured);
 }
@@ -1051,7 +1179,7 @@ fn test_update_data_exits_daily_detail_when_date_disappears() {
         ],
         ..Default::default()
     };
-    app.update_data(refreshed, PulseDataProvenance::Unverified)
+    app.update_data(observation(refreshed), PulseDataProvenance::Unverified)
         .unwrap();
 
     assert!(
@@ -1093,7 +1221,7 @@ fn test_update_data_keeps_daily_detail_when_date_still_present() {
         ],
         ..Default::default()
     };
-    app.update_data(refreshed, PulseDataProvenance::Unverified)
+    app.update_data(observation(refreshed), PulseDataProvenance::Unverified)
         .unwrap();
 
     assert!(app.is_daily_detail_active());
@@ -2548,7 +2676,7 @@ fn test_shade_map_rebuilds_on_update_data() {
         models: vec![model_usage("claude-sonnet-4-5", 5.0, None)],
         ..UsageData::default()
     };
-    app.update_data(fresh, PulseDataProvenance::Unverified)
+    app.update_data(observation(fresh), PulseDataProvenance::Unverified)
         .unwrap();
 
     assert!(!app

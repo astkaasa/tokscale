@@ -14,7 +14,7 @@ use crate::spinner::LightSpinner;
 use crate::tui::data::UsageData;
 use crate::tui::settings::Settings;
 use crate::tui::{
-    load_cache_with_observed_at, CacheReportScope, CacheResult, DataLoader, TUI_DEFAULT_GROUP_BY,
+    load_cache, CacheReportScope, CacheResult, DataLoader, UsageObservation, TUI_DEFAULT_GROUP_BY,
 };
 use crate::ClientFilter;
 
@@ -58,7 +58,11 @@ pub fn run(args: PulseRunArgs) -> Result<()> {
     };
 
     let settings = Settings::load();
-    let (usage_data, local_observed_at) = load_ai_usage(refresh || sync_only)?;
+    let usage_observation = load_ai_usage(refresh || sync_only)?;
+    let (usage_data, local_observed_at) = match usage_observation {
+        Some(observation) => (observation.data, Some(observation.observed_at)),
+        None => (UsageData::default(), None),
+    };
     let (quota_outputs, quota_observed_at) = match usage::load_cache_with_observed_at() {
         Some((outputs, observed_at)) => (outputs, Some(observed_at)),
         None => (Vec::new(), None),
@@ -170,12 +174,9 @@ fn load_weread_local(settings: &Settings) -> WeReadSyncState {
     state
 }
 
-fn load_ai_usage(refresh: bool) -> Result<(UsageData, Option<chrono::DateTime<Utc>>)> {
+fn load_ai_usage(refresh: bool) -> Result<Option<UsageObservation>> {
     if !refresh {
-        return Ok(match load_cached_ai_usage() {
-            Some((data, observed_at)) => (data, Some(observed_at)),
-            None => (UsageData::default(), None),
-        });
+        return Ok(load_cached_ai_usage());
     }
 
     let today = Local::now().date_naive();
@@ -190,28 +191,25 @@ fn load_ai_usage(refresh: bool) -> Result<(UsageData, Option<chrono::DateTime<Ut
         .filter_map(ClientFilter::to_client_id)
         .collect::<Vec<ClientId>>();
     let _pricing_cache_only = PricingCacheOnlyGuard::enable();
-    let data = DataLoader::with_filters(
+    let observation = DataLoader::with_filters(
         Some(previous_start.to_string()),
         Some(today.to_string()),
         None,
     )
     .load(&clients, &GroupBy::ClientProviderModel, false)?;
-    Ok((data, Some(Utc::now())))
+    Ok(Some(observation))
 }
 
-fn load_cached_ai_usage() -> Option<(UsageData, chrono::DateTime<Utc>)> {
+fn load_cached_ai_usage() -> Option<UsageObservation> {
     let filters = ClientFilter::default_set();
-    let (result, observed_at) = load_cache_with_observed_at(
+    let result = load_cache(
         &filters,
         &TUI_DEFAULT_GROUP_BY,
         &CacheReportScope::default(),
     );
-    match (result, observed_at) {
-        (CacheResult::Fresh(data), Some(observed_at)) => Some((data, observed_at)),
-        (CacheResult::Stale(_), _) | (CacheResult::StaleSubset(_), _) | (CacheResult::Miss, _) => {
-            None
-        }
-        _ => None,
+    match result {
+        CacheResult::Fresh(observation) => Some(observation),
+        CacheResult::Stale(_) | CacheResult::StaleSubset(_) | CacheResult::Miss => None,
     }
 }
 
@@ -331,6 +329,7 @@ mod tests {
 
     use super::*;
     use crate::tui::data::{DailyModelInfo, DailySourceInfo, DailyUsage, TokenBreakdown};
+    use crate::tui::save_cached_data;
 
     struct ConfigDirGuard(Option<std::ffi::OsString>);
 
@@ -420,15 +419,18 @@ mod tests {
     fn ai_work_preserves_the_data_load_observation_time() {
         let observed_at = Utc::now() - ChronoDuration::minutes(2);
         let start = weread::week_start_for(Local::now().date_naive());
-        let data = UsageData {
-            daily: vec![day(start, 100, 1.0, "gpt-5")],
-            ..UsageData::default()
+        let observation = UsageObservation {
+            data: UsageData {
+                daily: vec![day(start, 100, 1.0, "gpt-5")],
+                ..UsageData::default()
+            },
+            observed_at,
         };
 
         let snapshot = build_snapshot(
-            &data,
+            &observation.data,
             &[],
-            Some(observed_at),
+            Some(observation.observed_at),
             None,
             WeReadSyncState::default(),
         );
@@ -439,6 +441,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(local_source.observed_at, Some(observed_at));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn fresh_cache_preserves_the_observation_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = ConfigDirGuard::set(dir.path());
+        let observed_at = chrono::DateTime::from_timestamp_millis(Utc::now().timestamp_millis())
+            .expect("current time is representable at millisecond precision");
+        let start = weread::week_start_for(Local::now().date_naive());
+        let observation = UsageObservation {
+            data: UsageData {
+                daily: vec![day(start, 100, 1.0, "gpt-5")],
+                ..UsageData::default()
+            },
+            observed_at,
+        };
+        let filters = ClientFilter::default_set();
+        save_cached_data(
+            &observation,
+            &filters,
+            &TUI_DEFAULT_GROUP_BY,
+            &CacheReportScope::default(),
+        );
+
+        let cached = load_cached_ai_usage().unwrap();
+
+        assert_eq!(cached.observed_at, observed_at);
+        assert_eq!(cached.data.daily.len(), 1);
     }
 
     #[test]

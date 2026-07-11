@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
-use chrono::{Local, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Timelike, Utc};
 use tokio::runtime::{Handle, Runtime};
 
 use tokscale_core::sessions::UnifiedMessage;
@@ -132,6 +132,19 @@ pub struct UsageData {
     pub error: Option<String>,
     pub current_streak: u32,
     pub longest_streak: u32,
+}
+
+/// A completed usage scan paired with its aggregation completion time.
+#[derive(Debug, Clone)]
+pub struct UsageObservation {
+    pub data: UsageData,
+    pub observed_at: DateTime<Utc>,
+}
+
+fn utc_now_truncated_to_millis() -> DateTime<Utc> {
+    let now = Utc::now();
+    now.with_nanosecond(now.nanosecond() / 1_000_000 * 1_000_000)
+        .expect("millisecond precision is always a valid nanosecond value")
 }
 
 pub struct DataLoader {
@@ -265,7 +278,7 @@ impl DataLoader {
         enabled_clients: &[ClientId],
         group_by: &GroupBy,
         include_synthetic: bool,
-    ) -> Result<UsageData> {
+    ) -> Result<UsageObservation> {
         let home = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
             .to_string_lossy()
@@ -310,7 +323,11 @@ impl DataLoader {
         }
         .map_err(anyhow::Error::msg)?;
 
-        self.aggregate_messages(messages, group_by)
+        let data = self.aggregate_messages(messages, group_by)?;
+        Ok(UsageObservation {
+            data,
+            observed_at: utc_now_truncated_to_millis(),
+        })
     }
 
     fn aggregate_messages(
@@ -1220,6 +1237,17 @@ mod tests {
         assert!(loader.since.is_none());
         assert!(loader.until.is_none());
         assert!(loader.year.is_none());
+    }
+
+    #[test]
+    fn usage_observation_time_is_truncated_to_milliseconds() {
+        let before = Utc::now().timestamp_millis();
+        let observed_at = utc_now_truncated_to_millis();
+        let after = Utc::now().timestamp_millis();
+
+        assert!(observed_at.timestamp_millis() >= before);
+        assert!(observed_at.timestamp_millis() <= after);
+        assert_eq!(observed_at.timestamp_subsec_nanos() % 1_000_000, 0);
     }
 
     #[test]
