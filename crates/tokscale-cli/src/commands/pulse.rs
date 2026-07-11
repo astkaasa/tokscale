@@ -46,8 +46,7 @@ pub fn run(args: PulseRunArgs) -> Result<()> {
     } = args;
 
     if !refresh && !sync_only {
-        if let Some(mut snapshot) = store::load_latest() {
-            snapshot.refresh_time_sensitive_source_health(Utc::now());
+        if let Some(snapshot) = store::load_latest() {
             return write_snapshot(&snapshot, json);
         }
     }

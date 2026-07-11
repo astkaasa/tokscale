@@ -44,6 +44,9 @@ fn render_snapshot(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let Some(snapshot) = app.pulse.presentation_snapshot_at(chrono::Utc::now()) else {
+        return;
+    };
 
     let summary_height = area.height.min(5);
     let remaining_height = area.height.saturating_sub(summary_height);
@@ -58,23 +61,22 @@ fn render_snapshot(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    render_snapshot_summary(frame, app, sections[0]);
-    render_snapshot_rhythm(frame, app, sections[1]);
+    render_snapshot_summary(frame, app, &snapshot, sections[0]);
+    render_snapshot_rhythm(frame, app, &snapshot, sections[1]);
 
     let detail = sections[2];
     if detail.width == 0 || detail.height == 0 {
         return;
     }
 
-    let Some(snapshot) = app.pulse.snapshot.as_ref() else {
-        return;
-    };
-    match snapshot_detail_layout(detail, snapshot) {
-        SnapshotDetailLayout::Compact(area) => render_compact_snapshot_detail(frame, app, area),
+    match snapshot_detail_layout(detail, &snapshot) {
+        SnapshotDetailLayout::Compact(area) => {
+            render_compact_snapshot_detail(frame, app, &snapshot, area)
+        }
         SnapshotDetailLayout::SideBySide { attention, source }
         | SnapshotDetailLayout::Stacked { attention, source } => {
-            render_attention(frame, app, attention);
-            render_source_context(frame, app, source);
+            render_attention(frame, app, &snapshot, attention);
+            render_source_context(frame, app, &snapshot, source);
         }
     }
 }
@@ -187,10 +189,7 @@ fn snapshot_source_panel_height(snapshot: &PulseSnapshotV1) -> u16 {
     (content_lines as u16).saturating_add(2)
 }
 
-fn render_snapshot_summary(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(snapshot) = &app.pulse.snapshot else {
-        return;
-    };
+fn render_snapshot_summary(frame: &mut Frame, app: &App, snapshot: &PulseSnapshotV1, area: Rect) {
     let block = panel_block(app, snapshot_summary_title(snapshot, area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -422,7 +421,12 @@ fn compact_summary_line(
     Line::from(spans)
 }
 
-fn render_snapshot_rhythm(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_snapshot_rhythm(
+    frame: &mut Frame,
+    app: &mut App,
+    snapshot: &PulseSnapshotV1,
+    area: Rect,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -434,9 +438,6 @@ fn render_snapshot_rhythm(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let Some(snapshot) = &app.pulse.snapshot else {
-        return;
-    };
     let reading = &snapshot.reading;
     if inner.width >= MIN_WEEK_TABLE_WIDTH && inner.height >= 4 && !reading.days.is_empty() {
         let chunks = Layout::default()
@@ -597,7 +598,7 @@ fn render_snapshot_reading_context(
     );
 }
 
-fn render_attention(frame: &mut Frame, app: &App, area: Rect) {
+fn render_attention(frame: &mut Frame, app: &App, snapshot: &PulseSnapshotV1, area: Rect) {
     let block = panel_block(app, "ATTENTION / NEXT");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -605,9 +606,6 @@ fn render_attention(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let Some(snapshot) = &app.pulse.snapshot else {
-        return;
-    };
     let mut insights = snapshot.insights.iter().collect::<Vec<_>>();
     insights.sort_by_key(|insight| signal_level_priority(insight.level));
 
@@ -711,7 +709,7 @@ fn attention_line(
     )
 }
 
-fn render_source_context(frame: &mut Frame, app: &App, area: Rect) {
+fn render_source_context(frame: &mut Frame, app: &App, snapshot: &PulseSnapshotV1, area: Rect) {
     let block = panel_block(app, "SOURCE HEALTH / CONTEXT");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -719,9 +717,6 @@ fn render_source_context(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let Some(snapshot) = &app.pulse.snapshot else {
-        return;
-    };
     let lines = source_context_lines(app, snapshot, inner.width as usize);
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().bg(app.theme.background)),
@@ -969,7 +964,12 @@ fn prefixed_line(
     Line::from(spans)
 }
 
-fn render_compact_snapshot_detail(frame: &mut Frame, app: &App, area: Rect) {
+fn render_compact_snapshot_detail(
+    frame: &mut Frame,
+    app: &App,
+    snapshot: &PulseSnapshotV1,
+    area: Rect,
+) {
     let block = panel_block(app, "ATTENTION / NEXT");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -977,9 +977,6 @@ fn render_compact_snapshot_detail(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let Some(snapshot) = &app.pulse.snapshot else {
-        return;
-    };
     let mut lines = Vec::new();
     if let Some(insight) = snapshot
         .insights

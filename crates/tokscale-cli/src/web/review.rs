@@ -1,8 +1,17 @@
 use std::fmt::Write;
 
+use chrono::{DateTime, Utc};
 use tokscale_core::pulse::{PulseSnapshotV1, SignalLevel};
 
+#[cfg(test)]
 pub(crate) fn render_weekly_review(snapshot: &PulseSnapshotV1) -> String {
+    render_weekly_review_at(snapshot, snapshot.generated_at)
+}
+
+pub(crate) fn render_weekly_review_at(
+    snapshot: &PulseSnapshotV1,
+    evaluated_at: DateTime<Utc>,
+) -> String {
     let mut html = String::new();
     let period_end = snapshot
         .period
@@ -99,8 +108,9 @@ footer {{ padding-top:20px; color:var(--muted); font-size:12px; overflow-wrap:an
 
     let _ = write!(
         html,
-        "</main><footer>Generated {} · local read-only report</footer></div></body></html>",
-        escape_html(&snapshot.generated_at.to_rfc3339())
+        "</main><footer>Snapshot generated {} · health evaluated {} · local read-only report</footer></div></body></html>",
+        escape_html(&snapshot.generated_at.to_rfc3339()),
+        escape_html(&evaluated_at.to_rfc3339())
     );
     html
 }

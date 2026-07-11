@@ -136,7 +136,17 @@ impl PulseSnapshotV1 {
         )
     }
 
-    pub fn refresh_time_sensitive_source_health(&mut self, now: DateTime<Utc>) {
+    /// Returns a presentation-only copy with time-sensitive source health evaluated at `now`.
+    ///
+    /// The returned copy preserves the canonical snapshot identity and generation time. Callers
+    /// must not write it back to durable storage or use it for canonical JSON/Markdown exports.
+    pub fn for_presentation_at(&self, now: DateTime<Utc>) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.refresh_time_sensitive_source_health(now);
+        snapshot
+    }
+
+    fn refresh_time_sensitive_source_health(&mut self, now: DateTime<Utc>) {
         let Some((current_freshness, observed_at)) = self
             .sources
             .iter()
@@ -1373,19 +1383,28 @@ mod tests {
     }
 
     #[test]
-    fn loaded_snapshot_expires_quota_source_and_matching_evidence() {
+    fn presentation_copy_expires_quota_source_without_mutating_snapshot() {
         let observed_at = Utc::now();
-        let mut snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
             ai_fixture(),
             Some(observed_at),
             Some(observed_at),
             reading_fixture(),
         );
         let now = observed_at + ChronoDuration::minutes(10);
+        let serialized_before = serde_json::to_vec(&snapshot).unwrap();
+        let snapshot_id = snapshot.snapshot_id.clone();
+        let generated_at = snapshot.generated_at;
 
-        snapshot.refresh_time_sensitive_source_health(now);
+        let presentation = snapshot.for_presentation_at(now);
 
-        let source = snapshot
+        assert_eq!(serde_json::to_vec(&snapshot).unwrap(), serialized_before);
+        assert_eq!(snapshot.snapshot_id, snapshot_id);
+        assert_eq!(snapshot.generated_at, generated_at);
+        assert_eq!(presentation.snapshot_id, snapshot_id);
+        assert_eq!(presentation.generated_at, generated_at);
+
+        let source = presentation
             .sources
             .iter()
             .find(|source| source.id == "subscription-usage-cache")
@@ -1393,7 +1412,7 @@ mod tests {
         assert_eq!(source.freshness, PulseFreshness::Stale);
         assert_eq!(source.coverage, PulseCoverage::Partial);
         assert_eq!(source.issue_code.as_deref(), Some("stale_cache"));
-        let quota_evidence = snapshot
+        let quota_evidence = presentation
             .evidence
             .iter()
             .filter(|evidence| evidence.source_id == "subscription-usage-cache")
@@ -1402,6 +1421,80 @@ mod tests {
         assert!(quota_evidence
             .iter()
             .all(|evidence| evidence.freshness == PulseFreshness::Stale));
+    }
+
+    #[test]
+    fn presentation_copy_is_deterministic_for_the_same_time() {
+        let observed_at = Utc::now();
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(observed_at),
+            Some(observed_at),
+            reading_fixture(),
+        );
+        let now = observed_at + ChronoDuration::minutes(10);
+
+        let first = serde_json::to_vec(&snapshot.for_presentation_at(now)).unwrap();
+        let second = serde_json::to_vec(&snapshot.for_presentation_at(now)).unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn presentation_copy_honors_quota_freshness_boundaries() {
+        let observed_at = Utc::now();
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai_fixture(),
+            Some(observed_at),
+            Some(observed_at),
+            reading_fixture(),
+        );
+
+        for (offset_seconds, expected) in [
+            (-61, PulseFreshness::Stale),
+            (-60, PulseFreshness::Fresh),
+            (300, PulseFreshness::Fresh),
+            (301, PulseFreshness::Stale),
+        ] {
+            let presentation =
+                snapshot.for_presentation_at(observed_at + ChronoDuration::seconds(offset_seconds));
+            let source = presentation
+                .sources
+                .iter()
+                .find(|source| source.id == "subscription-usage-cache")
+                .unwrap();
+
+            assert_eq!(source.freshness, expected, "offset: {offset_seconds}");
+        }
+    }
+
+    #[test]
+    fn presentation_copy_does_not_fabricate_missing_quota_health() {
+        let observed_at = Utc::now();
+        let mut ai = ai_fixture();
+        ai.quota_sources.clear();
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            ai,
+            Some(observed_at),
+            Some(observed_at),
+            reading_fixture(),
+        );
+
+        let presentation = snapshot.for_presentation_at(observed_at + ChronoDuration::minutes(10));
+        let source = presentation
+            .sources
+            .iter()
+            .find(|source| source.id == "subscription-usage-cache")
+            .unwrap();
+
+        assert_eq!(source.status, "missing");
+        assert_eq!(source.freshness, PulseFreshness::Missing);
+        assert_eq!(source.coverage, PulseCoverage::Unknown);
+        assert_eq!(source.issue_code, None);
+        assert!(!presentation
+            .evidence
+            .iter()
+            .any(|evidence| evidence.source_id == "subscription-usage-cache"));
     }
 
     #[test]

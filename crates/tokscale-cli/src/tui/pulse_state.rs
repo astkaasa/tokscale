@@ -67,10 +67,7 @@ impl PulseState {
         let snapshot = {
             #[cfg(not(test))]
             {
-                store::load_latest().map(|mut snapshot| {
-                    snapshot.refresh_time_sensitive_source_health(Utc::now());
-                    snapshot
-                })
+                store::load_latest()
             }
             #[cfg(test)]
             {
@@ -99,6 +96,12 @@ impl PulseState {
             #[cfg(test)]
             snapshot_save_error: None,
         }
+    }
+
+    pub(crate) fn presentation_snapshot_at(&self, now: DateTime<Utc>) -> Option<PulseSnapshotV1> {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.for_presentation_at(now))
     }
 
     pub(crate) fn is_fetching_weread(&self) -> bool {
@@ -346,6 +349,7 @@ mod tests {
     use tokscale_core::pulse::weread::{
         Dataset, DatasetCoverage, WeReadDay, WeReadFocusBook, WeReadWeekly,
     };
+    use tokscale_core::pulse::{AiQuotaMetric, AiQuotaSource, AiWorkInput, PulseFreshness};
 
     fn weekly(observed_at: DateTime<Utc>) -> WeReadSyncState {
         let start = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
@@ -393,6 +397,53 @@ mod tests {
         assert_eq!(
             weread_status_message(WeReadStatus::UpgradeRequired),
             "WeRead skill upgrade required"
+        );
+    }
+
+    #[test]
+    fn cockpit_uses_presentation_copy_without_mutating_durable_snapshot() {
+        let observed_at = Utc::now();
+        let durable = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            AiWorkInput {
+                quota_sources: vec![AiQuotaSource {
+                    provider: "Codex".to_string(),
+                    metrics: vec![AiQuotaMetric {
+                        label: "weekly".to_string(),
+                        used_percent: 75.0,
+                    }],
+                }],
+                ..AiWorkInput::default()
+            },
+            None,
+            Some(observed_at),
+            WeReadSyncState::default(),
+        );
+        let durable_bytes = serde_json::to_vec(&durable).unwrap();
+
+        let mut pulse = PulseState::empty_for_surface();
+        pulse.snapshot = Some(durable.clone());
+        let cockpit = pulse
+            .presentation_snapshot_at(observed_at + chrono::Duration::minutes(10))
+            .unwrap();
+
+        assert_eq!(serde_json::to_vec(&durable).unwrap(), durable_bytes);
+        assert_eq!(
+            durable
+                .sources
+                .iter()
+                .find(|source| source.id == "subscription-usage-cache")
+                .unwrap()
+                .freshness,
+            PulseFreshness::Fresh
+        );
+        assert_eq!(
+            cockpit
+                .sources
+                .iter()
+                .find(|source| source.id == "subscription-usage-cache")
+                .unwrap()
+                .freshness,
+            PulseFreshness::Stale
         );
     }
 

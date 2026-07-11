@@ -1,6 +1,6 @@
 use anyhow::Result;
-use chrono::{NaiveDateTime, Utc};
-use tokscale_core::pulse::store as pulse_store;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use tokscale_core::pulse::{store as pulse_store, PulseSnapshotV1};
 use tokscale_core::{ClientId, GroupBy};
 
 use crate::client_filter::ResolvedClientSelection;
@@ -13,8 +13,8 @@ use crate::tui::{load_cache, CacheReportScope, CacheResult, DataLoader, UsageDat
 use crate::web::overview::{
     build_overview_json, render_overview_html, render_overview_surface, OverviewRenderOptions,
 };
-use crate::web::review::render_weekly_review;
-use crate::web::server::{serve_static_overview, StaticSite};
+use crate::web::review::render_weekly_review_at;
+use crate::web::server::{serve_static_overview, ReviewRenderer, StaticSite};
 
 pub(crate) struct ServeArgs {
     pub port: u16,
@@ -28,6 +28,11 @@ pub(crate) struct ServeArgs {
     pub group_by: GroupBy,
     pub no_spinner: bool,
     pub reference_now: NaiveDateTime,
+}
+
+struct PulseRouteContent {
+    pulse_json: Option<String>,
+    pulse_markdown: Option<String>,
 }
 
 pub(crate) fn run(args: ServeArgs) -> Result<()> {
@@ -86,25 +91,19 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
     let json = serde_json::to_string_pretty(&overview_json)?;
     let surface_data = data.clone();
     let surface_options = render_options.clone();
-    let pulse_snapshot = pulse_store::load_latest().map(|mut snapshot| {
-        snapshot.refresh_time_sensitive_source_health(Utc::now());
-        snapshot
-    });
-    let review_html = pulse_snapshot.as_ref().map(render_weekly_review);
-    let pulse_json = pulse_snapshot
-        .as_ref()
-        .map(serde_json::to_string_pretty)
-        .transpose()?;
-    let pulse_markdown = pulse_snapshot
-        .as_ref()
-        .map(|snapshot| with_trailing_newline(snapshot.to_markdown()));
+    let pulse_snapshot = pulse_store::load_latest();
+    let PulseRouteContent {
+        pulse_json,
+        pulse_markdown,
+    } = pulse_route_content(pulse_snapshot.as_ref())?;
+    let review = pulse_snapshot.map(pulse_review_renderer);
 
     serve_static_overview(
         port,
         StaticSite {
             html,
             json,
-            review_html,
+            review,
             pulse_json,
             pulse_markdown,
             surface: Some(Box::new(move |size| {
@@ -117,11 +116,23 @@ pub(crate) fn run(args: ServeArgs) -> Result<()> {
     )
 }
 
-fn with_trailing_newline(mut output: String) -> String {
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    output
+fn pulse_route_content(snapshot: Option<&PulseSnapshotV1>) -> Result<PulseRouteContent> {
+    let pulse_json = snapshot.map(serde_json::to_string_pretty).transpose()?;
+    let pulse_markdown = snapshot.map(PulseSnapshotV1::to_markdown);
+
+    Ok(PulseRouteContent {
+        pulse_json,
+        pulse_markdown,
+    })
+}
+
+fn pulse_review_renderer(snapshot: PulseSnapshotV1) -> ReviewRenderer {
+    Box::new(move || render_pulse_review_at(&snapshot, Utc::now()))
+}
+
+fn render_pulse_review_at(snapshot: &PulseSnapshotV1, now: DateTime<Utc>) -> String {
+    let presentation = snapshot.for_presentation_at(now);
+    render_weekly_review_at(&presentation, now)
 }
 
 fn fresh_cached_data(result: CacheResult) -> Option<UsageData> {
@@ -162,11 +173,66 @@ fn scan_usage_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokscale_core::pulse::weread::WeReadSyncState;
+    use tokscale_core::pulse::{AiQuotaMetric, AiQuotaSource, AiWorkInput, PulseFreshness};
 
     #[test]
-    fn pulse_markdown_matches_cli_line_termination() {
-        assert_eq!(with_trailing_newline("# Pulse".to_string()), "# Pulse\n");
-        assert_eq!(with_trailing_newline("# Pulse\n".to_string()), "# Pulse\n");
+    fn pulse_http_exports_are_durable_and_markdown_is_byte_identical() {
+        let observed_at = Utc::now();
+        let snapshot = PulseSnapshotV1::from_inputs_with_source_observed_at(
+            AiWorkInput {
+                quota_sources: vec![AiQuotaSource {
+                    provider: "Codex".to_string(),
+                    metrics: vec![AiQuotaMetric {
+                        label: "weekly".to_string(),
+                        used_percent: 75.0,
+                    }],
+                }],
+                ..AiWorkInput::default()
+            },
+            None,
+            Some(observed_at),
+            WeReadSyncState::default(),
+        );
+        let stale_at = observed_at + chrono::Duration::seconds(301);
+        let presentation = snapshot.for_presentation_at(stale_at);
+        let first = pulse_route_content(Some(&snapshot)).unwrap();
+        let second = pulse_route_content(Some(&snapshot)).unwrap();
+        let expected_json = serde_json::to_string_pretty(&snapshot).unwrap();
+        let expected_markdown = snapshot.to_markdown();
+        let fresh_review =
+            render_pulse_review_at(&snapshot, observed_at + chrono::Duration::seconds(300));
+        let stale_review = render_pulse_review_at(&snapshot, stale_at);
+
+        assert_eq!(
+            snapshot
+                .sources
+                .iter()
+                .find(|source| source.id == "subscription-usage-cache")
+                .unwrap()
+                .freshness,
+            PulseFreshness::Fresh
+        );
+        assert_eq!(
+            presentation
+                .sources
+                .iter()
+                .find(|source| source.id == "subscription-usage-cache")
+                .unwrap()
+                .freshness,
+            PulseFreshness::Stale
+        );
+        assert_eq!(first.pulse_json.as_deref(), Some(expected_json.as_str()));
+        assert_eq!(first.pulse_json, second.pulse_json);
+        assert!(expected_markdown.ends_with('\n'));
+        assert_eq!(
+            first.pulse_markdown.as_deref().unwrap().as_bytes(),
+            expected_markdown.as_bytes()
+        );
+        assert_eq!(first.pulse_markdown, second.pulse_markdown);
+        assert_ne!(fresh_review, stale_review);
+        assert!(stale_review.contains("Snapshot generated"));
+        assert!(stale_review.contains(&format!("health evaluated {}", stale_at.to_rfc3339())));
     }
 
     #[test]

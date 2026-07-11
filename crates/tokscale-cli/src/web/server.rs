@@ -15,10 +15,12 @@ const REQUEST_HEADER_READ_DEADLINE: Duration = Duration::from_secs(5);
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const PERMISSIONS_POLICY: &str = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
 
+pub(crate) type ReviewRenderer = Box<dyn Fn() -> String + Send + Sync>;
+
 pub(crate) struct StaticSite {
     pub html: String,
     pub json: String,
-    pub review_html: Option<String>,
+    pub review: Option<ReviewRenderer>,
     pub pulse_json: Option<String>,
     pub pulse_markdown: Option<String>,
     pub surface: Option<Box<dyn Fn(SurfaceSize) -> Result<String> + Send + Sync>>,
@@ -88,7 +90,7 @@ pub(crate) fn serve_static_overview(port: u16, site: StaticSite) -> Result<()> {
         addr.ip(),
         addr.port()
     );
-    if site.review_html.is_some() {
+    if site.review.is_some() {
         println!(
             "  Weekly Review:      http://{}:{}/review",
             addr.ip(),
@@ -357,7 +359,15 @@ fn response_for_target(target: &str, site: &StaticSite) -> HttpResponse {
             body: site.json.clone(),
             send_body: true,
         },
-        "/review" => optional_response(&site.review_html, "text/html; charset=utf-8"),
+        "/review" => match &site.review {
+            Some(render) => HttpResponse {
+                status: "200 OK",
+                content_type: "text/html; charset=utf-8",
+                body: render(),
+                send_body: true,
+            },
+            None => not_found_response(),
+        },
         "/api/v1/pulse" => optional_response(&site.pulse_json, "application/json; charset=utf-8"),
         "/exports/pulse.md" => {
             optional_response(&site.pulse_markdown, "text/markdown; charset=utf-8")
@@ -464,6 +474,8 @@ fn write_response<W: Write>(stream: &mut W, response: HttpResponse) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::thread;
 
     use super::*;
@@ -524,7 +536,7 @@ mod tests {
         StaticSite {
             html: "<html>overview</html>".to_string(),
             json: "{\"ok\":true}".to_string(),
-            review_html: Some("<html>review</html>".to_string()),
+            review: Some(Box::new(|| "<html>review</html>".to_string())),
             pulse_json: Some("{\"schemaVersion\":1}".to_string()),
             pulse_markdown: Some("# Pulse\n".to_string()),
             surface: None,
@@ -533,7 +545,7 @@ mod tests {
 
     fn overview_only_site() -> StaticSite {
         let mut site = site();
-        site.review_html = None;
+        site.review = None;
         site.pulse_json = None;
         site.pulse_markdown = None;
         site
@@ -649,6 +661,26 @@ mod tests {
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.content_type, "text/html; charset=utf-8");
         assert_eq!(response.body, "<html>review</html>");
+    }
+
+    #[test]
+    fn review_renders_on_each_request() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let render_calls = Arc::clone(&calls);
+        let mut site = site();
+        site.review = Some(Box::new(move || {
+            format!(
+                "<html>review {}</html>",
+                render_calls.fetch_add(1, Ordering::Relaxed) + 1
+            )
+        }));
+
+        let first = local_response("GET /review HTTP/1.1", &site);
+        let second = local_response("GET /review HTTP/1.1", &site);
+
+        assert_eq!(first.body, "<html>review 1</html>");
+        assert_eq!(second.body, "<html>review 2</html>");
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]
