@@ -401,6 +401,11 @@ impl PricingLookup {
             }
         }
 
+        let exact_litellm = self.exact_match_litellm(model_id);
+        if should_prefer_openai_272k_litellm(model_id, provider_id, exact_litellm.as_ref()) {
+            return exact_litellm;
+        }
+
         if let Some(result) = choose_best_source_result(
             self.exact_match_litellm_for_provider(model_id, provider_id),
             self.exact_match_openrouter_for_provider(model_id, provider_id),
@@ -409,7 +414,7 @@ impl PricingLookup {
             return Some(result);
         }
 
-        if let Some(result) = self.exact_match_litellm(model_id) {
+        if let Some(result) = exact_litellm {
             return Some(result);
         }
         if let Some(result) = self.exact_match_openrouter(model_id) {
@@ -998,6 +1003,7 @@ impl PricingLookup {
         provider_id: Option<&str>,
         usage: &TokenBreakdown,
     ) -> f64 {
+        let provider_id = normalize_provider_hint(provider_id);
         let result = match self.lookup_with_provider(model_id, provider_id) {
             Some(r) => r,
             None => return 0.0,
@@ -1012,6 +1018,54 @@ fn matches_model_or_snapshot(model_id: &str, base: &str) -> bool {
         || model_id
             .strip_prefix(base)
             .is_some_and(|suffix| suffix.starts_with("-20"))
+}
+
+fn is_openai_full_request_272k_model(model_id: &str) -> bool {
+    let key = model_id.to_ascii_lowercase();
+    let model_id = key.split('/').next_back().unwrap_or(&key);
+
+    [
+        "gpt-5.4",
+        "gpt-5.4-pro",
+        "gpt-5.5",
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
+    .into_iter()
+    .any(|base| matches_model_or_snapshot(model_id, base))
+}
+
+fn has_complete_openai_272k_rates(pricing: &ModelPricing) -> bool {
+    let valid = |price: Option<f64>| price.is_some_and(is_valid_price_value);
+
+    if !valid(pricing.input_cost_per_token)
+        || !valid(pricing.input_cost_per_token_above_272k_tokens)
+        || !valid(pricing.output_cost_per_token)
+        || !valid(pricing.output_cost_per_token_above_272k_tokens)
+    {
+        return false;
+    }
+
+    match pricing.cache_read_input_token_cost {
+        Some(base) if is_valid_price_value(base) => {
+            valid(pricing.cache_read_input_token_cost_above_272k_tokens)
+        }
+        Some(_) => false,
+        None => true,
+    }
+}
+
+fn should_prefer_openai_272k_litellm(
+    model_id: &str,
+    provider_id: Option<&str>,
+    litellm: Option<&LookupResult>,
+) -> bool {
+    provider_id.is_some_and(|provider| {
+        provider_identity::canonical_provider(provider).as_deref() == Some("openai")
+    }) && is_openai_full_request_272k_model(model_id)
+        && litellm.is_some_and(|result| has_complete_openai_272k_rates(&result.pricing))
 }
 
 fn uses_openai_full_request_272k_pricing(result: &LookupResult, provider_id: Option<&str>) -> bool {
@@ -1029,19 +1083,7 @@ fn uses_openai_full_request_272k_pricing(result: &LookupResult, provider_id: Opt
         return false;
     }
 
-    let model_id = key.split('/').next_back().unwrap_or(&key);
-
-    [
-        "gpt-5.4",
-        "gpt-5.4-pro",
-        "gpt-5.5",
-        "gpt-5.6",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-    ]
-    .into_iter()
-    .any(|base| matches_model_or_snapshot(model_id, base))
+    is_openai_full_request_272k_model(&key)
 }
 
 fn compute_cost_for_lookup(
@@ -3698,6 +3740,63 @@ mod tests {
 
         let output_only = compute_cost_for_lookup(&result, None, &usage(1, 300_000, 0, 0));
         assert!((output_only - (0.000005 + 300_000.0 * 0.000030)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_provider_aware_openai_prefers_complete_272k_litellm_rates() {
+        let litellm_pricing = openai_272k_result("gpt-5.6-sol", "LiteLLM").pricing;
+        let lookup = PricingLookup::new(
+            HashMap::from([("gpt-5.6-sol".into(), litellm_pricing.clone())]),
+            HashMap::from([("openai/gpt-5.6-sol".into(), litellm_pricing.clone())]),
+            HashMap::new(),
+        );
+
+        let result = lookup
+            .lookup_with_provider("gpt-5.6-sol", Some("openai"))
+            .unwrap();
+        assert_eq!(result.source, "LiteLLM");
+        assert_eq!(result.matched_key, "gpt-5.6-sol");
+
+        let usage = TokenBreakdown {
+            input: 200_000,
+            output: 10_000,
+            cache_read: 72_001,
+            ..Default::default()
+        };
+        let expected = 200_000.0 * 0.000010 + 10_000.0 * 0.000045 + 72_001.0 * 0.000001;
+        for provider in [Some("openai"), Some("unknown"), Some(""), None] {
+            let cost = lookup.calculate_cost_with_provider("gpt-5.6-sol", provider, &usage);
+            assert!((cost - expected).abs() < 1e-12);
+        }
+
+        assert!(!should_prefer_openai_272k_litellm(
+            "gpt-5.6-sol",
+            Some("openrouter"),
+            Some(&result)
+        ));
+    }
+
+    #[test]
+    fn test_openai_litellm_preference_requires_complete_272k_rates() {
+        let complete = openai_272k_result("gpt-5.6-sol", "LiteLLM");
+        assert!(has_complete_openai_272k_rates(&complete.pricing));
+
+        let mut missing_output = complete.pricing.clone();
+        missing_output.output_cost_per_token_above_272k_tokens = None;
+        assert!(!has_complete_openai_272k_rates(&missing_output));
+
+        let mut missing_cache = complete.pricing.clone();
+        missing_cache.cache_read_input_token_cost_above_272k_tokens = None;
+        assert!(!has_complete_openai_272k_rates(&missing_cache));
+
+        let mut unrelated_tier = complete.pricing;
+        unrelated_tier.input_cost_per_token_above_272k_tokens = None;
+        unrelated_tier.output_cost_per_token_above_272k_tokens = None;
+        unrelated_tier.cache_read_input_token_cost_above_272k_tokens = None;
+        unrelated_tier.input_cost_per_token_above_200k_tokens = Some(0.0000075);
+        unrelated_tier.output_cost_per_token_above_200k_tokens = Some(0.0000375);
+        assert!(has_meaningful_tier_support(&unrelated_tier));
+        assert!(!has_complete_openai_272k_rates(&unrelated_tier));
     }
 
     #[test]
