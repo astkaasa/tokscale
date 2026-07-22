@@ -1003,15 +1003,136 @@ impl PricingLookup {
             None => return 0.0,
         };
 
+        compute_cost_for_lookup(&result, provider_id, usage)
+    }
+}
+
+fn matches_model_or_snapshot(model_id: &str, base: &str) -> bool {
+    model_id == base
+        || model_id
+            .strip_prefix(base)
+            .is_some_and(|suffix| suffix.starts_with("-20"))
+}
+
+fn uses_openai_full_request_272k_pricing(result: &LookupResult, provider_id: Option<&str>) -> bool {
+    if result.source != "LiteLLM"
+        || is_reseller_provider(&result.matched_key)
+        || provider_id.is_some_and(|provider| {
+            provider_identity::canonical_provider(provider).as_deref() != Some("openai")
+        })
+    {
+        return false;
+    }
+
+    let key = result.matched_key.to_ascii_lowercase();
+    if key.contains('/') && !key.starts_with("openai/") {
+        return false;
+    }
+
+    let model_id = key.split('/').next_back().unwrap_or(&key);
+
+    [
+        "gpt-5.4",
+        "gpt-5.4-pro",
+        "gpt-5.5",
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
+    .into_iter()
+    .any(|base| matches_model_or_snapshot(model_id, base))
+}
+
+fn compute_cost_for_lookup(
+    result: &LookupResult,
+    provider_id: Option<&str>,
+    usage: &TokenBreakdown,
+) -> f64 {
+    let calculate = |pricing| {
         compute_cost(
-            &result.pricing,
+            pricing,
             usage.input,
             usage.output,
             usage.cache_read,
             usage.cache_write,
             usage.reasoning,
         )
+    };
+    let total_input = usage
+        .input
+        .max(0)
+        .saturating_add(usage.cache_read.max(0))
+        .saturating_add(usage.cache_write.max(0));
+    if !uses_openai_full_request_272k_pricing(result, provider_id) {
+        return calculate(&result.pricing);
     }
+
+    let mut pricing = result.pricing.clone();
+    if total_input <= TIERED_PRICING_THRESHOLD_272K_TOKENS as i64 {
+        pricing.input_cost_per_token_above_272k_tokens = None;
+        pricing.output_cost_per_token_above_272k_tokens = None;
+        pricing.cache_read_input_token_cost_above_272k_tokens = None;
+        return calculate(&pricing);
+    }
+
+    if let Some(high) = pricing
+        .input_cost_per_token_above_272k_tokens
+        .filter(|price| is_valid_price_value(*price))
+    {
+        let input_multiplier = pricing
+            .input_cost_per_token
+            .filter(|base| is_valid_price_value(*base) && *base > 0.0)
+            .map(|base| high / base);
+        for rate in [
+            &mut pricing.input_cost_per_token,
+            &mut pricing.input_cost_per_token_above_128k_tokens,
+            &mut pricing.input_cost_per_token_above_200k_tokens,
+            &mut pricing.input_cost_per_token_above_256k_tokens,
+            &mut pricing.input_cost_per_token_above_272k_tokens,
+        ] {
+            *rate = Some(high);
+        }
+
+        if let (Some(multiplier), Some(cache_write_price)) = (
+            input_multiplier,
+            pricing
+                .cache_creation_input_token_cost
+                .filter(|price| is_valid_price_value(*price)),
+        ) {
+            let high = Some(cache_write_price * multiplier);
+            pricing.cache_creation_input_token_cost = high;
+            pricing.cache_creation_input_token_cost_above_200k_tokens = high;
+        }
+    }
+    if let Some(high) = pricing
+        .output_cost_per_token_above_272k_tokens
+        .filter(|price| is_valid_price_value(*price))
+    {
+        for rate in [
+            &mut pricing.output_cost_per_token,
+            &mut pricing.output_cost_per_token_above_128k_tokens,
+            &mut pricing.output_cost_per_token_above_200k_tokens,
+            &mut pricing.output_cost_per_token_above_256k_tokens,
+            &mut pricing.output_cost_per_token_above_272k_tokens,
+        ] {
+            *rate = Some(high);
+        }
+    }
+    if let Some(high) = pricing
+        .cache_read_input_token_cost_above_272k_tokens
+        .filter(|price| is_valid_price_value(*price))
+    {
+        for rate in [
+            &mut pricing.cache_read_input_token_cost,
+            &mut pricing.cache_read_input_token_cost_above_200k_tokens,
+            &mut pricing.cache_read_input_token_cost_above_272k_tokens,
+        ] {
+            *rate = Some(high);
+        }
+    }
+
+    calculate(&pricing)
 }
 
 pub fn compute_cost(
@@ -3537,6 +3658,95 @@ mod tests {
             + (28_000.0 * 0.000004);
 
         assert!((cost - expected).abs() < 1e-12);
+    }
+
+    fn openai_272k_result(key: &str, source: &str) -> LookupResult {
+        LookupResult {
+            matched_key: key.into(),
+            source: source.into(),
+            pricing: ModelPricing {
+                input_cost_per_token: Some(0.000005),
+                input_cost_per_token_above_272k_tokens: Some(0.000010),
+                output_cost_per_token: Some(0.000030),
+                output_cost_per_token_above_272k_tokens: Some(0.000045),
+                cache_read_input_token_cost: Some(0.0000005),
+                cache_read_input_token_cost_above_272k_tokens: Some(0.000001),
+                cache_creation_input_token_cost: Some(0.00000625),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn test_openai_272k_full_request_pricing_uses_combined_input() {
+        let result = openai_272k_result("openai/gpt-5.5", "LiteLLM");
+        let usage = |input, output, cache_read, cache_write| TokenBreakdown {
+            input,
+            output,
+            cache_read,
+            cache_write,
+            reasoning: 0,
+        };
+        let cost =
+            compute_cost_for_lookup(&result, Some("openai"), &usage(200_000, 10_000, 72_000, 1));
+        let expected = 200_000.0 * 0.000010 + 10_000.0 * 0.000045 + 72_000.0 * 0.000001 + 0.0000125;
+        assert!((cost - expected).abs() < 1e-12);
+
+        let boundary = compute_cost_for_lookup(&result, None, &usage(200_000, 10_000, 72_000, 0));
+        let boundary_expected = 200_000.0 * 0.000005 + 10_000.0 * 0.000030 + 72_000.0 * 0.0000005;
+        assert!((boundary - boundary_expected).abs() < 1e-12);
+
+        let output_only = compute_cost_for_lookup(&result, None, &usage(1, 300_000, 0, 0));
+        assert!((output_only - (0.000005 + 300_000.0 * 0.000030)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_openai_272k_full_request_pricing_scope() {
+        for key in [
+            "gpt-5.4",
+            "openai/gpt-5.4-pro-2026-03-05",
+            "gpt-5.5-2026-04-23",
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra-2026-07-01",
+            "gpt-5.6-luna",
+        ] {
+            assert!(
+                uses_openai_full_request_272k_pricing(
+                    &openai_272k_result(key, "LiteLLM"),
+                    Some("openai")
+                ),
+                "expected full-request pricing for {key}"
+            );
+        }
+
+        for key in [
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.5-pro",
+            "gpt-5.2",
+            "fugu-ultra",
+            "custom/gpt-5.5-pro",
+        ] {
+            assert!(
+                !uses_openai_full_request_272k_pricing(
+                    &openai_272k_result(key, "LiteLLM"),
+                    Some("openai")
+                ),
+                "expected progressive pricing for {key}"
+            );
+        }
+
+        for (result, provider) in [
+            (openai_272k_result("fugu-ultra", "LiteLLM"), None),
+            (openai_272k_result("openai/gpt-5.5", "OpenRouter"), None),
+            (
+                openai_272k_result("azure/openai/gpt-5.5", "LiteLLM"),
+                Some("azure"),
+            ),
+        ] {
+            assert!(!uses_openai_full_request_272k_pricing(&result, provider));
+        }
     }
 
     #[test]
