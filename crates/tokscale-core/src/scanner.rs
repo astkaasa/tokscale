@@ -427,7 +427,7 @@ struct CrushProject {
 /// - `opencode.db` (default, used by `latest`/`beta` channels or when
 ///   `OPENCODE_DISABLE_CHANNEL_DB=1` is set)
 /// - `opencode-<channel>.db` where `<channel>` is the sanitized channel name
-///   opencode bakes into the build (e.g. `stable`, `nightly`). Upstream
+///   opencode bakes into the build (e.g. `stable`, `nightly`, `next`). Upstream
 ///   sanitizes channels with `/[^a-zA-Z0-9._-]/g -> "-"`, so the suffix we
 ///   accept here mirrors that character class exactly.
 ///
@@ -755,7 +755,7 @@ fn scan_all_clients_with_env_strategy_inner(
             format!("{}/.local/share", home_dir)
         };
 
-        // OpenCode 1.2+: SQLite database(s) at ~/.local/share/opencode/opencode*.db
+        // OpenCode v1/v2 SQLite databases at ~/.local/share/opencode/opencode*.db
         //
         // opencode picks its db filename at build time based on the release
         // channel: `latest`/`beta` use `opencode.db`, other channels use
@@ -1729,6 +1729,7 @@ mod tests {
         // character class in getChannelPath.
         assert!(is_opencode_db_filename("opencode-stable.db"));
         assert!(is_opencode_db_filename("opencode-nightly.db"));
+        assert!(is_opencode_db_filename("opencode-next.db"));
         assert!(is_opencode_db_filename("opencode-canary.db"));
         assert!(is_opencode_db_filename("opencode-local.db"));
         assert!(is_opencode_db_filename("opencode-1.2.3.db"));
@@ -1761,6 +1762,7 @@ mod tests {
         // Real dbs for two channels running side by side.
         File::create(data_dir.join("opencode.db")).unwrap();
         File::create(data_dir.join("opencode-stable.db")).unwrap();
+        File::create(data_dir.join("opencode-next.db")).unwrap();
         // SQLite WAL/SHM sidecars that must not be treated as dbs.
         File::create(data_dir.join("opencode.db-wal")).unwrap();
         File::create(data_dir.join("opencode.db-shm")).unwrap();
@@ -1773,7 +1775,10 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, vec!["opencode-stable.db", "opencode.db"]);
+        assert_eq!(
+            names,
+            vec!["opencode-next.db", "opencode-stable.db", "opencode.db"]
+        );
     }
 
     #[test]

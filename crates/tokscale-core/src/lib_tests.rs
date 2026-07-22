@@ -1347,6 +1347,79 @@ fn test_parse_all_messages_dedups_across_channel_suffixed_opencode_dbs() {
 
 #[test]
 #[serial_test::serial]
+fn test_parse_all_messages_reads_opencode_v2_session_messages() {
+    let cache_home = tempfile::TempDir::new().unwrap();
+    let source_home = tempfile::TempDir::new().unwrap();
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", cache_home.path());
+
+    {
+        let db_dir = source_home.path().join(".local/share/opencode");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db_path = db_dir.join("opencode-next.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, directory) VALUES (?1, ?2)",
+            rusqlite::params!["session-v2", "/tmp/opencode-v2-workspace"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "message-v2",
+                "session-v2",
+                "assistant",
+                r#"{
+                    "time": { "created": 1783882279705, "completed": 1783882279943 },
+                    "model": { "id": "claude-sonnet-4", "providerID": "anthropic" },
+                    "cost": 0.0123,
+                    "tokens": {
+                        "input": 5519, "output": 20, "reasoning": 23,
+                        "cache": { "read": 100, "write": 50 }
+                    }
+                }"#
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let messages = parse_all_messages_with_pricing(
+            source_home.path().to_str().unwrap(),
+            &["opencode".to_string()],
+            None,
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].client, "opencode");
+        assert_eq!(messages[0].model_id, "claude-sonnet-4");
+        assert_eq!(messages[0].tokens.input, 5519);
+        assert_eq!(
+            messages[0].workspace_label.as_deref(),
+            Some("opencode-v2-workspace")
+        );
+        assert_eq!(messages[0].dedup_key.as_deref(), Some("message-v2"));
+    }
+
+    match original_home {
+        Some(home) => std::env::set_var("HOME", home),
+        None => std::env::remove_var("HOME"),
+    }
+}
+
+#[test]
+#[serial_test::serial]
 fn test_parse_all_messages_with_pricing_opencode_sqlite_deduplicates_forked_history() {
     let cache_home = tempfile::TempDir::new().unwrap();
     let source_home = tempfile::TempDir::new().unwrap();

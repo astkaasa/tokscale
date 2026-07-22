@@ -10,9 +10,9 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-// 19: Codex output tokens are normalized to exclude reasoning. Cached
-// messages and incremental cumulative baselines must be reparsed.
-const CACHE_SCHEMA_VERSION: u32 = 20;
+// 21: OpenCode v2 adds session_message rows to SQLite parsing. Existing
+// non-empty hybrid database entries must be reparsed to include those rows.
+const CACHE_SCHEMA_VERSION: u32 = 21;
 const CACHE_FILENAME: &str = "source-message-cache.bin";
 const CACHE_LOCK_FILENAME: &str = "source-message-cache.lock";
 const MAX_CACHE_FILE_BYTES: u64 = 256 * 1024 * 1024;
