@@ -299,6 +299,9 @@ impl App {
             dialog_needs_reload,
             model_shade_map: HashMap::new(),
             subscription_usage,
+            account_activities: HashMap::new(),
+            account_activity_error: None,
+            expanded_usage_account_id: None,
             codex_login_lines: Vec::new(),
             codex_login_outcome: None,
             confirmed_codex_use_account_id,
@@ -308,6 +311,9 @@ impl App {
             usage_fetch_attempted: false,
             usage_fetch_diagnostics: usage_cache_diagnostics,
             usage_job: BackgroundJob::default(),
+            usage_refresh_is_background: false,
+            last_quota_sample: Instant::now(),
+            last_codex_activity_fetch: None,
             codex_reset_job: BackgroundJob::default(),
             pulse,
             pulse_data_provenance,
@@ -321,7 +327,11 @@ impl App {
         };
         app.build_model_shade_map();
         if fetch_on_entry {
+            #[cfg(not(test))]
+            app.reload_account_activities();
             app.maybe_fetch_usage_on_entry();
+            #[cfg(not(test))]
+            app.maybe_start_background_quota_sampling();
             app.maybe_fetch_weread_on_entry();
         }
         Ok(app)
@@ -435,6 +445,8 @@ impl App {
             self.refresh_current_surface(RefreshTrigger::Auto);
         }
 
+        self.maybe_sample_quota_in_background();
+
         if *self.dialog_needs_reload.borrow() {
             *self.dialog_needs_reload.borrow_mut() = false;
             self.needs_reload = true;
@@ -495,6 +507,7 @@ impl App {
                 if quota_degraded {
                     self.mark_quota_source_degraded();
                 }
+                self.reload_account_activities();
                 self.clamp_selection();
                 let usage_status = if fresh_count > 0 {
                     if self.usage_fetch_diagnostics.is_empty() {
@@ -527,11 +540,14 @@ impl App {
                         Some("No usage data available".into())
                     }
                 };
-                self.status_message = match pulse_result {
-                    Ok(()) => usage_status,
-                    Err(error) => Some(format!("Pulse snapshot save failed: {error}")),
-                };
-                self.status_message_time = Some(std::time::Instant::now());
+                if !self.usage_refresh_is_background || pulse_result.is_err() {
+                    self.status_message = match pulse_result {
+                        Ok(()) => usage_status,
+                        Err(error) => Some(format!("Pulse snapshot save failed: {error}")),
+                    };
+                    self.status_message_time = Some(std::time::Instant::now());
+                }
+                self.usage_refresh_is_background = false;
             }
             Some(BackgroundJobPoll::Disconnected) => {
                 self.usage_fetch_diagnostics = vec![UsageFetchDiagnostic::new(
@@ -540,8 +556,11 @@ impl App {
                     "Usage refresh worker stopped",
                 )];
                 self.mark_quota_source_degraded();
-                self.status_message = Some("Usage fetch failed".into());
-                self.status_message_time = Some(std::time::Instant::now());
+                if !self.usage_refresh_is_background {
+                    self.status_message = Some("Usage fetch failed".into());
+                    self.status_message_time = Some(std::time::Instant::now());
+                }
+                self.usage_refresh_is_background = false;
             }
             None => {}
         }

@@ -141,6 +141,9 @@ pub struct App {
     pub model_shade_map: HashMap<String, Color>,
 
     pub subscription_usage: Vec<crate::commands::usage::UsageOutput>,
+    pub account_activities: HashMap<String, tokscale_core::telemetry::AccountActivitySnapshot>,
+    pub account_activity_error: Option<String>,
+    pub expanded_usage_account_id: Option<String>,
 
     pub codex_login_lines: Vec<String>,
     pub(crate) codex_login_outcome: Option<CodexLoginOutcome>,
@@ -152,6 +155,9 @@ pub struct App {
     pub usage_fetch_attempted: bool,
     pub usage_fetch_diagnostics: Vec<crate::commands::usage::UsageFetchDiagnostic>,
     usage_job: BackgroundJob<crate::commands::usage::UsageFetchReport>,
+    usage_refresh_is_background: bool,
+    last_quota_sample: Instant,
+    last_codex_activity_fetch: Option<Instant>,
     codex_reset_job:
         BackgroundJob<Result<crate::commands::usage::codex::RateLimitResetConsumeResult, String>>,
     pub pulse: PulseState,

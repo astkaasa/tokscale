@@ -2,6 +2,8 @@ use ratatui::layout::Flex;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState};
 
+use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, TimeZone};
+
 use crate::commands::usage::{
     helpers, UsageFetchDiagnostic, UsageFetchDiagnosticSeverity, UsageMetric, UsageOutput,
 };
@@ -9,7 +11,7 @@ use crate::tui::app::{App, ClickAction};
 use crate::tui::codex_login::CodexLoginOutcome;
 use crate::tui::privacy::looks_like_email;
 use crate::tui::ui::widgets::{
-    get_provider_shade, light_ratio_bar_spans, table_right_cell, table_text_cell,
+    format_tokens, get_provider_shade, light_ratio_bar_spans, table_right_cell, table_text_cell,
     truncate_ellipsis as truncate_string,
 };
 
@@ -48,6 +50,13 @@ struct UsageRowView<'a> {
     readiness: UsageReadiness,
     metric: Option<&'a UsageMetric>,
 }
+
+const WIDE_ACCOUNT_ACTIVITY_WIDTH: u16 = 160;
+const WIDE_ACCOUNT_ACTIVITY_MIN_HEIGHT: u16 = 28;
+const ACCOUNT_ACTIVITY_HEATMAP_WEEKS: i64 = 52;
+const ACCOUNT_ACTIVITY_HEATMAP_CELL_WIDTH: usize = 2;
+const ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP: usize = 1;
+const ACCOUNT_ACTIVITY_HEATMAP_GLYPH: char = '▆';
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
@@ -556,7 +565,7 @@ fn render_medium_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &
     let selected = &outputs[selected_index];
     let summary_height = medium_summary_height(outputs, area.height).min(area.height);
     let accounts_height =
-        medium_accounts_table_height(outputs, area.height.saturating_sub(summary_height));
+        medium_accounts_table_height(app, outputs, area.height.saturating_sub(summary_height));
     let selected_available = area
         .height
         .saturating_sub(summary_height)
@@ -601,13 +610,21 @@ fn medium_selected_account_preferred_height(selected: &UsageOutput) -> u16 {
     (status_rows + limit_rows + action_rows + 2).clamp(9, 22) as u16
 }
 
-fn medium_accounts_table_height(outputs: &[UsageOutput], available: u16) -> u16 {
+fn medium_accounts_table_height(app: &App, outputs: &[UsageOutput], available: u16) -> u16 {
     if available == 0 {
         return 0;
     }
 
     let visible_rows = outputs.len().clamp(1, 5) as u16;
-    let desired = 3 + visible_rows.saturating_mul(2);
+    let activity_height = if outputs
+        .iter()
+        .any(|output| app.is_usage_account_activity_expanded(output))
+    {
+        account_activity_preferred_height(100)
+    } else {
+        0
+    };
+    let desired = 3 + visible_rows.saturating_mul(2) + activity_height;
     desired.min(available).max(available.min(5))
 }
 
@@ -624,7 +641,7 @@ fn render_compact_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: 
     if compact_should_prioritize_selected(area, outputs) {
         let summary_height = compact_summary_height(outputs, area.height);
         let accounts_height =
-            medium_accounts_table_height(outputs, area.height.saturating_sub(summary_height));
+            medium_accounts_table_height(app, outputs, area.height.saturating_sub(summary_height));
         let selected_available = area
             .height
             .saturating_sub(summary_height)
@@ -1702,43 +1719,62 @@ fn render_accounts_table(frame: &mut Frame, app: &mut App, area: Rect, outputs: 
         return;
     }
 
-    let max_rows = inner.height.saturating_sub(1) as usize;
-    app.set_max_visible_items(max_rows.max(1));
-    let start = app
-        .scroll_offset
-        .min(outputs.len().saturating_sub(max_rows));
-    let visible_rows = outputs
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(max_rows)
-        .collect::<Vec<_>>();
-
-    let rows = visible_rows
-        .iter()
-        .map(|(index, output)| account_table_row(app, output, *index))
-        .collect::<Vec<_>>();
-
-    let selected_visible = app
-        .selected_index
-        .checked_sub(start)
-        .filter(|index| *index < visible_rows.len());
-    let mut table_state = TableState::default().with_selected(selected_visible);
-    let table = Table::new(rows, account_table_widths(inner.width))
+    let widths = account_table_widths(inner.width);
+    let header = Table::new(Vec::<Row<'static>>::new(), widths)
         .header(account_table_header(app))
+        .column_spacing(1)
+        .flex(Flex::Start);
+    frame.render_widget(header, Rect::new(inner.x, inner.y, inner.width, 1));
+
+    let start = app.scroll_offset.min(outputs.len().saturating_sub(1));
+    let mut y = inner.y.saturating_add(1);
+    let mut rendered_items = 0usize;
+    for (index, output) in outputs.iter().enumerate().skip(start) {
+        if y >= inner.bottom() {
+            break;
+        }
+        let row_area = Rect::new(inner.x, y, inner.width, 1);
+        render_account_row_table(frame, app, row_area, output, index, widths);
+        app.add_click_area(row_area, ClickAction::UsageSelect { index });
+        if usage_account_activity_expandable(output) {
+            app.add_click_area(
+                Rect::new(row_area.x, row_area.y, 3.min(row_area.width), 1),
+                ClickAction::UsageToggleActivity { index },
+            );
+        }
+        y = y.saturating_add(1);
+        rendered_items += 1;
+
+        if app.is_usage_account_activity_expanded(output) {
+            let remaining = inner.bottom().saturating_sub(y);
+            let trailing_accounts = outputs.len().saturating_sub(index + 1) as u16;
+            let activity_height =
+                account_activity_height(inner.width, remaining, trailing_accounts);
+            if activity_height >= 3 {
+                let activity_area = Rect::new(inner.x, y, inner.width, activity_height);
+                render_account_activity(frame, app, activity_area, output);
+                y = y.saturating_add(activity_height);
+            }
+        }
+    }
+    app.set_max_visible_items(rendered_items.max(1));
+}
+
+fn render_account_row_table(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    output: &UsageOutput,
+    index: usize,
+    widths: [Constraint; 8],
+) {
+    let mut state = TableState::default().with_selected((app.selected_index == index).then_some(0));
+    let table = Table::new([account_table_row(app, output, index)], widths)
         .column_spacing(1)
         .highlight_spacing(HighlightSpacing::Never)
         .row_highlight_style(Style::default().bg(app.theme.selection))
         .flex(Flex::Start);
-    frame.render_stateful_widget(table, inner, &mut table_state);
-
-    for (visible_row, (index, _)) in visible_rows.into_iter().enumerate() {
-        let y = inner.y.saturating_add(1 + visible_row as u16);
-        app.add_click_area(
-            Rect::new(inner.x, y, inner.width, 1),
-            ClickAction::UsageSelect { index },
-        );
-    }
+    frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn render_narrow_accounts_table(
@@ -1747,56 +1783,56 @@ fn render_narrow_accounts_table(
     area: Rect,
     outputs: &[UsageOutput],
 ) {
-    let row_height = 2usize;
-    let max_items = (area.height.saturating_sub(1) as usize / row_height).max(1);
-    app.set_max_visible_items(max_items);
-    let start = app
-        .scroll_offset
-        .min(outputs.len().saturating_sub(max_items));
-    let visible_rows = outputs
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(max_items)
-        .collect::<Vec<_>>();
-
-    let rows = visible_rows
-        .iter()
-        .map(|(index, output)| narrow_table_row(app, output, *index, area))
-        .collect::<Vec<_>>();
-    let selected_visible = app
-        .selected_index
-        .checked_sub(start)
-        .filter(|index| *index < visible_rows.len());
-    let mut table_state = TableState::default().with_selected(selected_visible);
-    let table = Table::new(rows, [Constraint::Percentage(100)])
-        .header(Row::new([Cell::from(narrow_table_header(app, area.width))]))
+    frame.render_widget(
+        Paragraph::new(narrow_table_header(app, area.width)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let start = app.scroll_offset.min(outputs.len().saturating_sub(1));
+    let mut y = area.y.saturating_add(1);
+    let mut rendered_items = 0usize;
+    for (index, output) in outputs.iter().enumerate().skip(start) {
+        let remaining = area.bottom().saturating_sub(y);
+        if remaining < 2 {
+            break;
+        }
+        let row_area = Rect::new(area.x, y, area.width, 2);
+        let mut table_state =
+            TableState::default().with_selected((app.selected_index == index).then_some(0));
+        let table = Table::new(
+            [narrow_table_row(app, output, index, row_area)],
+            [Constraint::Percentage(100)],
+        )
         .highlight_spacing(HighlightSpacing::Never)
         .row_highlight_style(Style::default().bg(app.theme.selection))
         .flex(Flex::Start);
-    frame.render_stateful_widget(table, area, &mut table_state);
+        frame.render_stateful_widget(table, row_area, &mut table_state);
+        app.add_click_area(row_area, ClickAction::UsageSelect { index });
+        if usage_account_activity_expandable(output) {
+            app.add_click_area(
+                Rect::new(row_area.x, row_area.y, 4.min(row_area.width), 1),
+                ClickAction::UsageToggleActivity { index },
+            );
+        }
+        y = y.saturating_add(2);
+        rendered_items += 1;
 
-    for (visible_row, (index, _)) in visible_rows.into_iter().enumerate() {
-        let y = area
-            .y
-            .saturating_add(1)
-            .saturating_add((visible_row * row_height) as u16);
-        app.add_click_area(
-            Rect::new(
-                area.x,
-                y,
-                area.width,
-                row_height.min(area.bottom().saturating_sub(y) as usize) as u16,
-            ),
-            ClickAction::UsageSelect { index },
-        );
+        if app.is_usage_account_activity_expanded(output) {
+            let remaining = area.bottom().saturating_sub(y);
+            let activity_height = account_activity_preferred_height(area.width).min(remaining);
+            if activity_height >= 3 {
+                let activity_area = Rect::new(area.x, y, area.width, activity_height);
+                render_account_activity(frame, app, activity_area, output);
+                y = y.saturating_add(activity_height);
+            }
+        }
     }
+    app.set_max_visible_items(rendered_items.max(1));
 }
 
 fn account_table_header(app: &App) -> Row<'static> {
     let style = app.theme.subtle_text_style();
     Row::new([
-        table_right_cell("#", style),
+        table_right_cell("", style),
         table_text_cell("Provider", style),
         table_text_cell("Account", style),
         table_text_cell("Plan", style),
@@ -1809,7 +1845,7 @@ fn account_table_header(app: &App) -> Row<'static> {
 
 fn narrow_table_header(app: &App, width: u16) -> Line<'static> {
     Line::from(Span::styled(
-        truncate_string(" #  Account / Status", width as usize),
+        truncate_string("    Account / Status", width as usize),
         app.theme.subtle_text_style(),
     ))
 }
@@ -1859,10 +1895,11 @@ fn narrow_table_row(app: &mut App, output: &UsageOutput, index: usize, area: Rec
     let state_right_padding = usize::from(state_width > 0) * 2;
     let left_width = width.saturating_sub(4 + state_width + state_right_padding);
     let left = format!("{} {}", output.provider, row.account_summary);
+    let disclosure = account_activity_disclosure(app, output);
     let mut first = vec![
         styled(
             app,
-            format!(" {:<2} ", index + 1),
+            format!(" {disclosure}  "),
             app.theme.secondary_text_style(),
             selected,
         ),
@@ -2034,7 +2071,10 @@ fn account_table_row(app: &App, output: &UsageOutput, index: usize) -> Row<'stat
     let metric_color = row.metric.map(|metric| metric_color(app, metric));
 
     Row::new([
-        table_right_cell((index + 1).to_string(), app.theme.secondary_text_style()),
+        table_right_cell(
+            account_activity_disclosure(app, output),
+            app.theme.secondary_text_style(),
+        ),
         table_text_cell(
             output.provider.clone(),
             Style::default()
@@ -2055,6 +2095,1361 @@ fn account_table_row(app: &App, output: &UsageOutput, index: usize) -> Row<'stat
     ])
     .style(account_table_row_style(app, index))
     .height(1)
+}
+
+fn usage_account_activity_expandable(output: &UsageOutput) -> bool {
+    output.provider.eq_ignore_ascii_case("Codex") && output.account.is_some()
+}
+
+fn account_activity_disclosure(app: &App, output: &UsageOutput) -> &'static str {
+    if !usage_account_activity_expandable(output) {
+        ""
+    } else if app.is_usage_account_activity_expanded(output) {
+        "▾"
+    } else {
+        "▸"
+    }
+}
+
+fn account_activity_preferred_height(width: u16) -> u16 {
+    if width >= 66 {
+        13
+    } else {
+        15
+    }
+}
+
+fn account_activity_height(width: u16, remaining: u16, trailing_accounts: u16) -> u16 {
+    if width >= WIDE_ACCOUNT_ACTIVITY_WIDTH {
+        let available = remaining.saturating_sub(trailing_accounts.min(remaining));
+        if available >= WIDE_ACCOUNT_ACTIVITY_MIN_HEIGHT {
+            return available;
+        }
+    }
+    account_activity_preferred_height(width).min(remaining)
+}
+
+fn render_account_activity(frame: &mut Frame, app: &App, area: Rect, output: &UsageOutput) {
+    let inset = if area.width >= 8 { 2 } else { 0 };
+    let card = Rect::new(
+        area.x.saturating_add(inset),
+        area.y,
+        area.width.saturating_sub(inset),
+        area.height,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border))
+        .title(Span::styled(
+            " Account Activity ",
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(card);
+    frame.render_widget(block, card);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let activity = output
+        .account
+        .as_ref()
+        .and_then(|account| app.account_activities.get(&account.id));
+    let Some(activity) = activity else {
+        if let Some(message) = app.account_activity_error.as_deref() {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        format!("  {message}"),
+                        app.theme.warning_style(),
+                    )),
+                    Line::from(Span::styled(
+                        "  Check access to Tokscale's local data directory.",
+                        app.theme.subtle_text_style(),
+                    )),
+                ]),
+                inner,
+            );
+            return;
+        }
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "  No account activity samples yet",
+                    app.theme.secondary_text_style(),
+                )),
+                Line::from(Span::styled(
+                    "  Refresh Usage to start local history for this account.",
+                    app.theme.subtle_text_style(),
+                )),
+            ]),
+            inner,
+        );
+        return;
+    };
+
+    if inner.width >= WIDE_ACCOUNT_ACTIVITY_WIDTH
+        && inner.height >= WIDE_ACCOUNT_ACTIVITY_MIN_HEIGHT
+    {
+        render_wide_account_activity(frame, app, inner, activity);
+        return;
+    }
+
+    render_compact_account_activity(frame, app, inner, activity);
+}
+
+fn render_compact_account_activity(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) {
+    let summary_height = activity
+        .summary
+        .as_ref()
+        .map_or(0, |_| if area.width >= 66 { 5 } else { 7 });
+    let summary_height = summary_height.min(area.height);
+    if summary_height > 0 {
+        render_compact_official_summary(
+            frame,
+            app,
+            Rect::new(area.x, area.y, area.width, summary_height),
+            activity.summary.as_ref().expect("summary checked above"),
+        );
+    }
+    let details = Rect::new(
+        area.x,
+        area.y.saturating_add(summary_height),
+        area.width,
+        area.height.saturating_sub(summary_height),
+    );
+    if details.height == 0 {
+        return;
+    }
+    let mut lines = account_activity_lines(app, activity, details.width as usize);
+    lines.truncate(details.height as usize);
+    frame.render_widget(Paragraph::new(lines), details);
+}
+
+fn render_compact_official_summary(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    summary: &tokscale_core::telemetry::AccountUsageSummary,
+) {
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(app.theme.border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let metrics = official_summary_metrics(summary);
+    let columns = if inner.width >= 66 { 3 } else { 2 };
+    let row_count = metrics.len().div_ceil(columns);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(2); row_count])
+        .split(inner);
+    for (row_index, row) in rows.iter().enumerate() {
+        let start = row_index * columns;
+        let end = (start + columns).min(metrics.len());
+        render_official_metric_row(frame, app, *row, &metrics[start..end], columns);
+    }
+}
+
+fn official_summary_metrics(
+    summary: &tokscale_core::telemetry::AccountUsageSummary,
+) -> Vec<(String, &'static str)> {
+    vec![
+        (
+            summary
+                .lifetime_tokens
+                .map(format_activity_tokens)
+                .unwrap_or_else(|| "—".to_string()),
+            "Lifetime tokens",
+        ),
+        (
+            summary
+                .peak_daily_tokens
+                .map(format_activity_tokens)
+                .unwrap_or_else(|| "—".to_string()),
+            "Peak day",
+        ),
+        (
+            summary
+                .longest_running_turn_seconds
+                .map(format_activity_seconds)
+                .unwrap_or_else(|| "—".to_string()),
+            "Longest turn",
+        ),
+        (
+            summary
+                .current_streak_days
+                .map(format_activity_days)
+                .unwrap_or_else(|| "—".to_string()),
+            "Current streak",
+        ),
+        (
+            summary
+                .longest_streak_days
+                .map(format_activity_days)
+                .unwrap_or_else(|| "—".to_string()),
+            "Longest streak",
+        ),
+    ]
+}
+
+fn render_official_metric_row(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    metrics: &[(String, &'static str)],
+    columns: usize,
+) {
+    let constraints = vec![Constraint::Ratio(1, columns as u32); columns];
+    let cells = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+    for (index, (value, label)) in metrics.iter().enumerate() {
+        let separator = index + 1 < metrics.len();
+        let block = Block::default()
+            .borders(if separator {
+                Borders::RIGHT
+            } else {
+                Borders::NONE
+            })
+            .border_style(Style::default().fg(app.theme.border));
+        let inner = block.inner(cells[index]);
+        frame.render_widget(block, cells[index]);
+        if inner.height == 0 || inner.width == 0 {
+            continue;
+        }
+        let content = Rect::new(
+            inner.x.saturating_add(1).min(inner.right()),
+            inner.y,
+            inner.width.saturating_sub(1),
+            inner.height,
+        );
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    truncate_string(value, content.width as usize),
+                    app.theme
+                        .secondary_text_style()
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    truncate_string(label, content.width as usize),
+                    app.theme.subtle_text_style(),
+                )),
+            ]),
+            content,
+        );
+    }
+}
+
+fn render_wide_account_activity(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(11),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    render_wide_official_summary(frame, app, sections[0], activity);
+    render_wide_activity_heatmap(frame, app, sections[1], activity);
+    render_wide_activity_detail(frame, app, sections[2], activity);
+}
+
+fn render_wide_official_summary(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) {
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(app.theme.border));
+    let content = block.inner(area);
+    frame.render_widget(block, area);
+    if content.width == 0 || content.height < 3 {
+        return;
+    }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(2)])
+        .split(content);
+    let activity_range = official_activity_range(activity)
+        .unwrap_or_else(|| "waiting for official daily buckets".to_string());
+    frame.render_widget(
+        Paragraph::new(edge_aligned_line(
+            "OFFICIAL ACCOUNT SUMMARY · CODEX APP-SERVER",
+            &activity_range,
+            rows[0].width as usize,
+            app.theme.subtle_text_style(),
+            app.theme.subtle_text_style(),
+        )),
+        rows[0],
+    );
+
+    if let Some(summary) = activity.summary.as_ref() {
+        let metrics = official_summary_metrics(summary);
+        render_official_metric_row(frame, app, rows[1], &metrics, metrics.len());
+    } else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Official account summary unavailable",
+                app.theme.subtle_text_style(),
+            )))
+            .alignment(Alignment::Center),
+            rows[1],
+        );
+    }
+}
+
+fn render_wide_activity_heatmap(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) {
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(app.theme.border));
+    let content = block.inner(area);
+    frame.render_widget(block, area);
+    if content.width == 0 || content.height < 10 {
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(7),
+            Constraint::Length(1),
+        ])
+        .split(content);
+    let peak = official_peak_day(activity)
+        .map(|(date, tokens)| {
+            format!(
+                "Peak {} · {}",
+                date.format("%b %d"),
+                format_activity_tokens(tokens)
+            )
+        })
+        .unwrap_or_else(|| "official buckets".to_string());
+    frame.render_widget(
+        Paragraph::new(edge_aligned_line(
+            "OFFICIAL TOKEN ACTIVITY · LAST 12 MONTHS",
+            &peak,
+            rows[0].width as usize,
+            app.theme.subtle_text_style(),
+            app.theme.secondary_text_style(),
+        )),
+        rows[0],
+    );
+
+    let today = app.overview_date();
+    let start = activity_heatmap_start(today);
+    let returned_range = official_bucket_date_range(activity);
+    render_activity_month_labels(frame, app, rows[1], start);
+    render_activity_heatmap_rows(frame, app, rows[2], activity, start, today, returned_range);
+    let range = returned_range
+        .map(|(first, last)| {
+            format!(
+                "Returned {}–{} · {} active days",
+                first.format("%b %d"),
+                last.format("%b %d"),
+                activity
+                    .daily_usage
+                    .iter()
+                    .filter(|bucket| bucket.tokens > 0)
+                    .count()
+            )
+        })
+        .unwrap_or_else(|| "Waiting for official daily buckets".to_string());
+    render_activity_heatmap_footer(frame, app, rows[3], &range);
+}
+
+fn render_wide_activity_detail(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+    render_wide_recent_window(frame, app, columns[0], activity);
+    render_wide_local_evidence(frame, app, columns[1], activity);
+}
+
+fn render_wide_recent_window(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) {
+    let content = activity_panel(frame, app, area, true);
+    if content.width == 0 || content.height == 0 {
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(content);
+    let today = app.overview_date();
+    let total = if activity.daily_usage.is_empty() {
+        "—".to_string()
+    } else {
+        format_activity_tokens(daily_tokens_in_window(activity, today, 7))
+    };
+    frame.render_widget(
+        Paragraph::new(edge_aligned_line(
+            &format!("CURRENT 7-DAY WINDOW · {}", seven_day_date_range(today)),
+            &total,
+            rows[0].width as usize,
+            app.theme.subtle_text_style(),
+            app.theme.secondary_text_style(),
+        )),
+        rows[0],
+    );
+    render_daily_activity_rows(
+        frame,
+        app,
+        Rect::new(rows[1].x, rows[1].y, rows[1].width, rows[1].height.min(7)),
+        activity,
+        today,
+    );
+}
+
+fn render_wide_local_evidence(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) {
+    let content = activity_panel(frame, app, area, false);
+    if content.width == 0 || content.height == 0 {
+        return;
+    }
+    let mut lines = vec![edge_aligned_line(
+        "QUOTA & LOCAL EVIDENCE",
+        "this machine",
+        content.width as usize,
+        app.theme.subtle_text_style(),
+        app.theme.subtle_text_style(),
+    )];
+    let Some(window) = primary_activity_window(activity) else {
+        lines.push(Line::from(Span::styled(
+            "Waiting for a successful quota sample",
+            app.theme.subtle_text_style(),
+        )));
+        frame.render_widget(Paragraph::new(lines), content);
+        return;
+    };
+
+    let current_used = window
+        .points
+        .last()
+        .map(|point| point.used_percent)
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    lines.push(edge_aligned_line(
+        &format!(
+            "{} {} used",
+            window.limit_label,
+            format_activity_percent(current_used)
+        ),
+        &format!("{} left", format_activity_percent(100.0 - current_used)),
+        content.width as usize,
+        app.theme
+            .secondary_text_style()
+            .add_modifier(Modifier::BOLD),
+        app.theme.success_style().add_modifier(Modifier::BOLD),
+    ));
+    lines.push(Line::from(light_ratio_bar_spans(
+        current_used / 100.0,
+        content.width as usize,
+        Style::default().fg(app.theme.accent),
+        app.theme.subtle_text_style(),
+    )));
+    lines.push(Line::from(Span::styled(
+        quota_stability_label(window),
+        app.theme
+            .secondary_text_style()
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "Coverage {}–{} · {}",
+            activity_clock(window.first_observed_at_ms),
+            activity_clock(window.last_observed_at_ms),
+            activity_duration_label(
+                window
+                    .last_observed_at_ms
+                    .saturating_sub(window.first_observed_at_ms),
+                true,
+            )
+        ),
+        app.theme.subtle_text_style(),
+    )));
+    lines.push(edge_aligned_line(
+        &format!("{} samples", window.points.len()),
+        &format!(
+            "{} max gap",
+            activity_duration_label(window.max_gap_ms, false)
+        ),
+        content.width as usize,
+        app.theme.subtle_text_style(),
+        app.theme.subtle_text_style(),
+    ));
+    let (reset_label, reset_style) = primary_reset_status(app, activity, window);
+    lines.push(Line::from(Span::styled(reset_label, reset_style)));
+    let next_reset = window
+        .points
+        .last()
+        .and_then(|point| point.resets_at_ms)
+        .map(activity_reset_label)
+        .unwrap_or_else(|| "unknown".to_string());
+    lines.push(edge_aligned_line(
+        "Next scheduled",
+        &next_reset,
+        content.width as usize,
+        app.theme.subtle_text_style(),
+        app.theme.subtle_text_style(),
+    ));
+    let last_synced = latest_activity_timestamp_ms(activity)
+        .map(activity_clock)
+        .unwrap_or_else(|| "—".to_string());
+    lines.push(edge_aligned_line(
+        "Last synced",
+        &format!("{last_synced} · local ledger"),
+        content.width as usize,
+        app.theme.subtle_text_style(),
+        app.theme.subtle_text_style(),
+    ));
+    lines.truncate(content.height as usize);
+    frame.render_widget(Paragraph::new(lines), content);
+}
+
+fn activity_panel(frame: &mut Frame, app: &App, area: Rect, right_separator: bool) -> Rect {
+    let borders = if right_separator {
+        Borders::RIGHT
+    } else {
+        Borders::NONE
+    };
+    let block = Block::default()
+        .borders(borders)
+        .border_style(Style::default().fg(app.theme.border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    Rect::new(
+        inner.x.saturating_add(1),
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    )
+}
+
+fn render_daily_activity_rows(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    today: NaiveDate,
+) {
+    let bars = daily_activity_bars(activity, today);
+    if area.height < bars.len() as u16 || area.width < 32 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                daily_activity_spark(activity, today),
+                Style::default().fg(app.theme.accent),
+            )))
+            .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
+
+    let maximum = bars.iter().map(|(_, value, _)| *value).max().unwrap_or(1);
+    let row_areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Ratio(1, bars.len() as u32); bars.len()])
+        .split(area);
+    for ((label, value, text_value), row_area) in bars.into_iter().zip(row_areas.iter()) {
+        let y = row_area
+            .y
+            .saturating_add(row_area.height.saturating_sub(1) / 2);
+        let line_area = Rect::new(row_area.x, y, row_area.width, 1);
+        let label_width = 11usize.min(line_area.width as usize);
+        let value_width = 9usize.min(line_area.width as usize);
+        let bar_width = (line_area.width as usize)
+            .saturating_sub(label_width + value_width + 2)
+            .max(1);
+        let ratio = if maximum > 0 {
+            value as f64 / maximum as f64
+        } else {
+            0.0
+        };
+        let is_peak = value > 0 && value == maximum;
+        let mut spans = vec![Span::styled(
+            format!("{label:<label_width$}"),
+            if is_peak {
+                app.theme
+                    .secondary_text_style()
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                app.theme.subtle_text_style()
+            },
+        )];
+        spans.extend(light_ratio_bar_spans(
+            ratio,
+            bar_width,
+            Style::default().fg(app.theme.accent),
+            app.theme.subtle_text_style(),
+        ));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{text_value:>value_width$}"),
+            if is_peak {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                app.theme.secondary_text_style()
+            },
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), line_area);
+    }
+}
+
+fn daily_activity_bars(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    today: NaiveDate,
+) -> Vec<(String, u64, String)> {
+    (0_i64..7)
+        .rev()
+        .map(|offset| {
+            let date = today
+                .checked_sub_signed(ChronoDuration::days(offset))
+                .unwrap_or(today);
+            let value = daily_tokens_on(activity, date);
+            (
+                date.format("%a %m/%d").to_string(),
+                value.unwrap_or(0),
+                value
+                    .map(format_activity_tokens)
+                    .unwrap_or_else(|| "—".to_string()),
+            )
+        })
+        .collect()
+}
+
+fn edge_aligned_line(
+    left: &str,
+    right: &str,
+    width: usize,
+    left_style: Style,
+    right_style: Style,
+) -> Line<'static> {
+    let right = truncate_string(right, width);
+    let right_width = Line::from(right.clone()).width();
+    let left_limit = width.saturating_sub(right_width.saturating_add(1));
+    let left = truncate_string(left, left_limit);
+    let left_width = Line::from(left.clone()).width();
+    let padding = width.saturating_sub(left_width.saturating_add(right_width));
+    Line::from(vec![
+        Span::styled(left, left_style),
+        Span::raw(" ".repeat(padding)),
+        Span::styled(right, right_style),
+    ])
+}
+
+fn official_bucket_date_range(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) -> Option<(NaiveDate, NaiveDate)> {
+    activity
+        .daily_usage
+        .iter()
+        .filter_map(|bucket| NaiveDate::parse_from_str(&bucket.start_date, "%Y-%m-%d").ok())
+        .fold(None, |range, date| match range {
+            None => Some((date, date)),
+            Some((first, last)) => Some((first.min(date), last.max(date))),
+        })
+}
+
+fn official_activity_range(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) -> Option<String> {
+    let (first, last) = official_bucket_date_range(activity)?;
+    let active_days = activity
+        .daily_usage
+        .iter()
+        .filter(|bucket| bucket.tokens > 0)
+        .count();
+    Some(format!(
+        "{active_days} active days · {}–{}",
+        first.format("%b %d"),
+        last.format("%b %d")
+    ))
+}
+
+fn official_peak_day(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) -> Option<(NaiveDate, u64)> {
+    activity
+        .daily_usage
+        .iter()
+        .filter_map(|bucket| {
+            NaiveDate::parse_from_str(&bucket.start_date, "%Y-%m-%d")
+                .ok()
+                .map(|date| (date, bucket.tokens))
+        })
+        .max_by_key(|(date, tokens)| (*tokens, *date))
+}
+
+fn activity_heatmap_start(today: NaiveDate) -> NaiveDate {
+    let current_week_start = today
+        .checked_sub_signed(ChronoDuration::days(
+            today.weekday().num_days_from_sunday() as i64
+        ))
+        .unwrap_or(today);
+    current_week_start
+        .checked_sub_signed(ChronoDuration::weeks(
+            ACCOUNT_ACTIVITY_HEATMAP_WEEKS.saturating_sub(1),
+        ))
+        .unwrap_or(current_week_start)
+}
+
+fn activity_heatmap_geometry(area: Rect) -> (u16, usize) {
+    let label_width = 4_u16.min(area.width);
+    let available = area.width.saturating_sub(label_width);
+    let weeks = ACCOUNT_ACTIVITY_HEATMAP_WEEKS as usize;
+    let preferred_width = weeks
+        .saturating_mul(ACCOUNT_ACTIVITY_HEATMAP_CELL_WIDTH + ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP)
+        .saturating_sub(ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP);
+    let cell_width = if available as usize >= preferred_width {
+        ACCOUNT_ACTIVITY_HEATMAP_CELL_WIDTH
+    } else {
+        1
+    };
+    let stride = cell_width + ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP;
+    let grid_width = weeks
+        .saturating_mul(stride)
+        .saturating_sub(ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP) as u16;
+    let leading = available.saturating_sub(grid_width) / 2;
+    (
+        area.x.saturating_add(label_width).saturating_add(leading),
+        stride,
+    )
+}
+
+fn render_activity_month_labels(frame: &mut Frame, app: &App, area: Rect, start: NaiveDate) {
+    let (grid_x, stride) = activity_heatmap_geometry(area);
+    let mut labels = vec![' '; stride.saturating_mul(ACCOUNT_ACTIVITY_HEATMAP_WEEKS as usize)];
+    for week in 0..ACCOUNT_ACTIVITY_HEATMAP_WEEKS {
+        for day in 0..7_i64 {
+            let date = start
+                .checked_add_signed(ChronoDuration::days(week * 7 + day))
+                .unwrap_or(start);
+            if date.day() != 1 {
+                continue;
+            }
+            let position = week as usize * stride;
+            for (offset, character) in date.format("%b").to_string().chars().enumerate() {
+                if let Some(slot) = labels.get_mut(position + offset) {
+                    *slot = character;
+                }
+            }
+            break;
+        }
+    }
+    let prefix = " ".repeat(grid_x.saturating_sub(area.x) as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{prefix}{}", labels.into_iter().collect::<String>()),
+            app.theme.subtle_text_style(),
+        ))),
+        area,
+    );
+}
+
+fn render_activity_heatmap_rows(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    start: NaiveDate,
+    today: NaiveDate,
+    returned_range: Option<(NaiveDate, NaiveDate)>,
+) {
+    let (grid_x, stride) = activity_heatmap_geometry(area);
+    let cell_width = stride.saturating_sub(ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP);
+    let labels = ["", "Mon", "", "Wed", "", "Fri", ""];
+    for day in 0..7_i64 {
+        let mut spans = vec![Span::styled(
+            format!("{:<4}", labels[day as usize]),
+            app.theme.subtle_text_style(),
+        )];
+        spans.push(Span::raw(
+            " ".repeat(grid_x.saturating_sub(area.x.saturating_add(4)) as usize),
+        ));
+        for week in 0..ACCOUNT_ACTIVITY_HEATMAP_WEEKS {
+            let date = start
+                .checked_add_signed(ChronoDuration::days(week * 7 + day))
+                .unwrap_or(start);
+            let returned = date <= today
+                && returned_range.is_some_and(|(first, last)| date >= first && date <= last);
+            spans.push(Span::styled(
+                ACCOUNT_ACTIVITY_HEATMAP_GLYPH
+                    .to_string()
+                    .repeat(cell_width),
+                activity_heat_cell_style(app, daily_tokens_on(activity, date), returned),
+            ));
+            if week + 1 < ACCOUNT_ACTIVITY_HEATMAP_WEEKS {
+                spans.push(Span::raw(" ".repeat(ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP)));
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(area.x, area.y.saturating_add(day as u16), area.width, 1),
+        );
+    }
+}
+
+fn render_activity_heatmap_footer(frame: &mut Frame, app: &App, area: Rect, range: &str) {
+    let colors = activity_heat_colors(app);
+    let subtle = app.theme.subtle_text_style();
+    let mut legend = vec![
+        Span::styled("No data ", subtle),
+        activity_heat_legend_swatch(colors[0]),
+        Span::styled("   Less ", subtle),
+    ];
+    for (index, color) in colors[1..].iter().copied().enumerate() {
+        legend.push(activity_heat_legend_swatch(color));
+        if index + 1 < colors.len() - 1 {
+            legend.push(Span::raw(" "));
+        }
+    }
+    legend.push(Span::styled(" More", subtle));
+    let legend_width = Line::from(legend.clone()).width();
+    let range_width = Line::from(range).width();
+    let spacer = (area.width as usize).saturating_sub(range_width + legend_width);
+    let mut spans = vec![Span::styled(range.to_string(), subtle)];
+    spans.push(Span::raw(" ".repeat(spacer)));
+    spans.extend(legend);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn activity_heat_legend_swatch(color: Color) -> Span<'static> {
+    Span::styled(
+        ACCOUNT_ACTIVITY_HEATMAP_GLYPH.to_string().repeat(2),
+        Style::default().fg(color),
+    )
+}
+
+fn activity_heat_cell_style(app: &App, tokens: Option<u64>, returned: bool) -> Style {
+    let colors = activity_heat_colors(app);
+    let index = if !returned {
+        0
+    } else {
+        match tokens.unwrap_or(0) {
+            0 => 1,
+            tokens if tokens < 100_000_000 => 2,
+            tokens if tokens < 500_000_000 => 3,
+            tokens if tokens < 1_000_000_000 => 4,
+            _ => 5,
+        }
+    };
+    Style::default().fg(colors[index])
+}
+
+fn activity_heat_colors(app: &App) -> [Color; 6] {
+    if app.theme.background == Color::Black {
+        return [
+            Color::DarkGray,
+            Color::Gray,
+            Color::Blue,
+            Color::Cyan,
+            Color::LightCyan,
+            Color::White,
+        ];
+    }
+    if app.theme.background == Color::White {
+        return [
+            Color::Gray,
+            Color::DarkGray,
+            Color::LightBlue,
+            Color::Blue,
+            Color::Cyan,
+            Color::Black,
+        ];
+    }
+    let light = matches!(
+        app.theme.background,
+        Color::Gray | Color::Rgb(192..=255, 192..=255, 192..=255)
+    );
+    let colors = if light {
+        [
+            Color::Rgb(242, 244, 248),
+            Color::Rgb(224, 229, 238),
+            Color::Rgb(198, 211, 250),
+            Color::Rgb(143, 166, 245),
+            Color::Rgb(91, 121, 239),
+            Color::Rgb(59, 92, 230),
+        ]
+    } else {
+        [
+            Color::Rgb(22, 27, 34),
+            Color::Rgb(31, 40, 45),
+            Color::Rgb(28, 67, 68),
+            Color::Rgb(40, 98, 95),
+            Color::Rgb(70, 143, 135),
+            Color::Rgb(118, 198, 183),
+        ]
+    };
+    colors.map(|color| app.theme.color(color))
+}
+
+fn quota_stability_label(window: &tokscale_core::telemetry::QuotaWindowActivity) -> String {
+    let Some(first) = window.points.first() else {
+        return "No quota samples yet".to_string();
+    };
+    let last = window.points.last().unwrap_or(first);
+    let duration = activity_duration_label(
+        window
+            .last_observed_at_ms
+            .saturating_sub(window.first_observed_at_ms),
+        true,
+    );
+    let (minimum, maximum) = window.points.iter().fold(
+        (first.used_percent, first.used_percent),
+        |(minimum, maximum), point| {
+            (
+                minimum.min(point.used_percent),
+                maximum.max(point.used_percent),
+            )
+        },
+    );
+    if (maximum - minimum).abs() < 0.05 {
+        format!(
+            "Stable at {} for {duration}",
+            format_activity_percent(last.used_percent)
+        )
+    } else {
+        format!(
+            "Observed {} → {} over {duration}",
+            format_activity_percent(first.used_percent),
+            format_activity_percent(last.used_percent)
+        )
+    }
+}
+
+fn primary_reset_status(
+    app: &App,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    window: &tokscale_core::telemetry::QuotaWindowActivity,
+) -> (String, Style) {
+    let events = activity.reset_events.iter().filter(|event| {
+        event
+            .limit_id
+            .as_deref()
+            .is_none_or(|limit_id| limit_id == window.limit_id)
+    });
+    let Some(event) = events.max_by_key(|event| event.observed_at_ms) else {
+        return (
+            "No reset observed today".to_string(),
+            app.theme.success_style(),
+        );
+    };
+    use tokscale_core::telemetry::QuotaResetEventType;
+    let label = match event.event_type {
+        QuotaResetEventType::ConfirmedManual => format!(
+            "Reset here {} · confirmed",
+            activity_clock(event.observed_at_ms)
+        ),
+        QuotaResetEventType::ObservedScheduledRollover => format!(
+            "Scheduled rollover {} · inferred",
+            activity_clock(event.occurred_at_ms)
+        ),
+        QuotaResetEventType::ObservedEarlyRollover => format!(
+            "Early rollover {} · source unknown",
+            activity_clock(event.observed_at_ms)
+        ),
+        QuotaResetEventType::ObservedRollover => format!(
+            "Rollover observed {} · inferred",
+            activity_clock(event.observed_at_ms)
+        ),
+    };
+    (label, app.theme.warning_style())
+}
+
+fn format_activity_seconds(seconds: u64) -> String {
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn format_activity_days(days: u64) -> String {
+    if days == 1 {
+        "1 day".to_string()
+    } else {
+        format!("{days} days")
+    }
+}
+
+fn format_activity_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000_000 {
+        format!("{:.2}B", tokens as f64 / 1_000_000_000.0)
+    } else if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else {
+        format_tokens(tokens)
+    }
+}
+
+fn format_activity_percent(percent: f64) -> String {
+    if (percent - percent.round()).abs() < 0.05 {
+        format!("{percent:.0}%")
+    } else {
+        format!("{percent:.1}%")
+    }
+}
+
+fn activity_duration_label(duration_ms: i64, round_minutes: bool) -> String {
+    if duration_ms <= 0 {
+        return "0m".to_string();
+    }
+    let minutes = if round_minutes {
+        duration_ms.saturating_add(30_000) / 60_000
+    } else {
+        duration_ms / 60_000
+    };
+    if minutes >= 60 {
+        let hours = minutes / 60;
+        let remainder = minutes % 60;
+        if remainder > 0 {
+            format!("{hours}h{remainder}m")
+        } else {
+            format!("{hours}h")
+        }
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        "<1m".to_string()
+    }
+}
+
+fn activity_reset_label(timestamp_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(timestamp_ms)
+        .single()
+        .map(|value| value.format("%a %b %-d %H:%M").to_string())
+        .unwrap_or_else(|| "—".to_string())
+}
+
+fn latest_activity_timestamp_ms(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) -> Option<i64> {
+    activity
+        .summary
+        .iter()
+        .map(|summary| summary.fetched_at_ms)
+        .chain(
+            activity
+                .daily_usage
+                .iter()
+                .map(|bucket| bucket.fetched_at_ms),
+        )
+        .chain(
+            activity
+                .quota_windows
+                .iter()
+                .map(|window| window.last_observed_at_ms),
+        )
+        .chain(
+            activity
+                .reset_events
+                .iter()
+                .map(|event| event.observed_at_ms),
+        )
+        .max()
+}
+
+fn account_activity_lines(
+    app: &App,
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if activity.summary.is_none()
+        && activity.daily_usage.is_empty()
+        && activity.quota_windows.is_empty()
+        && activity.reset_events.is_empty()
+    {
+        return vec![
+            Line::from(Span::styled(
+                "  Waiting for the first successful activity sample",
+                app.theme.secondary_text_style(),
+            )),
+            Line::from(Span::styled(
+                "  Official tokens and locally observed quota will appear here.",
+                app.theme.subtle_text_style(),
+            )),
+        ];
+    }
+
+    let today = app.overview_date();
+    let mut lines = Vec::new();
+    if !activity.daily_usage.is_empty() {
+        let today_label = daily_tokens_on(activity, today)
+            .map(format_activity_tokens)
+            .unwrap_or_else(|| "—".to_string());
+        let seven_day_label = format_activity_tokens(daily_tokens_in_window(activity, today, 7));
+        lines.push(compact_activity_line(
+            app,
+            "Official",
+            &format!("7d {seven_day_label} · Today {today_label}"),
+            width,
+            app.theme.secondary_text_style(),
+        ));
+        lines.push(compact_activity_line(
+            app,
+            "Daily rhythm",
+            &format!(
+                "{} · peak {}",
+                daily_activity_spark(activity, today),
+                daily_peak_label(activity, today)
+            ),
+            width,
+            Style::default().fg(app.theme.accent),
+        ));
+    } else {
+        lines.push(compact_activity_line(
+            app,
+            "Official",
+            "waiting for daily buckets",
+            width,
+            app.theme.subtle_text_style(),
+        ));
+    }
+
+    if let Some(window) = primary_activity_window(activity) {
+        let current_used = window
+            .points
+            .last()
+            .map(|point| point.used_percent)
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0);
+        lines.push(compact_activity_line(
+            app,
+            &format!("Quota {}", window.limit_label),
+            &format!(
+                "{} used · {} left",
+                format_activity_percent(current_used),
+                format_activity_percent(100.0 - current_used)
+            ),
+            width,
+            app.theme.secondary_text_style(),
+        ));
+        lines.push(compact_activity_line(
+            app,
+            "Observed",
+            &format!(
+                "{} · {} samples",
+                quota_stability_label(window),
+                window.points.len()
+            ),
+            width,
+            app.theme.secondary_text_style(),
+        ));
+        let (reset_label, _) = primary_reset_status(app, activity, window);
+        lines.push(compact_activity_line(
+            app,
+            "Quality",
+            &format!(
+                "max gap {} · {}",
+                activity_duration_label(window.max_gap_ms, false),
+                reset_label
+            ),
+            width,
+            app.theme.subtle_text_style(),
+        ));
+        let next_reset = window
+            .points
+            .last()
+            .and_then(|point| point.resets_at_ms)
+            .map(activity_reset_label)
+            .unwrap_or_else(|| "unknown".to_string());
+        let synced = latest_activity_timestamp_ms(activity)
+            .map(activity_clock)
+            .unwrap_or_else(|| "—".to_string());
+        lines.push(compact_activity_line(
+            app,
+            "Reset / sync",
+            &format!("{next_reset} · synced {synced}"),
+            width,
+            app.theme.subtle_text_style(),
+        ));
+    } else {
+        lines.push(compact_activity_line(
+            app,
+            "Quota",
+            "waiting for a successful local sample",
+            width,
+            app.theme.subtle_text_style(),
+        ));
+        lines.push(compact_activity_line(
+            app,
+            "Reset",
+            "no local reset evidence yet",
+            width,
+            app.theme.subtle_text_style(),
+        ));
+    }
+
+    lines
+}
+
+fn compact_activity_line(
+    app: &App,
+    label: &str,
+    value: &str,
+    width: usize,
+    value_style: Style,
+) -> Line<'static> {
+    let label_width: usize = if width >= 78 { 16 } else { 13 };
+    let label = truncate_string(label, label_width.saturating_sub(2));
+    let value_width = width.saturating_sub(label_width);
+    Line::from(vec![
+        Span::styled(
+            format!(
+                "  {label:<padding$}",
+                padding = label_width.saturating_sub(2)
+            ),
+            app.theme.subtle_text_style(),
+        ),
+        Span::styled(truncate_string(value, value_width), value_style),
+    ])
+}
+
+fn daily_peak_label(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    today: NaiveDate,
+) -> String {
+    (0_i64..7)
+        .filter_map(|offset| {
+            let date = today.checked_sub_signed(ChronoDuration::days(offset))?;
+            daily_tokens_on(activity, date)
+        })
+        .max()
+        .map(format_activity_tokens)
+        .unwrap_or_else(|| "—".to_string())
+}
+
+fn daily_tokens_on(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    date: NaiveDate,
+) -> Option<u64> {
+    let date = date.format("%Y-%m-%d").to_string();
+    activity
+        .daily_usage
+        .iter()
+        .find(|bucket| bucket.start_date == date)
+        .map(|bucket| bucket.tokens)
+}
+
+fn daily_tokens_in_window(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    end: NaiveDate,
+    days: i64,
+) -> u64 {
+    let start = end
+        .checked_sub_signed(ChronoDuration::days(days.saturating_sub(1)))
+        .unwrap_or(end);
+    activity
+        .daily_usage
+        .iter()
+        .filter_map(|bucket| {
+            let date = NaiveDate::parse_from_str(&bucket.start_date, "%Y-%m-%d").ok()?;
+            (date >= start && date <= end).then_some(bucket.tokens)
+        })
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn seven_day_date_range(today: NaiveDate) -> String {
+    let start = today
+        .checked_sub_signed(ChronoDuration::days(6))
+        .unwrap_or(today);
+    format!("{}–{}", start.format("%m/%d"), today.format("%m/%d"))
+}
+
+fn daily_activity_spark(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+    today: NaiveDate,
+) -> String {
+    let mut values = Vec::with_capacity(7);
+    for offset in (0_i64..7).rev() {
+        let date = today
+            .checked_sub_signed(ChronoDuration::days(offset))
+            .unwrap_or(today);
+        values.push(daily_tokens_on(activity, date));
+    }
+    let maximum = values.iter().flatten().copied().max().unwrap_or(0);
+    values
+        .into_iter()
+        .map(|value| match value {
+            None => '·',
+            Some(0) => '▁',
+            Some(value) if maximum > 0 => {
+                const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+                let index = ((value as f64 / maximum as f64) * 7.0).round() as usize;
+                LEVELS[index.min(LEVELS.len() - 1)]
+            }
+            Some(_) => '▁',
+        })
+        .collect()
+}
+
+fn primary_activity_window(
+    activity: &tokscale_core::telemetry::AccountActivitySnapshot,
+) -> Option<&tokscale_core::telemetry::QuotaWindowActivity> {
+    activity.quota_windows.iter().min_by_key(|window| {
+        (
+            window.limit_id != "codex:primary",
+            window.window_seconds.unwrap_or(i64::MAX),
+            window.limit_id.as_str(),
+        )
+    })
+}
+
+fn activity_clock(timestamp_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(timestamp_ms)
+        .single()
+        .map(|value| value.format("%H:%M").to_string())
+        .unwrap_or_else(|| "—".to_string())
 }
 
 fn pad_selected_row(app: &App, spans: &mut Vec<Span<'static>>, width: usize, selected: bool) {
@@ -2524,8 +3919,14 @@ mod tests {
     use crate::tui::app::{Tab, TuiConfig};
     use crate::tui::data::UsageData;
     use crate::tui::themes::{TerminalBackground, TerminalColorMode, Theme, ThemePreference};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+    use tokscale_core::telemetry::{
+        AccountActivitySnapshot, AccountDailyUsage, AccountUsageSummary, QuotaActivityPoint,
+        QuotaResetConfidence, QuotaResetEvent, QuotaResetEventType, QuotaWindowActivity,
+    };
 
     fn output(provider: &str, account: Option<UsageAccount>) -> UsageOutput {
         UsageOutput {
@@ -2615,6 +4016,68 @@ mod tests {
         let mut app = App::new_with_cached_data(config, Some(UsageData::default())).unwrap();
         app.current_tab = Tab::Usage;
         app
+    }
+
+    fn account_activity() -> AccountActivitySnapshot {
+        AccountActivitySnapshot {
+            provider: "Codex".to_string(),
+            account_id: "acct_work".to_string(),
+            summary: Some(AccountUsageSummary {
+                lifetime_tokens: Some(18_440_303_510),
+                peak_daily_tokens: Some(1_862_755_230),
+                longest_running_turn_seconds: Some(219_563),
+                current_streak_days: Some(27),
+                longest_streak_days: Some(27),
+                fetched_at_ms: 30,
+            }),
+            daily_usage: vec![
+                AccountDailyUsage {
+                    start_date: "2026-07-22".to_string(),
+                    tokens: 20,
+                    fetched_at_ms: 10,
+                },
+                AccountDailyUsage {
+                    start_date: "2026-07-23".to_string(),
+                    tokens: 130,
+                    fetched_at_ms: 20,
+                },
+            ],
+            quota_windows: vec![QuotaWindowActivity {
+                limit_id: "codex:primary".to_string(),
+                limit_label: "5h".to_string(),
+                window_seconds: Some(18_000),
+                observed_consumption_percent: 110.0,
+                reset_count: 1,
+                first_observed_at_ms: 1_774_747_880_000,
+                last_observed_at_ms: 1_774_751_480_000,
+                max_gap_ms: 1_800_000,
+                points: vec![
+                    QuotaActivityPoint {
+                        used_percent: 20.0,
+                        resets_at_ms: Some(1_774_760_000_000),
+                        observed_at_ms: 1_774_747_880_000,
+                    },
+                    QuotaActivityPoint {
+                        used_percent: 100.0,
+                        resets_at_ms: Some(1_774_760_000_000),
+                        observed_at_ms: 1_774_749_680_000,
+                    },
+                    QuotaActivityPoint {
+                        used_percent: 30.0,
+                        resets_at_ms: Some(1_774_780_000_000),
+                        observed_at_ms: 1_774_751_480_000,
+                    },
+                ],
+            }],
+            reset_events: vec![QuotaResetEvent {
+                event_id: "observed-reset".to_string(),
+                limit_id: Some("codex:primary".to_string()),
+                event_type: QuotaResetEventType::ObservedEarlyRollover,
+                occurred_at_ms: 1_774_751_480_000,
+                observed_at_ms: 1_774_751_480_000,
+                confidence: QuotaResetConfidence::Inferred,
+            }],
+        }
     }
 
     fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
@@ -3009,6 +4472,201 @@ mod tests {
     }
 
     #[test]
+    fn usage_account_row_expands_inline_account_activity() {
+        let mut app = make_app();
+        app.set_render_reference_now(
+            NaiveDate::from_ymd_opt(2026, 7, 23)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        );
+        app.subscription_usage = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+        app.account_activities
+            .insert("acct_work".to_string(), account_activity());
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let body = render_body(&mut app, 150, 36);
+
+        assert_eq!(app.expanded_usage_account_id.as_deref(), Some("acct_work"));
+        assert!(body.contains("▾"), "{body}");
+        assert!(body.contains("Account Activity"), "{body}");
+        assert!(body.contains("18.44B"), "{body}");
+        assert!(body.contains("Lifetime tokens"), "{body}");
+        assert!(body.contains("7d 150 · Today 130"), "{body}");
+        assert!(body.contains("30% used · 70% left"), "{body}");
+        assert!(body.contains("Early rollover"), "{body}");
+    }
+
+    #[test]
+    fn wide_usage_account_activity_renders_visual_dashboard() {
+        let mut app = make_app();
+        app.set_render_reference_now(
+            NaiveDate::from_ymd_opt(2026, 7, 23)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        );
+        app.subscription_usage = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+        app.account_activities
+            .insert("acct_work".to_string(), account_activity());
+        app.toggle_usage_account_activity(0);
+
+        let body = render_body(&mut app, 230, 69);
+
+        assert!(body.contains("OFFICIAL ACCOUNT SUMMARY"), "{body}");
+        assert!(body.contains("18.44B"), "{body}");
+        assert!(body.contains("Lifetime tokens"), "{body}");
+        assert!(body.contains("OFFICIAL TOKEN ACTIVITY"), "{body}");
+        assert!(body.contains("CURRENT 7-DAY WINDOW"), "{body}");
+        assert!(body.contains("Fri 07/17"), "{body}");
+        assert!(body.contains("QUOTA & LOCAL EVIDENCE"), "{body}");
+        assert!(body.contains("30% used"), "{body}");
+        assert!(body.contains("3 samples"), "{body}");
+        assert!(body.contains("Early rollover"), "{body}");
+        assert!(body.contains("Last synced"), "{body}");
+    }
+
+    #[test]
+    fn wide_activity_heatmap_uses_dense_two_column_cells() {
+        let area = Rect::new(0, 0, 230, 7);
+        let (grid_x, stride) = activity_heatmap_geometry(area);
+
+        assert_eq!(stride, 3);
+        assert_eq!(
+            grid_x,
+            4 + (230 - 4 - (52 * stride - ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP) as u16) / 2
+        );
+
+        let app = make_app();
+        let colors = activity_heat_colors(&app);
+        assert_ne!(colors[0], app.theme.background);
+        assert!(colors.windows(2).all(|pair| pair[0] != pair[1]));
+
+        let cell = activity_heat_cell_style(&app, Some(500_000_000), true);
+        assert_eq!(cell.fg, Some(colors[4]));
+        assert_eq!(cell.bg, None);
+        assert_eq!(ACCOUNT_ACTIVITY_HEATMAP_GLYPH, '▆');
+    }
+
+    #[test]
+    fn quota_only_activity_prioritizes_the_available_sample() {
+        let app = make_app();
+        let mut activity = account_activity();
+        activity.daily_usage.clear();
+        let mut additional = activity.quota_windows[0].clone();
+        additional.limit_id = "codex:additional".to_string();
+        additional.limit_label = "1h".to_string();
+        additional.window_seconds = Some(60 * 60);
+        activity.quota_windows.push(additional);
+
+        let lines = account_activity_lines(&app, &activity, 100);
+
+        assert!(line_text(&lines[0]).contains("waiting for daily buckets"));
+        assert!(lines
+            .iter()
+            .any(|line| line_text(line).contains("Quota 5h")));
+    }
+
+    #[test]
+    fn usage_account_activity_reports_local_store_errors() {
+        let mut app = make_app();
+        app.subscription_usage = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+        app.account_activity_error = Some("Local activity history could not be opened".to_string());
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let body = render_body(&mut app, 150, 36);
+
+        assert!(
+            body.contains("Local activity history could not be opened"),
+            "{body}"
+        );
+        assert!(!body.contains("No account activity samples yet"), "{body}");
+    }
+
+    #[test]
+    fn usage_account_activity_accordion_keeps_only_one_account_open() {
+        let mut app = make_app();
+        app.subscription_usage = vec![
+            output(
+                "Codex",
+                Some(UsageAccount {
+                    id: "acct_work".to_string(),
+                    label: Some("work".to_string()),
+                    is_active: true,
+                }),
+            ),
+            output(
+                "Codex",
+                Some(UsageAccount {
+                    id: "acct_personal".to_string(),
+                    label: Some("personal".to_string()),
+                    is_active: false,
+                }),
+            ),
+        ];
+
+        app.toggle_usage_account_activity(0);
+        assert_eq!(app.expanded_usage_account_id.as_deref(), Some("acct_work"));
+        app.toggle_usage_account_activity(1);
+        assert_eq!(
+            app.expanded_usage_account_id.as_deref(),
+            Some("acct_personal")
+        );
+        app.toggle_usage_account_activity(1);
+        assert!(app.expanded_usage_account_id.is_none());
+    }
+
+    #[test]
+    fn usage_account_disclosure_click_toggles_inline_activity() {
+        let mut app = make_app();
+        app.subscription_usage = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+        render_buffer(&mut app, 150, 30);
+        let disclosure = app
+            .click_areas
+            .iter()
+            .find(|area| matches!(&area.action, ClickAction::UsageToggleActivity { index: 0 }))
+            .map(|area| area.rect)
+            .expect("Codex account disclosure click area");
+
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: disclosure.x,
+            row: disclosure.y,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.expanded_usage_account_id.as_deref(), Some("acct_work"));
+    }
+
+    #[test]
     fn usage_header_counts_saved_and_managed_identities() {
         let mut app = make_app();
         app.subscription_usage = vec![
@@ -3042,6 +4700,7 @@ mod tests {
 
     #[test]
     fn medium_usage_layout_compacts_single_account_table() {
+        let app = make_app();
         let outputs = vec![output(
             "Codex",
             Some(UsageAccount {
@@ -3051,8 +4710,8 @@ mod tests {
             }),
         )];
 
-        assert_eq!(medium_accounts_table_height(&outputs, 40), 5);
-        assert_eq!(medium_accounts_table_height(&outputs, 4), 4);
+        assert_eq!(medium_accounts_table_height(&app, &outputs, 40), 5);
+        assert_eq!(medium_accounts_table_height(&app, &outputs, 4), 4);
     }
 
     #[test]

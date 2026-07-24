@@ -1929,6 +1929,37 @@ fn test_auto_refresh_on_usage_refreshes_usage_only() {
 }
 
 #[test]
+fn test_auto_refresh_samples_quota_while_usage_is_not_visible() {
+    let mut app = make_app();
+    app.current_tab = Tab::Overview;
+    app.usage_fetcher = sample_usage_fetcher;
+    app.auto_refresh = true;
+    app.auto_refresh_interval = Duration::from_secs(60);
+    app.last_auto_refresh = Instant::now();
+    app.last_quota_sample = Instant::now() - Duration::from_secs(11 * 60);
+
+    app.on_tick();
+
+    assert!(!app.needs_reload);
+    assert!(app.usage_fetch_attempted);
+    assert!(app.is_fetching_usage() || !app.subscription_usage.is_empty());
+}
+
+#[test]
+fn test_disabled_auto_refresh_does_not_sample_background_quota() {
+    let mut app = make_app();
+    app.current_tab = Tab::Overview;
+    app.usage_fetcher = sample_usage_fetcher;
+    app.auto_refresh = false;
+    app.last_quota_sample = Instant::now() - Duration::from_secs(11 * 60);
+
+    app.on_tick();
+
+    assert!(!app.usage_fetch_attempted);
+    assert!(!app.is_fetching_usage());
+}
+
+#[test]
 #[serial_test::serial]
 fn test_auto_refresh_on_pulse_reports_missing_auth_without_global_reload() {
     let prev_api_key = env::var_os("WEREAD_API_KEY");

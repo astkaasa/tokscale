@@ -31,6 +31,8 @@ Sources declare one of four behaviors:
 
 The first two participate in historical ingestion. The latter two are never
 invoked merely because a parser is enabled or a credential was discovered.
+Quota observations are written only by an explicit Usage refresh or while the
+existing Usage auto-refresh setting is enabled.
 
 ## Storage Boundary
 
@@ -77,7 +79,27 @@ telemetry_events
 
 telemetry_event_sources
   event-to-source mapping, source record ref, present | missing state
+
+account_daily_usage
+  official account-level token buckets keyed by provider, account, and date
+
+account_usage_summaries
+  latest official lifetime, peak-day, longest-turn, and streak values
+
+quota_observations
+  local timestamped samples of provider quota windows and reset deadlines
+
+quota_reset_events
+  confirmed local resets, legacy inferred rollovers, and inferred scheduled or
+  early provider-window rollovers
 ```
+
+Account activity is deliberately separate from canonical local AI events. The
+official daily token buckets are account-level and do not expose input, output,
+or cache-token breakdowns. Quota consumption between samples is shown as an
+observed lower bound, and coverage gaps remain visible instead of being
+interpolated. These rows support compact operational inspection in Usage; they
+do not contribute to local totals, cost reports, or historical model analysis.
 
 Identity is explicit rather than guessed by the store:
 
@@ -174,9 +196,11 @@ These are later Usage workspace tasks, not ledger blockers:
    TUI, Pulse refresh, and local web.
 5. Completed: explicit remote Usage provider allowlist with legacy denylist
    compatibility.
-6. Next: replace the compatibility bridge client by client with physical
+6. Completed: account-level summaries and daily buckets, quota observations,
+   and reset events with an inline Usage account inspector.
+7. Next: replace the compatibility bridge client by client with physical
    source observations and snapshot adapters.
-7. Later: add DeepSeek balance and evaluate OpenCode Go quota support as
+8. Later: add DeepSeek balance and evaluate OpenCode Go quota support as
    separate operational features.
 
 ## Remaining Engineering Questions

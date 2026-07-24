@@ -181,6 +181,9 @@ impl App {
             KeyCode::Enter if matches!(self.current_tab, Tab::Overview | Tab::Models) => {
                 self.open_selected_model_detail();
             }
+            KeyCode::Enter if self.current_tab == Tab::Usage => {
+                self.toggle_selected_usage_account_activity();
+            }
             KeyCode::Enter
                 if self.current_tab == Tab::Timeline
                     && self.timeline_granularity == TimelineGranularity::Day =>
@@ -256,6 +259,9 @@ impl App {
                         }
                         ClickAction::UsageSelect { index } => {
                             self.selected_index = index;
+                        }
+                        ClickAction::UsageToggleActivity { index } => {
+                            self.toggle_usage_account_activity(index);
                         }
                         ClickAction::CodexUseAccount { account_id } => {
                             self.confirm_codex_account_switch(&account_id);

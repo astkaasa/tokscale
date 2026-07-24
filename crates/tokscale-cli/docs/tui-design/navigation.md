@@ -4,7 +4,7 @@ Tokscale's TUI keeps a small set of stable workspaces at the top level, then use
 
 ## Workspace Notes
 
-Usage is the operational account/quota workspace. It owns refreshing subscription status, adding Codex accounts through browser login, switching the active Codex account, and two-step account removal. The main page answers whether the current account is ready, which fallback is safest, when quota resets, and which saved accounts need attention.
+Usage is the operational account/quota workspace. It owns refreshing subscription status, adding Codex accounts through browser login, switching the active Codex account, and two-step account removal. The main page answers whether the current account is ready, which fallback is safest, when quota resets, and which saved accounts need attention. A disclosure control on each saved Codex account opens one inline Account Activity panel; the account list itself remains stable and only one panel is expanded at a time.
 
 ## Top-Level Workspaces
 
@@ -24,7 +24,7 @@ The header always preserves this canonical order. It uses full labels with norma
 
 `Timeline` owns historical time-granularity views. Day and hour are modes inside the workspace because the user is still asking the same question: when did usage happen?
 
-`Usage` is not historical analytics. It is the operational status surface for subscriptions, quotas, credentials, cache/sync state, and provider account health.
+`Usage` is not historical analytics. It is the operational status surface for subscriptions, quotas, credentials, cache/sync state, and provider account health. Its Account Activity panel may show official account summary metrics, a compact 12-month activity rhythm, the current seven-day token window, and locally observed quota/reset evidence. Model-level analysis and long-form history still belong in an export or companion surface.
 
 `Pulse` is the personal signal workspace. It shows current local signals, evidence, and lightweight sync health without becoming a long-form report surface.
 

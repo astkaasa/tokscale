@@ -8,17 +8,50 @@ use crate::tui::privacy::looks_like_email;
 use crate::tui::pulse_state::AiSourceObservedAt;
 use crate::tui::ui::dialog::ConfirmDialog;
 
+#[cfg(not(test))]
+use chrono::{Duration as ChronoDuration, Local, TimeZone};
+#[cfg(not(test))]
+use tokscale_core::telemetry::TelemetryStore;
+
+const BACKGROUND_QUOTA_SAMPLE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(10 * 60);
+const CODEX_ACCOUNT_ACTIVITY_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(60 * 60);
+#[cfg(not(test))]
+const ACCOUNT_ACTIVITY_HISTORY_DAYS: i64 = 370;
+
 impl App {
     pub fn fetch_subscription_usage(&mut self) {
+        self.start_subscription_usage_fetch(false);
+    }
+
+    fn fetch_subscription_usage_in_background(&mut self) {
+        self.start_subscription_usage_fetch(true);
+    }
+
+    fn start_subscription_usage_fetch(&mut self, background: bool) {
         if self.usage_job.is_running() {
             return; // already fetching
         }
         self.usage_fetch_attempted = true;
         self.usage_fetch_diagnostics.clear();
-        self.status_message = Some("Fetching usage data...".into());
-        self.status_message_time = Some(std::time::Instant::now());
+        self.usage_refresh_is_background = background;
+        self.last_quota_sample = std::time::Instant::now();
+        let refresh_account_activity = self.last_codex_activity_fetch.is_none_or(|last_fetch| {
+            last_fetch.elapsed() >= CODEX_ACCOUNT_ACTIVITY_REFRESH_INTERVAL
+        });
+        if refresh_account_activity {
+            self.last_codex_activity_fetch = Some(std::time::Instant::now());
+        }
+        if !background {
+            self.status_message = Some("Fetching usage data...".into());
+            self.status_message_time = Some(std::time::Instant::now());
+        }
         #[cfg(test)]
         let usage_fetcher = self.usage_fetcher;
+        #[cfg(test)]
+        let _account_activity_fetcher: fn() -> anyhow::Result<usize> =
+            crate::commands::usage::codex::refresh_current_account_activity;
         self.usage_job.start(move || {
             #[cfg(test)]
             let results = usage_fetcher();
@@ -26,8 +59,41 @@ impl App {
             let results = crate::commands::usage::fetch_all_report_with_intent(
                 crate::commands::usage::UsageFetchIntent::TuiSurface,
             );
+            #[cfg(not(test))]
+            let codex_was_requested = results
+                .outputs
+                .iter()
+                .any(|output| output.provider.eq_ignore_ascii_case("Codex"))
+                || results
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.provider.eq_ignore_ascii_case("Codex"));
+            #[cfg(not(test))]
+            if refresh_account_activity && codex_was_requested {
+                if let Err(error) =
+                    crate::commands::usage::codex::refresh_current_account_activity()
+                {
+                    tracing::warn!(%error, "failed to refresh Codex account activity");
+                }
+            }
             results
         });
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn maybe_start_background_quota_sampling(&mut self) {
+        if self.auto_refresh && self.current_tab != Tab::Usage && !self.usage_job.is_running() {
+            self.fetch_subscription_usage_in_background();
+        }
+    }
+
+    pub(crate) fn maybe_sample_quota_in_background(&mut self) {
+        if self.auto_refresh
+            && self.last_quota_sample.elapsed() >= BACKGROUND_QUOTA_SAMPLE_INTERVAL
+            && !self.usage_job.is_running()
+        {
+            self.fetch_subscription_usage_in_background();
+        }
     }
 
     pub fn is_fetching_usage(&self) -> bool {
@@ -59,6 +125,116 @@ impl App {
         {
             self.fetch_subscription_usage();
         }
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn reload_account_activities(&mut self) {
+        self.account_activity_error = None;
+        if !crate::paths::telemetry_store_path().is_file() {
+            self.account_activities.clear();
+            return;
+        }
+
+        let today = Local::now().date_naive();
+        let daily_since = today
+            .checked_sub_signed(ChronoDuration::days(ACCOUNT_ACTIVITY_HISTORY_DAYS))
+            .unwrap_or(today)
+            .format("%Y-%m-%d")
+            .to_string();
+        let midnight = today
+            .and_hms_opt(0, 0, 0)
+            .and_then(|value| Local.from_local_datetime(&value).earliest())
+            .map(|value| value.timestamp_millis())
+            .unwrap_or(0);
+        let store = match TelemetryStore::open_default_read_only() {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::warn!(%error, "failed to open account activity store");
+                self.account_activity_error =
+                    Some("Local activity history could not be opened".to_string());
+                return;
+            }
+        };
+
+        let mut activities = std::collections::HashMap::new();
+        let mut load_failed = false;
+        for output in &self.subscription_usage {
+            let Some(account) = output.account.as_ref() else {
+                continue;
+            };
+            if !output.provider.eq_ignore_ascii_case("Codex") {
+                continue;
+            }
+            match store.load_account_activity(&output.provider, &account.id, &daily_since, midnight)
+            {
+                Ok(activity) => {
+                    activities.insert(account.id.clone(), activity);
+                }
+                Err(error) => {
+                    load_failed = true;
+                    tracing::warn!(
+                        %error,
+                        account_id = %account.id,
+                        "failed to load Codex account activity"
+                    );
+                }
+            }
+        }
+        if load_failed {
+            self.account_activity_error =
+                Some("Some local account activity could not be loaded".to_string());
+        }
+        self.account_activities = activities;
+        if self
+            .expanded_usage_account_id
+            .as_ref()
+            .is_some_and(|expanded| {
+                !self.subscription_usage.iter().any(|output| {
+                    output
+                        .account
+                        .as_ref()
+                        .is_some_and(|account| &account.id == expanded)
+                })
+            })
+        {
+            self.expanded_usage_account_id = None;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reload_account_activities(&mut self) {}
+
+    pub fn toggle_selected_usage_account_activity(&mut self) {
+        self.toggle_usage_account_activity(self.selected_index);
+    }
+
+    pub fn toggle_usage_account_activity(&mut self, index: usize) {
+        let Some(output) = self.subscription_usage.get(index) else {
+            self.set_status("No usage account selected");
+            return;
+        };
+        if !output.provider.eq_ignore_ascii_case("Codex") {
+            self.set_status("Account activity is currently available for Codex accounts");
+            return;
+        }
+        let Some(account_id) = output.account.as_ref().map(|account| account.id.clone()) else {
+            self.set_status("Save this Codex account to track account activity");
+            return;
+        };
+
+        self.selected_index = index;
+        if self.expanded_usage_account_id.as_deref() == Some(account_id.as_str()) {
+            self.expanded_usage_account_id = None;
+        } else {
+            self.expanded_usage_account_id = Some(account_id);
+            self.reload_account_activities();
+        }
+    }
+
+    pub fn is_usage_account_activity_expanded(&self, output: &UsageOutput) -> bool {
+        output.account.as_ref().is_some_and(|account| {
+            self.expanded_usage_account_id.as_deref() == Some(account.id.as_str())
+        })
     }
 
     pub(crate) fn maybe_fetch_weread_on_entry(&mut self) {
@@ -373,6 +549,7 @@ impl App {
     pub fn use_codex_account(&mut self, account_id: &str) {
         match crate::commands::usage::codex::switch_active_account(account_id) {
             Ok(info) => {
+                self.last_codex_activity_fetch = None;
                 self.mark_active_codex_account(&info.id);
                 self.sort_codex_subscription_usage();
                 if let Some(index) = self.subscription_usage.iter().position(|usage| {
@@ -403,6 +580,10 @@ impl App {
     pub fn remove_codex_account(&mut self, account_id: &str) {
         match crate::commands::usage::codex::remove_account(account_id) {
             Ok(info) => {
+                self.account_activities.remove(&info.id);
+                if self.expanded_usage_account_id.as_deref() == Some(info.id.as_str()) {
+                    self.expanded_usage_account_id = None;
+                }
                 self.subscription_usage.retain(|usage| {
                     usage.account.as_ref().map(|account| account.id.as_str())
                         != Some(info.id.as_str())

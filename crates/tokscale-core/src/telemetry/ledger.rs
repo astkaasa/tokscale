@@ -12,7 +12,7 @@ use super::identity::{event_id, ObservedTelemetryEvent};
 use crate::sessions::UnifiedMessage;
 use crate::TokenBreakdown;
 
-pub const TELEMETRY_SCHEMA_VERSION: i64 = 1;
+pub const TELEMETRY_SCHEMA_VERSION: i64 = 3;
 const TELEMETRY_APPLICATION_ID: i64 = 1_414_745_159;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 
@@ -44,6 +44,8 @@ pub enum TelemetryError {
     InvalidSourceKind(String),
     #[error("invalid stored telemetry source status: {0}")]
     InvalidSourceStatus(String),
+    #[error("invalid account activity input: {0}")]
+    InvalidAccountActivity(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +287,13 @@ pub struct TelemetrySourceTotals {
 #[derive(Debug, Clone)]
 pub struct TelemetryStore {
     path: PathBuf,
+    access: TelemetryStoreAccess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TelemetryStoreAccess {
+    ReadWrite,
+    ReadOnlyImmutable,
 }
 
 pub struct TelemetryIngestContext<'a> {
@@ -342,12 +351,33 @@ impl TelemetryStore {
         Self::open(crate::paths::get_config_dir().join("data/telemetry.sqlite"))
     }
 
+    /// Opens the default ledger without creating SQLite journal or shared-memory files.
+    ///
+    /// This is intended for short-lived display queries after writers have closed their
+    /// connections. It does not create or migrate the ledger.
+    pub fn open_default_read_only() -> Result<Self, TelemetryError> {
+        Self::open_read_only(crate::paths::get_config_dir().join("data/telemetry.sqlite"))
+    }
+
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, TelemetryError> {
-        let store = Self { path: path.into() };
+        let store = Self {
+            path: path.into(),
+            access: TelemetryStoreAccess::ReadWrite,
+        };
         let mut connection = store.open_connection()?;
         initialize_schema(&mut connection)?;
         configure_connection(&connection)?;
         crate::fs_atomic::repair_private_file(&store.path);
+        Ok(store)
+    }
+
+    pub fn open_read_only(path: impl Into<PathBuf>) -> Result<Self, TelemetryError> {
+        let store = Self {
+            path: path.into(),
+            access: TelemetryStoreAccess::ReadOnlyImmutable,
+        };
+        let connection = store.open_read_only_connection()?;
+        validated_schema_version(&connection)?;
         Ok(store)
     }
 
@@ -539,10 +569,27 @@ impl TelemetryStore {
         source_totals_on_connection(&connection, source_id)
     }
 
-    fn ready_connection(&self) -> Result<Connection, TelemetryError> {
+    pub(super) fn ready_connection(&self) -> Result<Connection, TelemetryError> {
+        if self.access == TelemetryStoreAccess::ReadOnlyImmutable {
+            let connection = self.open_read_only_connection()?;
+            validated_schema_version(&connection)?;
+            return Ok(connection);
+        }
+
         let mut connection = self.open_connection()?;
         initialize_schema(&mut connection)?;
         configure_connection(&connection)?;
+        Ok(connection)
+    }
+
+    fn open_read_only_connection(&self) -> Result<Connection, TelemetryError> {
+        let connection = Connection::open_with_flags(
+            immutable_sqlite_uri(&self.path),
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(Duration::from_millis(DEFAULT_BUSY_TIMEOUT_MS))?;
         Ok(connection)
     }
 
@@ -559,6 +606,22 @@ impl TelemetryStore {
         crate::fs_atomic::repair_private_file(&self.path);
         Ok(connection)
     }
+}
+
+fn immutable_sqlite_uri(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::with_capacity(normalized.len() + 24);
+    uri.push_str("file:");
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'_' | b'.' | b'~') {
+            uri.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
 }
 
 fn start_run_on_connection(
@@ -1170,7 +1233,7 @@ fn commit_failed_source(
 }
 
 fn initialize_schema(connection: &mut Connection) -> Result<(), TelemetryError> {
-    if validated_schema_version(connection)? != 0 {
+    if validated_schema_version(connection)? == TELEMETRY_SCHEMA_VERSION {
         return Ok(());
     }
 
@@ -1259,6 +1322,99 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), TelemetryError> 
             PRAGMA user_version = 1;",
         )?;
     }
+    if validated_schema_version(&transaction)? < 2 {
+        transaction.execute_batch(
+            "CREATE TABLE account_daily_usage (
+               provider TEXT NOT NULL,
+               account_id TEXT NOT NULL,
+               start_date TEXT NOT NULL,
+               tokens INTEGER NOT NULL CHECK(tokens >= 0),
+               fetched_at_ms INTEGER NOT NULL CHECK(fetched_at_ms >= 0),
+               source TEXT NOT NULL,
+               PRIMARY KEY(provider, account_id, start_date)
+            ) STRICT;
+            CREATE TABLE quota_observations (
+               observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+               provider TEXT NOT NULL,
+               account_id TEXT NOT NULL,
+               limit_id TEXT NOT NULL,
+               limit_label TEXT NOT NULL,
+               window_seconds INTEGER CHECK(window_seconds > 0),
+               used_percent REAL NOT NULL CHECK(used_percent >= 0 AND used_percent <= 100),
+               resets_at_ms INTEGER,
+               observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),
+               source TEXT NOT NULL,
+               UNIQUE(provider, account_id, limit_id, observed_at_ms)
+            ) STRICT;
+            CREATE TABLE quota_reset_events (
+               event_id TEXT PRIMARY KEY,
+               provider TEXT NOT NULL,
+               account_id TEXT NOT NULL,
+               limit_id TEXT,
+               event_type TEXT NOT NULL CHECK(event_type IN ('confirmed_manual', 'observed_rollover')),
+               occurred_at_ms INTEGER NOT NULL CHECK(occurred_at_ms >= 0),
+               observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),
+               source TEXT NOT NULL,
+               confidence TEXT NOT NULL CHECK(confidence IN ('confirmed', 'inferred'))
+            ) STRICT;
+            CREATE INDEX account_daily_usage_account_date
+               ON account_daily_usage(provider, account_id, start_date);
+            CREATE INDEX quota_observations_account_time
+               ON quota_observations(provider, account_id, observed_at_ms);
+            CREATE INDEX quota_observations_window_time
+               ON quota_observations(provider, account_id, limit_id, observed_at_ms);
+            CREATE INDEX quota_reset_events_account_time
+               ON quota_reset_events(provider, account_id, occurred_at_ms);
+            PRAGMA user_version = 2;",
+        )?;
+    }
+    if validated_schema_version(&transaction)? < 3 {
+        transaction.execute_batch(
+            "CREATE TABLE account_usage_summaries (
+               provider TEXT NOT NULL,
+               account_id TEXT NOT NULL,
+               lifetime_tokens INTEGER CHECK(lifetime_tokens >= 0),
+               peak_daily_tokens INTEGER CHECK(peak_daily_tokens >= 0),
+               longest_running_turn_seconds INTEGER CHECK(longest_running_turn_seconds >= 0),
+               current_streak_days INTEGER CHECK(current_streak_days >= 0),
+               longest_streak_days INTEGER CHECK(longest_streak_days >= 0),
+               fetched_at_ms INTEGER NOT NULL CHECK(fetched_at_ms >= 0),
+               source TEXT NOT NULL,
+               PRIMARY KEY(provider, account_id)
+            ) STRICT;
+            DROP INDEX quota_reset_events_account_time;
+            ALTER TABLE quota_reset_events RENAME TO quota_reset_events_v2;
+            CREATE TABLE quota_reset_events (
+               event_id TEXT PRIMARY KEY,
+               provider TEXT NOT NULL,
+               account_id TEXT NOT NULL,
+               limit_id TEXT,
+               event_type TEXT NOT NULL CHECK(event_type IN (
+                 'confirmed_manual',
+                 'observed_rollover',
+                 'observed_scheduled_rollover',
+                 'observed_early_rollover'
+               )),
+               occurred_at_ms INTEGER NOT NULL CHECK(occurred_at_ms >= 0),
+               observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),
+               source TEXT NOT NULL,
+               confidence TEXT NOT NULL CHECK(confidence IN ('confirmed', 'inferred'))
+            ) STRICT;
+            INSERT INTO quota_reset_events (
+               event_id, provider, account_id, limit_id, event_type,
+               occurred_at_ms, observed_at_ms, source, confidence
+            )
+            SELECT event_id, provider, account_id, limit_id, event_type,
+                   occurred_at_ms, observed_at_ms, source, confidence
+            FROM quota_reset_events_v2;
+            DROP TABLE quota_reset_events_v2;
+            CREATE INDEX account_usage_summaries_account
+               ON account_usage_summaries(provider, account_id);
+            CREATE INDEX quota_reset_events_account_time
+               ON quota_reset_events(provider, account_id, occurred_at_ms);
+            PRAGMA user_version = 3;",
+        )?;
+    }
     transaction.commit()?;
     Ok(())
 }
@@ -1307,7 +1463,7 @@ fn non_negative_usize(value: i64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::{EventCost, EventIdentity, TelemetryEventInput};
+    use crate::telemetry::{EventCost, EventIdentity, QuotaObservationInput, TelemetryEventInput};
 
     fn store() -> (tempfile::TempDir, TelemetryStore) {
         let temp = tempfile::TempDir::new().unwrap();
@@ -1396,6 +1552,94 @@ mod tests {
             .unwrap();
         assert_eq!(application_id, TELEMETRY_APPLICATION_ID);
         assert_eq!(version, TELEMETRY_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_one_ledger_migrates_account_activity_tables() {
+        let (temp, store) = store();
+        let path = store.path().to_path_buf();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE account_usage_summaries;
+                 DROP TABLE quota_reset_events;
+                 DROP TABLE quota_observations;
+                 DROP TABLE account_daily_usage;
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        drop(connection);
+
+        TelemetryStore::open(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name IN (
+                   'account_usage_summaries', 'account_daily_usage',
+                   'quota_observations', 'quota_reset_events'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(path, temp.path().join("data/telemetry.sqlite"));
+        assert_eq!(version, TELEMETRY_SCHEMA_VERSION);
+        assert_eq!(tables, 4);
+    }
+
+    #[test]
+    fn version_two_ledger_preserves_legacy_reset_events() {
+        let (_temp, store) = store();
+        let path = store.path().to_path_buf();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO quota_reset_events (
+                   event_id, provider, account_id, limit_id, event_type,
+                   occurred_at_ms, observed_at_ms, source, confidence
+                 ) VALUES (
+                   'legacy-rollover', 'Codex', 'acct-work', 'codex:primary',
+                   'observed_rollover', 10, 20, 'codex-rate-limits', 'inferred'
+                 );
+                 DROP TABLE account_usage_summaries;
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        drop(connection);
+
+        TelemetryStore::open(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let reset_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM quota_reset_events
+                 WHERE event_id = 'legacy-rollover'
+                   AND event_type = 'observed_rollover'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let summary_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name = 'account_usage_summaries'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, TELEMETRY_SCHEMA_VERSION);
+        assert_eq!(reset_count, 1);
+        assert_eq!(summary_table, 1);
     }
 
     #[test]
@@ -2227,5 +2471,41 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
             0o600
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_store_does_not_require_a_writable_ledger_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let data = temp.path().join("data with spaces");
+        let path = data.join("telemetry #1.sqlite");
+        let store = TelemetryStore::open(&path).unwrap();
+        store
+            .record_quota_observations(&[QuotaObservationInput {
+                provider: "Codex".into(),
+                account_id: "acct-work".into(),
+                limit_id: "codex:primary".into(),
+                limit_label: "5h".into(),
+                window_seconds: Some(5 * 60 * 60),
+                used_percent: 20.0,
+                resets_at_ms: Some(20_000),
+                observed_at_ms: 10_000,
+                source: "test".into(),
+            }])
+            .unwrap();
+        drop(store);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = TelemetryStore::open_read_only(&path)
+            .and_then(|store| store.load_account_activity("Codex", "acct-work", "2026-01-01", 0));
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let activity = result.unwrap();
+        assert_eq!(activity.quota_windows.len(), 1);
+        assert_eq!(activity.quota_windows[0].points.len(), 1);
     }
 }

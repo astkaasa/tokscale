@@ -6,6 +6,10 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use tokscale_core::telemetry::{
+    QuotaObservationInput, QuotaResetConfidence, QuotaResetEventInput, QuotaResetEventType,
+    TelemetryStore,
+};
 
 use super::helpers::capitalize;
 use super::{
@@ -13,6 +17,12 @@ use super::{
     UsageFetchDiagnosticSeverity, UsageFetchReport, UsageMetric, UsageOutput, UsageResetCredit,
     UsageResetCredits, UsageSpendControl,
 };
+
+mod activity;
+
+pub(crate) fn refresh_current_account_activity() -> Result<usize> {
+    activity::refresh_current_account_activity()
+}
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
@@ -1147,6 +1157,175 @@ fn push_rate_limit_metrics(
     }
 }
 
+fn activity_limit_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut separator_pending = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator_pending && !slug.is_empty() {
+                slug.push('-');
+            }
+            separator_pending = false;
+            slug.push(character.to_ascii_lowercase());
+        } else {
+            separator_pending = true;
+        }
+    }
+    slug
+}
+
+struct QuotaObservationContext<'a> {
+    provider: &'a str,
+    account_id: &'a str,
+    observed_at_ms: i64,
+}
+
+#[derive(Clone, Copy)]
+enum QuotaWindowPosition {
+    Primary,
+    Secondary,
+}
+
+impl QuotaWindowPosition {
+    fn labels(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Primary => ("primary", "5h", "5h"),
+            Self::Secondary => ("secondary", "Weekly", "week"),
+        }
+    }
+}
+
+fn push_quota_observation(
+    observations: &mut Vec<QuotaObservationInput>,
+    context: &QuotaObservationContext<'_>,
+    limit_id: &str,
+    label_prefix: Option<&str>,
+    position: QuotaWindowPosition,
+    window: &Window,
+) {
+    let Some(used_percent) = window.used_percent.filter(|value| value.is_finite()) else {
+        return;
+    };
+    let (position, fallback, prefixed_fallback) = position.labels();
+    observations.push(QuotaObservationInput {
+        provider: context.provider.to_string(),
+        account_id: context.account_id.to_string(),
+        limit_id: format!("{limit_id}:{position}"),
+        limit_label: metric_label(label_prefix, window, fallback, prefixed_fallback),
+        window_seconds: window.limit_window_seconds.filter(|seconds| *seconds > 0),
+        used_percent: used_percent.clamp(0.0, 100.0),
+        resets_at_ms: window
+            .reset_at
+            .filter(|timestamp| *timestamp >= 0)
+            .and_then(|timestamp| timestamp.checked_mul(1_000)),
+        observed_at_ms: context.observed_at_ms,
+        source: "codex-rate-limits".to_string(),
+    });
+}
+
+fn push_quota_rate_limit(
+    observations: &mut Vec<QuotaObservationInput>,
+    context: &QuotaObservationContext<'_>,
+    limit_id: &str,
+    label_prefix: Option<&str>,
+    rate_limit: &RateLimit,
+) {
+    if let Some(window) = &rate_limit.primary_window {
+        push_quota_observation(
+            observations,
+            context,
+            limit_id,
+            label_prefix,
+            QuotaWindowPosition::Primary,
+            window,
+        );
+    }
+    if let Some(window) = &rate_limit.secondary_window {
+        push_quota_observation(
+            observations,
+            context,
+            limit_id,
+            label_prefix,
+            QuotaWindowPosition::Secondary,
+            window,
+        );
+    }
+}
+
+fn quota_observations_from_usage(
+    usage: &Usage,
+    provider: &str,
+    account_id: &str,
+    observed_at_ms: i64,
+) -> Vec<QuotaObservationInput> {
+    let mut observations = Vec::new();
+    let context = QuotaObservationContext {
+        provider,
+        account_id,
+        observed_at_ms,
+    };
+    if let Some(rate_limit) = &usage.rate_limit {
+        push_quota_rate_limit(&mut observations, &context, "codex", None, rate_limit);
+    }
+    for (index, limit) in usage.additional_rate_limits.iter().enumerate() {
+        let Some(rate_limit) = &limit.rate_limit else {
+            continue;
+        };
+        let raw_name = limit
+            .metered_feature
+            .as_deref()
+            .or(limit.limit_name.as_deref())
+            .unwrap_or("additional");
+        let slug = activity_limit_slug(raw_name);
+        let limit_id = if slug.is_empty() {
+            format!("codex:additional-{}", index + 1)
+        } else {
+            format!("codex:{slug}")
+        };
+        let label = limit
+            .limit_name
+            .as_deref()
+            .or(limit.metered_feature.as_deref())
+            .map(capitalize);
+        push_quota_rate_limit(
+            &mut observations,
+            &context,
+            &limit_id,
+            label.as_deref(),
+            rate_limit,
+        );
+    }
+    observations
+}
+
+fn account_activity_id(account: Option<&UsageAccount>, tokens: &Tokens) -> String {
+    account
+        .map(|account| account.id.clone())
+        .or_else(|| {
+            load_credentials_store()
+                .as_ref()
+                .and_then(|store| matching_account_id_for_tokens(store, tokens))
+        })
+        .unwrap_or_else(|| derive_account_id(tokens))
+}
+
+fn persist_quota_observations(
+    usage: &Usage,
+    provider: &str,
+    account_id: &str,
+    observed_at_ms: i64,
+) {
+    let observations = quota_observations_from_usage(usage, provider, account_id, observed_at_ms);
+    if observations.is_empty() {
+        return;
+    }
+    if let Err(error) = TelemetryStore::open_default()
+        .and_then(|store| store.record_quota_observations(&observations).map(|_| ()))
+    {
+        tracing::warn!(%error, account_id, "failed to persist Codex quota observations");
+    }
+}
+
 fn reset_credits_from_summary(summary: Option<&ResetCreditsSummary>) -> Option<UsageResetCredits> {
     summary.and_then(|summary| {
         summary
@@ -1231,6 +1410,14 @@ async fn fetch_with_auth_async(
         }
         Err(e) => return Err(e),
     };
+
+    let activity_account_id = account_activity_id(account.as_ref(), &effective_tokens);
+    persist_quota_observations(
+        &resp,
+        &provider_name,
+        &activity_account_id,
+        Utc::now().timestamp_millis(),
+    );
 
     let plan = resp.plan_type.as_deref().map(capitalize);
     let mut metrics = Vec::new();
@@ -1557,10 +1744,30 @@ pub fn consume_rate_limit_reset_credit(name_or_id: &str) -> Result<RateLimitRese
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(consume_reset_credit_with_auth_async(
+    let result = rt.block_on(consume_reset_credit_with_auth_async(
         auth_from_account(&account),
-        CredentialSource::Store(resolved),
-    ))
+        CredentialSource::Store(resolved.clone()),
+    ))?;
+    if result.code == "reset" {
+        let observed_at_ms = Utc::now().timestamp_millis();
+        let event = QuotaResetEventInput {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            provider: "Codex".to_string(),
+            account_id: resolved.clone(),
+            limit_id: None,
+            event_type: QuotaResetEventType::ConfirmedManual,
+            occurred_at_ms: observed_at_ms,
+            observed_at_ms,
+            source: "tokscale-reset".to_string(),
+            confidence: QuotaResetConfidence::Confirmed,
+        };
+        if let Err(error) = TelemetryStore::open_default()
+            .and_then(|store| store.record_quota_reset_event(&event).map(|_| ()))
+        {
+            tracing::warn!(%error, account_id = %resolved, "failed to persist Codex quota reset");
+        }
+    }
+    Ok(result)
 }
 
 pub fn switch_active_account(name_or_id: &str) -> Result<CodexAccountInfo> {
@@ -1642,6 +1849,49 @@ mod tests {
 
         assert_eq!(usage.email.as_deref(), Some("plus@example.com"));
         assert!(usage.additional_rate_limits.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn usage_response_normalizes_quota_observations_for_local_history() -> Result<()> {
+        let usage: Usage = serde_json::from_value(serde_json::json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 20,
+                    "limit_window_seconds": 18000,
+                    "reset_at": 1784920000
+                },
+                "secondary_window": {
+                    "used_percent": 8,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1785500000
+                }
+            },
+            "additional_rate_limits": [{
+                "metered_feature": "codex_spark",
+                "limit_name": "Codex Spark",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 3,
+                        "limit_window_seconds": 18000
+                    }
+                }
+            }]
+        }))?;
+
+        let observations = quota_observations_from_usage(&usage, "Codex", "acct-work", 123_000);
+
+        assert_eq!(observations.len(), 3);
+        assert_eq!(observations[0].limit_id, "codex:primary");
+        assert_eq!(observations[0].limit_label, "5h");
+        assert_eq!(observations[0].resets_at_ms, Some(1_784_920_000_000));
+        assert_eq!(observations[1].limit_id, "codex:secondary");
+        assert_eq!(observations[1].limit_label, "Weekly");
+        assert_eq!(observations[2].limit_id, "codex:codex-spark:primary");
+        assert_eq!(observations[2].limit_label, "Codex Spark 5h");
+        assert!(observations
+            .iter()
+            .all(|observation| observation.account_id == "acct-work"));
         Ok(())
     }
 

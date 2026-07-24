@@ -1,7 +1,13 @@
+mod account_activity;
 mod identity;
 mod ledger;
 mod projection;
 
+pub use account_activity::{
+    AccountActivitySnapshot, AccountDailyUsage, AccountDailyUsageInput, AccountUsageSummary,
+    AccountUsageSummaryInput, QuotaActivityPoint, QuotaObservationInput, QuotaResetConfidence,
+    QuotaResetEvent, QuotaResetEventInput, QuotaResetEventType, QuotaWindowActivity,
+};
 pub use identity::{
     event_id, EventCost, EventGrain, EventIdentity, ObservedTelemetryEvent, TelemetryEventInput,
 };

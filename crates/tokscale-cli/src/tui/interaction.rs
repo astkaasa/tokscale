@@ -20,6 +20,7 @@ pub(crate) enum ClickAction {
     CodexStartLogin,
     CodexDismissLogin,
     UsageSelect { index: usize },
+    UsageToggleActivity { index: usize },
     UsageToggleEmailPrivacy,
     WeReadRefresh,
     CodexUseAccount { account_id: String },

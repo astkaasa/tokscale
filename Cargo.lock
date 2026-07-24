@@ -2897,6 +2897,7 @@ dependencies = [
  "dirs",
  "fs2",
  "indicatif",
+ "libc",
  "predicates",
  "ratatui",
  "reqwest",
