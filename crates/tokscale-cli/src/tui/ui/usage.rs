@@ -51,7 +51,7 @@ struct UsageRowView<'a> {
     metric: Option<&'a UsageMetric>,
 }
 
-const WIDE_ACCOUNT_ACTIVITY_WIDTH: u16 = 160;
+const WIDE_ACCOUNT_ACTIVITY_MIN_CONTENT_WIDTH: u16 = 120;
 const WIDE_ACCOUNT_ACTIVITY_MIN_HEIGHT: u16 = 28;
 const ACCOUNT_ACTIVITY_HEATMAP_WEEKS: i64 = 52;
 const ACCOUNT_ACTIVITY_HEATMAP_CELL_WIDTH: usize = 2;
@@ -564,8 +564,12 @@ fn render_medium_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: &
     let selected_index = app.selected_index;
     let selected = &outputs[selected_index];
     let summary_height = medium_summary_height(outputs, area.height).min(area.height);
-    let accounts_height =
-        medium_accounts_table_height(app, outputs, area.height.saturating_sub(summary_height));
+    let accounts_height = medium_accounts_table_height(
+        app,
+        outputs,
+        area.width,
+        area.height.saturating_sub(summary_height),
+    );
     let selected_available = area
         .height
         .saturating_sub(summary_height)
@@ -610,21 +614,36 @@ fn medium_selected_account_preferred_height(selected: &UsageOutput) -> u16 {
     (status_rows + limit_rows + action_rows + 2).clamp(9, 22) as u16
 }
 
-fn medium_accounts_table_height(app: &App, outputs: &[UsageOutput], available: u16) -> u16 {
+fn medium_accounts_table_height(
+    app: &App,
+    outputs: &[UsageOutput],
+    width: u16,
+    available: u16,
+) -> u16 {
     if available == 0 {
         return 0;
     }
 
     let visible_rows = outputs.len().clamp(1, 5) as u16;
-    let activity_height = if outputs
+    let activity_expanded = outputs
         .iter()
-        .any(|output| app.is_usage_account_activity_expanded(output))
+        .any(|output| app.is_usage_account_activity_expanded(output));
+    let base_height = 3 + visible_rows.saturating_mul(2);
+    let wide_table_height = available.saturating_sub(9);
+    if activity_expanded
+        && account_activity_content_width(width.saturating_sub(2))
+            >= WIDE_ACCOUNT_ACTIVITY_MIN_CONTENT_WIDTH
+        && wide_table_height >= base_height.saturating_add(WIDE_ACCOUNT_ACTIVITY_MIN_HEIGHT)
     {
+        return wide_table_height;
+    }
+
+    let activity_height = if activity_expanded {
         account_activity_preferred_height(100)
     } else {
         0
     };
-    let desired = 3 + visible_rows.saturating_mul(2) + activity_height;
+    let desired = base_height + activity_height;
     desired.min(available).max(available.min(5))
 }
 
@@ -640,8 +659,12 @@ fn render_compact_loaded(frame: &mut Frame, app: &mut App, area: Rect, outputs: 
     let selected_index = app.selected_index;
     if compact_should_prioritize_selected(area, outputs) {
         let summary_height = compact_summary_height(outputs, area.height);
-        let accounts_height =
-            medium_accounts_table_height(app, outputs, area.height.saturating_sub(summary_height));
+        let accounts_height = medium_accounts_table_height(
+            app,
+            outputs,
+            area.width,
+            area.height.saturating_sub(summary_height),
+        );
         let selected_available = area
             .height
             .saturating_sub(summary_height)
@@ -1818,7 +1841,9 @@ fn render_narrow_accounts_table(
 
         if app.is_usage_account_activity_expanded(output) {
             let remaining = area.bottom().saturating_sub(y);
-            let activity_height = account_activity_preferred_height(area.width).min(remaining);
+            let trailing_height =
+                (outputs.len().saturating_sub(index + 1) as u16).saturating_mul(2);
+            let activity_height = account_activity_height(area.width, remaining, trailing_height);
             if activity_height >= 3 {
                 let activity_area = Rect::new(area.x, y, area.width, activity_height);
                 render_account_activity(frame, app, activity_area, output);
@@ -2119,9 +2144,23 @@ fn account_activity_preferred_height(width: u16) -> u16 {
     }
 }
 
-fn account_activity_height(width: u16, remaining: u16, trailing_accounts: u16) -> u16 {
-    if width >= WIDE_ACCOUNT_ACTIVITY_WIDTH {
-        let available = remaining.saturating_sub(trailing_accounts.min(remaining));
+fn account_activity_card_inset(width: u16) -> u16 {
+    if width >= 8 {
+        2
+    } else {
+        0
+    }
+}
+
+fn account_activity_content_width(width: u16) -> u16 {
+    width
+        .saturating_sub(account_activity_card_inset(width))
+        .saturating_sub(2)
+}
+
+fn account_activity_height(width: u16, remaining: u16, trailing_height: u16) -> u16 {
+    if account_activity_content_width(width) >= WIDE_ACCOUNT_ACTIVITY_MIN_CONTENT_WIDTH {
+        let available = remaining.saturating_sub(trailing_height.min(remaining));
         if available >= WIDE_ACCOUNT_ACTIVITY_MIN_HEIGHT {
             return available;
         }
@@ -2130,7 +2169,7 @@ fn account_activity_height(width: u16, remaining: u16, trailing_accounts: u16) -
 }
 
 fn render_account_activity(frame: &mut Frame, app: &App, area: Rect, output: &UsageOutput) {
-    let inset = if area.width >= 8 { 2 } else { 0 };
+    let inset = account_activity_card_inset(area.width);
     let card = Rect::new(
         area.x.saturating_add(inset),
         area.y,
@@ -2189,7 +2228,7 @@ fn render_account_activity(frame: &mut Frame, app: &App, area: Rect, output: &Us
         return;
     };
 
-    if inner.width >= WIDE_ACCOUNT_ACTIVITY_WIDTH
+    if inner.width >= WIDE_ACCOUNT_ACTIVITY_MIN_CONTENT_WIDTH
         && inner.height >= WIDE_ACCOUNT_ACTIVITY_MIN_HEIGHT
     {
         render_wide_account_activity(frame, app, inner, activity);
@@ -4541,6 +4580,44 @@ mod tests {
     }
 
     #[test]
+    fn account_activity_wide_layout_uses_content_width_breakpoint() {
+        assert_eq!(account_activity_content_width(123), 119);
+        assert_eq!(account_activity_content_width(124), 120);
+        assert_eq!(account_activity_height(123, 40, 0), 13);
+        assert_eq!(account_activity_height(124, 40, 0), 40);
+        assert_eq!(account_activity_height(124, 27, 0), 13);
+    }
+
+    #[test]
+    fn account_activity_wide_layout_renders_at_common_terminal_width() {
+        let mut app = make_app();
+        app.set_render_reference_now(
+            NaiveDate::from_ymd_opt(2026, 7, 23)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        );
+        app.subscription_usage = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+        app.account_activities
+            .insert("acct_work".to_string(), account_activity());
+        app.toggle_usage_account_activity(0);
+
+        let body = render_body(&mut app, 132, 69);
+
+        assert!(body.contains("OFFICIAL ACCOUNT SUMMARY"), "{body}");
+        assert!(body.contains("OFFICIAL TOKEN ACTIVITY"), "{body}");
+        assert!(body.contains("CURRENT 7-DAY WINDOW"), "{body}");
+        assert!(body.contains("QUOTA & LOCAL EVIDENCE"), "{body}");
+    }
+
+    #[test]
     fn wide_activity_heatmap_uses_dense_two_column_cells() {
         let area = Rect::new(0, 0, 230, 7);
         let (grid_x, stride) = activity_heatmap_geometry(area);
@@ -4560,6 +4637,18 @@ mod tests {
         assert_eq!(cell.fg, Some(colors[4]));
         assert_eq!(cell.bg, None);
         assert_eq!(ACCOUNT_ACTIVITY_HEATMAP_GLYPH, '▆');
+    }
+
+    #[test]
+    fn wide_activity_heatmap_compacts_cells_below_two_column_width() {
+        let area = Rect::new(0, 0, 120, 7);
+        let (grid_x, stride) = activity_heatmap_geometry(area);
+
+        assert_eq!(stride, 2);
+        assert_eq!(
+            grid_x,
+            4 + (120 - 4 - (52 * stride - ACCOUNT_ACTIVITY_HEATMAP_CELL_GAP) as u16) / 2
+        );
     }
 
     #[test]
@@ -4710,8 +4799,27 @@ mod tests {
             }),
         )];
 
-        assert_eq!(medium_accounts_table_height(&app, &outputs, 40), 5);
-        assert_eq!(medium_accounts_table_height(&app, &outputs, 4), 4);
+        assert_eq!(medium_accounts_table_height(&app, &outputs, 100, 40), 5);
+        assert_eq!(medium_accounts_table_height(&app, &outputs, 100, 4), 4);
+    }
+
+    #[test]
+    fn medium_usage_layout_grows_expanded_activity_at_wide_content_width() {
+        let mut app = make_app();
+        let outputs = vec![output(
+            "Codex",
+            Some(UsageAccount {
+                id: "acct_work".to_string(),
+                label: Some("work".to_string()),
+                is_active: true,
+            }),
+        )];
+        app.subscription_usage = outputs.clone();
+        app.toggle_usage_account_activity(0);
+
+        assert_eq!(medium_accounts_table_height(&app, &outputs, 126, 42), 33);
+        assert_eq!(medium_accounts_table_height(&app, &outputs, 125, 42), 18);
+        assert_eq!(medium_accounts_table_height(&app, &outputs, 126, 41), 18);
     }
 
     #[test]
